@@ -165,6 +165,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - `support.responder` neuron for the user's own community/inbox
 - Multimodal neurons: `content.image_creator`, `content.video_producer` (now that LiteLLM image/video gen is in play)
 - More strategy archetypes in Layer 0 (or in a Layer 0.1 update for new Darwins)
+- `trading.operator` neuron — live financial/crypto market trading and prediction/betting-market positions, bounded by the Darwin's treasury hard caps and the kill switch
 
 **Architecture experiments:**
 - Cross-lineage learning prototype — anonymous lesson contribution to a curated pool, opt-in per user
@@ -179,10 +180,8 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - Sandbox-fleet autoscaling
 
 **Phase-3 things we deliberately defer:**
-- Live crypto trading (still observation-only)
 - Sexual reproduction across Darwins
 - Path C neuron generation (Darwins writing entirely new neuron classes)
-- DeFi participation (lending, LP-ing) by Darwins
 
 ### Success looks like (phase 3 — qualitative)
 

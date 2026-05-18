@@ -37,7 +37,7 @@ The founding Darwin ships with a small, deliberately incomplete set of neurons. 
 | **browser.operator** | Generic browser-driving neuron | Browser-Use on Browserbase | Used for any site without a stable API; cached replay for repetitive flows |
 | **accounts.manager** | Signs up for services, holds session cookies, refreshes tokens | Browser + Vault | This is the captcha-hungry one; escalates often |
 | **ads.manager** | Buys and optimizes ad spend (Meta, Google, X) | API | Hard-capped by treasury policy; every spend over $5 escalates in v1 |
-| **trading.observer** | Watches markets, paper-trades for now | API (read-only) | Live trading is gated behind a separate, more conservative neuron in a later phase |
+| **trading.operator** | Trades financial and crypto markets; takes positions in prediction and betting markets | API | Live positions, bounded only by the Darwin's treasury hard caps and the kill switch — like any other spend |
 | **support.responder** | Responds to inbound DMs, emails, support tickets | LLM + integrations | Routes to escalation on anything legal-sounding or angry |
 | **analytics.measurer** | Reads metrics from configured destinations, computes ROI | API | Feeds the orchestrator's reflect node |
 | **research.scout** | Web-searches and synthesizes for the strategy engine | Search API + LLM | Cheap-tier model; cached aggressively |

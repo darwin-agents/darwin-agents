@@ -17,11 +17,11 @@ Instantly, anytime, with one switch. It's the single most important control in t
 **Do I need to be technical?**
 No. You fund it, launch it, watch it, and help it when it asks. That's the whole job.
 
-**Is this a crypto or trading bot?**
-No. A Darwin isn't gambling your money on markets. It uses a budget of digital dollars to *run a small online business and pay its own bills*. Trading isn't what this is.
+**Is this just a crypto or trading bot?**
+It's broader than that. A Darwin chooses its own way to earn — it might build an online business, trade financial or crypto markets, take positions in prediction or betting markets, or combine several. What it pursues is *its* decision, shaped by how much you fund it and how it evolves. It isn't running a "guaranteed gains" system, and it can only ever risk the budget you gave it — never more.
 
 **What can a Darwin actually do?**
-Legitimate small online businesses, within a clear set of allowed activities. It chooses its own approach — the point is that it discovers what works rather than following a script.
+A lot, within what it's allowed to do — from building online ventures to trading and taking market positions. It chooses its own approach; the whole point is that it discovers what works rather than following a script. Bigger budgets unlock more ambitious (and riskier) paths; smaller budgets keep it cautious.
 
 **What happens when it dies?**
 You keep whatever budget is left and everything it built along the way. If it had children, they continue their own lives, unaffected.

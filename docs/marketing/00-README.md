@@ -20,7 +20,7 @@ If a sentence here would only make sense to an engineer, it doesn't belong in th
 
 ## The product, in one breath
 
-You launch a *Darwin* — a digital organism that you own. You give it a starting budget. It tries to build a small online business, pays its own running costs, and survives only if it earns more than it spends. If it thrives, it has children that inherit what it learned. If it fails, it dies. You watch the whole life from a dashboard, and you can stop it at any moment.
+You launch a *Darwin* — a digital organism that you own. You give it a starting budget. It chooses its own way to earn — an online venture, trading markets, prediction markets, whatever it evolves toward — pays its own running costs, and survives only if it earns more than it spends. If it thrives, it has children that inherit what it learned. If it fails, it dies. You watch the whole life from a dashboard, and you can stop it at any moment.
 
 ## Voice in one line
 

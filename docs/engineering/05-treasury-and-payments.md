@@ -50,7 +50,7 @@ Darwin needs money that is:
 - **Cheap.** Many Darwin transactions will be sub-dollar (an API call, an LLM completion). On Base or Stellar, transaction fees are fractions of a cent. On Ethereum mainnet they would exceed the payment.
 - **Settled fast.** Darwin operates in seconds, not days. Bank ACH (T+2) is unusable as primary; stablecoin settlement (seconds) is fine.
 
-We use **USDC on Base** as the primary settlement rail, with a fallback to Solana or Stellar if Base is congested. Treasury balances are denominated in USDC for accounting purposes throughout.
+We use **USDC on Base** as the primary settlement rail, with a fallback to Solana or Stellar if Base is congested. Treasury balances are denominated in USDC for accounting purposes throughout. A Darwin running a trading strategy may hold volatile assets or open market positions; those are part of its strategy, not its runway — they are marked to USDC at each reconciliation so the ledger, fitness, and death trigger always read in stable terms.
 
 Fiat in/out happens at the platform edge: card or bank deposit → USDC into the platform omnibus wallet → USDC into the per-Darwin wallet (and the reverse for withdrawals). The Darwin itself never touches fiat.
 
@@ -134,6 +134,10 @@ By default, all profit stays in the Darwin's treasury — re-invested into more 
 
 Harvest is a normal outbound transaction subject to the same policy engine, just with the user's verified bank/wallet as the counterparty.
 
-## Open question: should Darwins be allowed to lend or borrow?
+## Trading, markets, and DeFi
 
-A profitable Darwin sitting on idle USDC could lend on Aave for yield. A struggling Darwin could borrow against future revenue. Both make economic sense and both massively increase the surface area for things going wrong. **Initial position: no DeFi participation in the first launch.** Treasury is held in spot USDC only. We revisit after we have lineage data.
+A Darwin may trade financial and crypto markets, take positions in prediction and betting markets, and use DeFi (lending, liquidity provision, leverage) when it judges the strategy is worth it. This is the Darwin's own decision, shaped by how much you fund it and how its lineage has evolved — there is no separate menu the owner picks from.
+
+There is no special gate for these activities. They are bounded by exactly the same two mechanisms as every other action: the DNA treasury hard caps (per-action, per-day, total-burn) and the kill switch. A Darwin can lose money fast this way; that is expected and is part of selection. The platform does not bail out a Darwin that trades itself to zero — it dies like any other.
+
+For ledger, fitness, and death-trigger purposes, non-USDC holdings and open positions are marked to their USDC value at each reconciliation; the operating runway is always read in stable terms.

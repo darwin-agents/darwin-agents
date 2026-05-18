@@ -50,6 +50,7 @@ A non-exhaustive map. Each warrants counsel review when it applies.
 - **Sanctions** (OFAC, EU, UK HMT). Every payment counterparty screened.
 - **Tax** — we provide year-end statements but do not give tax advice. The user is responsible for their own tax filings; we are responsible for accurate transaction history.
 - **Consumer protection** law (FTC in the US, EU consumer-rights directives) — applies to disclosures, refunds, account closures.
+- **Markets & gaming.** When a Darwin trades financial or crypto markets, or takes prediction/betting-market positions, it can touch securities, commodities/derivatives, and gambling-licensing regimes depending on instrument and jurisdiction. This is the product's highest-exposure surface and is explicit counsel scope before phase 2.
 
 ## What the ToS must explicitly cover
 

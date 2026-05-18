@@ -36,9 +36,9 @@ A naive evolutionary system optimizes whatever you measure. If we let fitness me
 Our defenses, in layers:
 
 1. **The fitness function is in the DNA, not the soma.** A Darwin cannot rewrite the function that evaluates its own fitness. The function is in `darwin_dna/machinery/fitness.py` and the patch validator rejects any soma patch that touches DNA paths.
-2. **The fitness function's weights are not learnable.** α, β, γ, δ, ε in the fitness formula (see [`06-evolution-and-reproduction.md`](06-evolution-and-reproduction.md)) are Layer 0 constants. The Darwin cannot tune them.
+2. **The fitness function's weights are not learnable.** α, β, γ, δ in the fitness formula (see [`06-evolution-and-reproduction.md`](06-evolution-and-reproduction.md)) are Layer 0 constants. The Darwin cannot tune them.
 3. **The fitness inputs come from authoritative sources.** Profit comes from the ledger, which is reconciled against the on-chain wallet — not from anything the Darwin reports. The Darwin cannot fake its bank balance.
-4. **The fitness function includes counter-pressures.** Policy-violation penalty (heavy), volatility penalty (steady), diversity bonus (against narrow optimization), escalation-quality (against pestering the owner). A Darwin that maximizes raw profit by ignoring constraints loses on the counter-pressures.
+4. **The fitness function includes counter-pressures.** Policy-violation penalty (heavy), diversity bonus (against narrow optimization), escalation-quality (against pestering the owner). A Darwin that maximizes raw profit by ignoring constraints loses on the counter-pressures. Ruinous risk-taking needs no fitness term — it is checked by the hardest mechanism in the system: the treasury hitting zero and the Darwin dying.
 5. **Mutation evaluation runs in a clean substrate.** When a mutation candidate is staged, the evaluation harness runs in a fresh sandbox with a fresh DNA load. The candidate cannot tamper with its own evaluator.
 
 We can't prove this prevents all wireheading. We can say: the obvious paths are blocked by mechanism, and the non-obvious ones are visible in the audit log so we can spot patterns.

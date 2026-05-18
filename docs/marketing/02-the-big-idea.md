@@ -12,7 +12,7 @@ Darwin starts from the opposite place. We give the agent something almost no one
 
 A Darwin is a digital organism. You bring it to life with a starting budget and it does what living things do — it tries to stay alive.
 
-To stay alive it has to earn. It explores small online businesses, does the work, and pays its own running costs out of its own budget. Every day it's a little richer or a little poorer. There's no allowance, no top-up, no rescue. If the budget runs out, the Darwin dies. For good.
+To stay alive it has to earn. It explores its own ways to make money — building online ventures, trading financial or crypto markets, taking positions in prediction markets, whatever it judges it can win at — does the work, and pays its own running costs out of its own budget. Every day it's a little richer or a little poorer. There's no allowance, no top-up, no rescue. If the budget runs out, the Darwin dies. For good.
 
 That single rule — *earn or die* — changes everything. It turns a clever script into something with skin in the game.
 

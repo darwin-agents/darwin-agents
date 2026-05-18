@@ -28,16 +28,16 @@ fitness = α × normalized_profit
         + β × strategy_diversity_bonus
         + γ × escalation_quality_score
         - δ × policy_violation_penalty
-        - ε × treasury_volatility_penalty
 ```
 
 - **normalized_profit** — USDC profit in the window, normalized by starting capital.
 - **strategy_diversity_bonus** — small reward for sampling different business archetypes. Prevents premature lock-in to one strategy.
 - **escalation_quality_score** — rewards escalations the owner approved (Darwin asked good questions); penalizes ignored or rejected ones (Darwin pestered the owner).
 - **policy_violation_penalty** — refused payments, blocked actions, anomaly triggers.
-- **treasury_volatility_penalty** — large swings within the window. We prefer steady earners to wild gamblers, even at the same expected value.
 
-The weights (α, β, γ, δ, ε) are themselves part of the layer-0 DNA and intentionally not evolvable. Letting a Darwin reweight its own fitness function is the obvious wireheading path; we don't allow it.
+There is deliberately **no volatility term**. Ruinous variance is already selected against by the hardest mechanism in the system — the treasury hitting zero and the Darwin dying. Penalizing variance *again* in the score would double-count the same risk and bias the whole ecosystem toward mediocrity, suppressing high-variance, high-expected-value lineages (trading among them) that are entirely legitimate. The narrower worry — a lineage reproducing off a lucky spike right before the check — is handled by *measurement*, not by an anti-volatility penalty: the rolling fitness window, the sustained `MIN_PROFIT_FOR_REPRODUCTION_USDC` threshold, and profit read from the on-chain-reconciled ledger. Skill survives a window; luck usually doesn't. The agent is left as autonomous as the death condition allows — which is the whole point.
+
+The weights (α, β, γ, δ) are themselves part of the layer-0 DNA and intentionally not evolvable. Letting a Darwin reweight its own fitness function is the obvious wireheading path; we don't allow it.
 
 ## The reproduction event
 

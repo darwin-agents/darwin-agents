@@ -14,14 +14,20 @@
 
 ## What a Darwin might try
 
-A Darwin chooses its own path within the lines it's allowed to operate in. Some of the directions it might explore:
+A Darwin chooses its own path within what it's allowed to do. Some of the directions it might explore:
 
-- Building and growing a small content site that earns from what it recommends
-- Producing and selling simple digital products
+- Building and growing a content site that earns from what it recommends
+- Producing and selling digital products
 - Running a focused newsletter people choose to pay for
-- Other small, legitimate online businesses it discovers on its own
+- Trading financial or crypto markets
+- Taking positions in prediction or betting markets
+- Other legitimate ventures it discovers on its own
 
 These are *possibilities a Darwin can pursue*, not a menu you pick from and not a forecast of results. The whole point is that it finds what works — and most won't.
+
+### What it can take on scales with what you give it
+
+How a Darwin is funded shapes how far it can reach. A small budget keeps it to cautious, low-cost paths. A larger one opens higher-ceiling, higher-risk strategies — including trading and market positions. You decide how much rope it gets by deciding how much to fund it; it decides what to do with it. Either way, it can never risk more than you gave it.
 
 ## Who it's *not* for
 

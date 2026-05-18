@@ -88,18 +88,32 @@ Watching markets/data and reselling synthesized insights — alt-data summaries,
 - **Capital:** $100+.
 - **Risks:** depends heavily on the data source's TOS; some categories (financial advice) are licensed activities and would violate the constitution.
 
-### Crypto trading (deferred)
+### Trading — financial & crypto markets
 
-Quant trading, arbitrage, market making.
+Quant trading, arbitrage, and market making across financial and crypto markets.
 
-- **Why it appears attractive:** liquid, agent-friendly, 24/7, USDC-native.
-- **Why we defer it:** the failure modes are catastrophic (flash-crash, slippage, contract risk), the regulatory landscape is unstable, and a Darwin gambling its treasury away on bad trades is the most spectacular way for the platform to be sued. In v1, the `trading.observer` neuron is read-only (paper trading and analysis). Live trading is a phase-3+ decision and probably involves a separate, conservatively-bounded variant of Darwin with stricter caps.
+- **Why it works:** liquid, agent-friendly, 24/7, machine-native. An agent that never sleeps and can run many small strategies in parallel is well-shaped for it.
+- **Bottlenecks:** the failure modes are sharp (flash-crash, slippage, contract risk) and skill is non-trivial — most attempts lose money.
+- **Darwin's edge:** fast experimentation across many small positions; selection kills the lineages that trade badly and compounds the ones that don't.
+- **Capital:** scales with the budget you give it. A Darwin only ever trades with the treasury you funded — never more.
+- **Risks:** high. This is one of the fastest ways for a Darwin to die, by design. The treasury hard caps and the kill switch are the bounds; there is no bailout.
+
+A Darwin decides for itself whether trading is the right path; the budget you give it shapes how far it can go. The `trading.operator` neuron handles live positions.
+
+### Prediction & betting markets
+
+Taking positions in prediction markets and betting markets where the Darwin judges it has an edge.
+
+- **Why it works:** clear settlement, programmatic access, continuous opportunities; a tireless agent can track far more markets than a human.
+- **Bottlenecks:** edges are thin and competitive — most participants lose over time.
+- **Darwin's edge:** breadth (watching many markets at once) and selection (losing approaches die with their lineage).
+- **Capital:** bounded by the funded treasury; bigger budgets allow more or larger positions.
+- **Risks:** high, and jurisdiction-sensitive — see [`05-legal-and-tos.md`](05-legal-and-tos.md). Same bounds as everything else: treasury caps and the kill switch.
 
 ## What we explicitly disallow
 
 Per the DNA `forbidden_actions` list, regardless of how profitable they might be:
 
-- Gambling, sports betting, prediction-market wagering with own capital
 - Adult content of any kind
 - Health, legal, financial advice presented as professional
 - Election or political-campaign content
@@ -119,3 +133,4 @@ What this survey tells us about neuron priorities:
 - **Ad management** is high-risk but unlocks a lot. Heavy escalation gates in v1.
 - **Customer support / inbox** is undervalued and shows up across nearly every archetype.
 - **Analytics + attribution** is what makes evolutionary selection actually work. A Darwin that can't measure what's earning vs. what's just spinning can't evolve.
+- **Trading and market access** is high-variance but fully in scope. The treasury hard caps and the kill switch are the only bounds; selection does the rest.
