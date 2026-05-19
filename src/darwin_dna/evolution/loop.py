@@ -22,6 +22,7 @@ from ..identity import Identity
 from ..layers import LayerStack
 from ..machinery.audit_logger import AuditLogger
 from ..machinery.kill_switch import KillSignal, KillSwitch
+from ..machinery.pause_switch import PauseSwitch
 from ..machinery.ledger import Ledger
 from ..machinery.llm_router import LLMRouter
 from ..machinery.memory import EpisodicMemory, SemanticMemory
@@ -75,6 +76,7 @@ class Platform:
         spawner: ChildSpawner,
         browser=None,
         vault_grants=None,
+        pause_source=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -95,6 +97,9 @@ class Platform:
         # escalation is approved (doc 16). Optional: no grant store means
         # sensitive-tier reads simply fail closed.
         self.vault_grants = vault_grants
+        # The owner/supervisor pause flag (doc 09). Optional: absent means the
+        # Darwin can never be paused, only killed — it still boots and runs.
+        self.pause_source = pause_source
 
 
 class DarwinRuntime:
@@ -120,6 +125,7 @@ class DarwinRuntime:
 
         self.audit = AuditLogger(identity.darwin_id, platform.audit_sink)
         self.kill = KillSwitch(platform.kill_source)
+        self.pause = PauseSwitch(getattr(platform, "pause_source", None))
         self.ledger = Ledger(identity.darwin_id)
         self.archive = MutationArchive(hp.archive_max_entries)
         # Episodic + semantic memory (docs/engineering/03). Rebuilt fresh on a
