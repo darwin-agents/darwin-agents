@@ -107,8 +107,24 @@ class DarwinRuntime:
             wallet=platform.wallet, provision=platform.provision
         )
         self.strategy = founding_strategy()
-        self.state = OrchestratorState()
         self._anchored_day: str | None = None
+
+        # Survive sandbox replacement (docs/engineering/03, 12): working
+        # memory is wiped when the sandbox is replaced and reconstructed from
+        # the last node-boundary checkpoint. A genesis Darwin (no checkpoint)
+        # starts fresh. The audit chain + wallet are durable platform-side, so
+        # a resumed Darwin continues the *same* life, it does not relive it.
+        restored = None
+        try:
+            restored = platform.checkpoint.load(identity.darwin_id)
+        except Exception:
+            restored = None  # a broken checkpoint must not block boot
+        if restored and isinstance(restored, dict) and restored.get("state"):
+            self.state = OrchestratorState.model_validate(restored["state"])
+            self.resumed = True
+        else:
+            self.state = OrchestratorState()
+            self.resumed = False
 
         ctx = OrchestratorContext(
             darwin_id=identity.darwin_id,
@@ -125,14 +141,21 @@ class DarwinRuntime:
             build_neuron_context=self._build_neuron_context,
             clock=clock,
         )
+        # Kept for introspection/tests. The soma swaps strategy/catalog
+        # *through the context*, never by rebinding runtime attributes (those
+        # are not what the graph reads).
+        self._ctx = ctx
         self._graph = build_graph(ctx, engine=engine)
+        # Birth happens once per life. A resume is a continuation, not a new
+        # birth — logging "birth" twice would corrupt the lineage's story.
         self.audit.log_event(
-            "birth",
+            "resumed" if self.resumed else "birth",
             {
                 "darwin_id": identity.darwin_id,
                 "generation": identity.generation,
                 "l0_version": identity.l0_version,
                 "parent_id": identity.parent_id,
+                **({"resumed_at_tick": self.state.tick} if self.resumed else {}),
             },
         )
 
