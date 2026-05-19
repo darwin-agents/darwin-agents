@@ -14,6 +14,7 @@ not fail the task (P4).
 
 from __future__ import annotations
 
+from ..._untrusted import contains_fence_markers, wrap_untrusted
 from ...machinery.audit_logger import AuditError
 
 
@@ -77,6 +78,17 @@ async def run(state, ctx):
             "dispatch.neuron_crashed", {"neuron": neuron.name, "error": str(exc)}
         )
         _bump_failure(state, "neuron_crashed")
+        # A neuron call is a write to episodic memory (docs/engineering/03) —
+        # the crash is exactly the kind of thing the planner later asks "have
+        # I seen this before?" about.
+        ctx.episodic.record(
+            tick=state.tick,
+            signature=_sig(neuron.name, task),
+            neuron=neuron.name,
+            outcome="failed",
+            error_code="neuron_crashed",
+            ts=float(ctx.clock()),
+        )
         state.route = "reflect"
         return state
 
@@ -123,6 +135,18 @@ async def run(state, ctx):
             state.content_pieces += 1
         if "web.publish" in task.required_tags or task.kind == "web.publish":
             state.published_pieces += 1
+        # World-scraped text crosses into the orchestrator HERE — fence it at
+        # the boundary before it can ever reach the planner (P-injection,
+        # docs/engineering/10). The planner only ever sees the wrapped form.
+        web_text = result.output.get("web_text")
+        if web_text is not None:
+            if contains_fence_markers(web_text):
+                ctx.audit.log_event(
+                    "untrusted.breakout_attempt",
+                    {"neuron": neuron.name},  # the value itself is never logged
+                )
+            state.world_observations.append(wrap_untrusted(web_text))
+            del state.world_observations[:-5]  # bounded; keep the 5 most recent
         # success clears that error class's recurrence counter
         if result.error_code and result.error_code in state.recurring_failures:
             del state.recurring_failures[result.error_code]
@@ -135,6 +159,24 @@ async def run(state, ctx):
         if result.error_code == "policy_refused":
             state.policy_violations += 1
         _bump_failure(state, result.error_code or "unknown_error")
+
+    # A neuron call is a write to episodic memory (docs/engineering/03): one
+    # legible "I did X and Y happened" row the planner can recall later. The
+    # signature is the same work-identity dispatch routes and pauses on.
+    if result.escalated:
+        outcome, code = "escalated", (result.error_code or "info")
+    elif result.ok:
+        outcome, code = "ok", None
+    else:
+        outcome, code = "failed", (result.error_code or "unknown_error")
+    ctx.episodic.record(
+        tick=state.tick,
+        signature=_sig(neuron.name, task),
+        neuron=neuron.name,
+        outcome=outcome,
+        error_code=code,
+        ts=float(ctx.clock()),
+    )
 
     state.route = "reflect"
     return state

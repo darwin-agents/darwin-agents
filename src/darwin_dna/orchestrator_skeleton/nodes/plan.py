@@ -95,7 +95,24 @@ def run(state, ctx):
     # has nothing to do is the textbook way to burn capital faster than it
     # earns (docs/engineering/18 failure mode). Idle is free; thinking is not.
     if action.kind != "wait":
+        # Lessons are signed DNA — trusted, NOT fenced. World observations
+        # are already fenced as untrusted at the dispatch boundary; we never
+        # re-wrap or unwrap them here (docs/engineering/10).
         lessons = [l.statement for l in ctx.layer_stack.all_lessons()]
+        # "Have I seen this before?" — a deterministic episodic recall for the
+        # exact work we are about to dispatch (docs/engineering/03). Trusted
+        # in-life history, like lessons; not fenced.
+        prior_outcomes: list[dict] = []
+        if action.kind == "dispatch" and action.task is not None:
+            from .dispatch import _sig
+
+            prior_outcomes = [
+                {"outcome": r.outcome, "error_code": r.error_code,
+                 "tick": r.tick}
+                for r in ctx.episodic.recall(
+                    _sig(action.neuron, action.task), limit=5
+                )
+            ]
         try:
             ctx.llm.complete(
                 Tier.REASONING,
@@ -104,6 +121,8 @@ def run(state, ctx):
                     "strategy_prior": action.kind,
                     "balance_usdc": state.balance_usdc,
                     "lessons": lessons[:32],
+                    "prior_outcomes": prior_outcomes,
+                    "untrusted_observations": state.world_observations[-5:],
                 },
             )
         except LLMError as exc:

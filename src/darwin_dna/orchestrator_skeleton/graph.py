@@ -66,6 +66,8 @@ class OrchestratorContext:
     checkpoint: CheckpointStore
     ledger: Any  # machinery.Ledger — reconciled vs wallet every heartbeat
     archive: Any  # evolution.MutationArchive — negative-lesson memory
+    episodic: Any  # machinery.EpisodicMemory — "have I seen this before?"
+    semantic: Any  # machinery.SemanticMemory — lesson staging ground
     build_neuron_context: Callable[..., Any]
     clock: Callable[[], float] = time.time
 

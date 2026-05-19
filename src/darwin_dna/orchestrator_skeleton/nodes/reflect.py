@@ -28,6 +28,37 @@ def run(state, ctx):
     # profit since the last reproduction, read from the (reconciled) balance
     state_profit = state.balance_usdc - state.profit_baseline_usdc
 
+    # Reflect decides what is a lesson (docs/engineering/03). Stage the
+    # structured candidate in semantic memory; evidence accrues per heartbeat
+    # via the dedupe-by-scope increment, and the strongest survive to the next
+    # reproduction even if the transient counter that produced them clears
+    # first. That persistence is the entire point of a staging ground.
+    if has_pattern:
+        worst = max(state.recurring_failures, key=state.recurring_failures.get)
+        ctx.semantic.stage(
+            kind="avoid",
+            scope=f"failure:{worst}",
+            statement=(
+                f"the {worst!r} failure recurred {worst_recurrence}x within a "
+                f"single generation; prefer a path that does not hit it"
+            ),
+            payload={"failure_class": worst, "observed_count": worst_recurrence},
+            ts=float(ctx.clock()),
+        )
+    if enough_experience and state_profit > 0:
+        sid = ctx.strategy.spec.id
+        ctx.semantic.stage(
+            kind="prefer",
+            scope=f"strategy:{sid}",
+            statement=(
+                f"{sid!r} sustained {state.successful_dispatches} successful "
+                f"dispatches while net-profitable; a reasonable first try"
+            ),
+            payload={"strategy_id": sid,
+                     "profit_usdc": round(state_profit, 2)},
+            ts=float(ctx.clock()),
+        )
+
     ctx.audit.log_event(
         "reflect",
         {

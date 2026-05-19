@@ -24,6 +24,8 @@ from ..machinery.audit_logger import AuditLogger
 from ..machinery.kill_switch import KillSignal, KillSwitch
 from ..machinery.ledger import Ledger
 from ..machinery.llm_router import LLMRouter
+from ..machinery.memory import EpisodicMemory, SemanticMemory
+from ..machinery.vault import ScopedVaultView, TieredVault
 from ..manifest import Manifest
 from ..neurons import NeuronContext, build_catalog
 from ..orchestrator_skeleton import OrchestratorContext, OrchestratorState, build_graph
@@ -72,6 +74,7 @@ class Platform:
         signer: PlatformSigner,
         spawner: ChildSpawner,
         browser=None,
+        vault_grants=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -88,6 +91,10 @@ class Platform:
         self.signer = signer
         self.spawner = spawner
         self.browser = browser
+        # Where the platform writes one-time owner-approval grants when an
+        # escalation is approved (doc 16). Optional: no grant store means
+        # sensitive-tier reads simply fail closed.
+        self.vault_grants = vault_grants
 
 
 class DarwinRuntime:
@@ -115,6 +122,20 @@ class DarwinRuntime:
         self.kill = KillSwitch(platform.kill_source)
         self.ledger = Ledger(identity.darwin_id)
         self.archive = MutationArchive(hp.archive_max_entries)
+        # Episodic + semantic memory (docs/engineering/03). Rebuilt fresh on a
+        # sandbox-replacement resume, like the ledger and the archive: the
+        # durable, replayable record of a life is the audit chain, not these
+        # in-life caches. Semantic is the staging ground for the next layer.
+        self.episodic = EpisodicMemory(hp.episodic_max_entries)
+        self.semantic = SemanticMemory(hp.semantic_max_staged)
+        # The tiered vault wraps the raw per-Darwin namespace and enforces the
+        # public/scoped/sensitive read model (doc 16). Each neuron is handed a
+        # view bound to its own capability tags, never this object.
+        self._vault = TieredVault(
+            platform.vault,
+            darwin_id=identity.darwin_id,
+            grants=platform.vault_grants,
+        )
         self.llm = LLMRouter(platform.llm_transport, hp, clock=clock)
         self.catalog = build_catalog(
             wallet=platform.wallet, provision=platform.provision
@@ -153,6 +174,8 @@ class DarwinRuntime:
             checkpoint=platform.checkpoint,
             ledger=self.ledger,
             archive=self.archive,
+            episodic=self.episodic,
+            semantic=self.semantic,
             build_neuron_context=self._build_neuron_context,
             clock=clock,
         )
@@ -177,11 +200,22 @@ class DarwinRuntime:
     # -- neuron context wiring --------------------------------------------
     def _build_neuron_context(self, neuron_name: str) -> NeuronContext:
         relevant = self._stack.find(scope=f"neuron:{neuron_name}")
+        # Hand the neuron a vault view scoped to its *own* capability tags. It
+        # cannot read another capability's scoped secrets because it never
+        # holds the others (doc 16, isolation). Its default write/read scope is
+        # one of its own tags so a credential it persists round-trips.
+        neuron = self.catalog.get(neuron_name)
+        tags = frozenset(getattr(neuron, "capability_tags", frozenset()))
+        scoped_vault = ScopedVaultView(
+            self._vault,
+            capability_tags=tags,
+            default_scope=(sorted(tags)[0] if tags else "shared"),
+        )
         nctx = NeuronContext(
             darwin_id=self.identity.darwin_id,
             llm=self.llm,
             audit=self.audit,
-            vault=self._p.vault,
+            vault=scoped_vault,
             lessons=relevant,
             now=self._clock,
         )
@@ -248,6 +282,11 @@ class DarwinRuntime:
 
     def _reproduce(self) -> None:
         profit = self.state.balance_usdc - self.state.profit_baseline_usdc
+        # Drain the staging ground: the strongest-evidence runtime lessons get
+        # a chance at a sealed DNA layer the child inherits forever (doc 03).
+        # drain() also clears it — semantic memory is windowed per generation,
+        # exactly like the profit baseline and the counter-pressures below.
+        staged_semantic = [s.model_dump() for s in self.semantic.drain()]
         result = reproduce(
             parent_identity=self.identity,
             inherited_layer_blobs=self._p.layer_blobs,
@@ -256,6 +295,7 @@ class DarwinRuntime:
             dead_ends=set(),
             successful_strategy_id=self.strategy.spec.id,
             profit_usdc=profit,
+            staged_semantic=staged_semantic,
             parent_balance_usdc=self.state.balance_usdc,
             minimum_viable_usdc=self._hp.minimum_viable_balance_usdc,
             profit_transfer_fraction=self._hp.profit_transfer_fraction,

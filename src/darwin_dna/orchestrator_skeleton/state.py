@@ -38,6 +38,9 @@ class OrchestratorState(BaseModel):
     # planning
     plan: dict[str, Any] = Field(default_factory=dict)  # the chosen action
     last_action: str | None = None
+    # World-derived text the planner may see — ALREADY fenced as untrusted at
+    # the dispatch boundary (docs/engineering/10). Bounded; never raw.
+    world_observations: list[str] = Field(default_factory=list)
 
     # reflection / gates
     dispatches_done: int = 0
