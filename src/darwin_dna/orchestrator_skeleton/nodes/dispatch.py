@@ -1,0 +1,106 @@
+"""dispatch — send work to a neuron (docs/engineering/04, the routing rules).
+
+Selection (from 04): filter to neurons whose ``capability_tags`` ⊇ the task's
+required tags; among those prefer lowest expected cost meeting the quality
+bar; break ties by recency of success; if none match, file a capability
+request and try the closest fallback. The *selection algorithm* is in the DNA;
+the cost/quality weighting is soma-evolvable.
+
+This node performs the only side effects in a heartbeat, so the kill switch is
+polled here too, immediately before the neuron acts (P8). Escalations are
+first-class: a blocked neuron files a ticket and the loop continues — it does
+not fail the task (P4).
+"""
+
+from __future__ import annotations
+
+
+def _select(catalog, required_tags, recency):
+    candidates = [
+        n for n in catalog.values() if set(required_tags) <= set(n.capability_tags)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda n: (n.cost_estimate.usd_p50, -recency.get(n.name, 0.0))
+    )
+    return candidates[0]
+
+
+async def run(state, ctx):
+    p = state.plan
+    if p.get("action") != "dispatch" or not p.get("task"):
+        state.route = "check_reproduction"
+        return state
+
+    # Side-effect boundary: poll before we touch the world.
+    ctx.kill_switch.check()
+
+    from ...neurons import Task
+
+    task = Task.model_validate(p["task"])
+    # Recency-of-success tie-breaking is a soma refinement; the Layer 0
+    # selector ships with an empty recency map (cost-only ordering).
+    neuron = ctx.catalog.get(p.get("neuron") or "") or _select(
+        ctx.catalog, task.required_tags, {}
+    )
+
+    if neuron is None:
+        # No neuron can do this — that's a capability gap, not a failure.
+        for tag in task.required_tags:
+            if tag not in state.pending_capability_requests:
+                state.pending_capability_requests.append(tag)
+        ctx.audit.log_event(
+            "capability_request",
+            {"reason": "no neuron matches", "tags": sorted(task.required_tags)},
+        )
+        state.route = "check_reproduction"
+        return state
+
+    nctx = ctx.build_neuron_context(neuron.name)
+    state.dispatches_done += 1
+    try:
+        plan_obj = await neuron.plan(task, nctx)
+        result = await neuron.execute(plan_obj, nctx)
+    except Exception as exc:  # a neuron blowing up must not kill the organism
+        ctx.audit.log_event(
+            "dispatch.neuron_crashed", {"neuron": neuron.name, "error": str(exc)}
+        )
+        _bump_failure(state, "neuron_crashed")
+        state.route = "reflect"
+        return state
+
+    if result.escalated:
+        ticket = result.output.get("ticket", f"esc-{neuron.name}-{state.tick}")
+        if ticket not in state.pending_escalations:
+            state.pending_escalations.append(ticket)
+        ctx.escalation.post(
+            {
+                "darwin_id": ctx.darwin_id,
+                "ticket": ticket,
+                "neuron": neuron.name,
+                "tick": state.tick,
+                "detail": result.output,
+            }
+        )
+    elif result.ok:
+        state.successful_dispatches += 1
+        sid = ctx.strategy.spec.id
+        if sid not in state.distinct_strategies:
+            state.distinct_strategies.append(sid)
+        if "content.write" in task.required_tags or task.kind == "content.write":
+            state.content_pieces += 1
+        if "web.publish" in task.required_tags or task.kind == "web.publish":
+            state.published_pieces += 1
+        # success clears that error class's recurrence counter
+        if result.error_code and result.error_code in state.recurring_failures:
+            del state.recurring_failures[result.error_code]
+    else:
+        _bump_failure(state, result.error_code or "unknown_error")
+
+    state.route = "reflect"
+    return state
+
+
+def _bump_failure(state, code: str) -> None:
+    state.recurring_failures[code] = state.recurring_failures.get(code, 0) + 1
