@@ -18,6 +18,7 @@ from .memory import (
     StagedLesson,
 )
 from .neuron_loader import NeuronContractError, load_catalog, validate_neuron
+from .pause_switch import PauseSource, PauseSwitch
 from .patch_validator import FileChange, Patch, PatchDecision, validate_patch
 from .treasury_policy import (
     PolicyDecision,
@@ -61,6 +62,8 @@ __all__ = [
     "NeuronContractError",
     "load_catalog",
     "validate_neuron",
+    "PauseSource",
+    "PauseSwitch",
     "FileChange",
     "Patch",
     "PatchDecision",
