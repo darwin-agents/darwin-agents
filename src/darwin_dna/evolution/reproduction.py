@@ -22,7 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from ..identity import Identity
-from ..layers import Lesson, serialize_lessons
+from ..layers import Lesson, deserialize_lessons, serialize_lessons
 from ..manifest import (
     LayerEntry,
     Manifest,
@@ -84,6 +84,32 @@ def _seal_layer(
     return LayerEntry(index=index, name=name, sha256=digest, signature=sig.hex())
 
 
+def _compact(
+    ordered: list[tuple[str, bytes]], soft_cap: int
+) -> list[tuple[str, bytes]]:
+    """Fold the oldest layers into a single consolidated lessons layer so the
+    child carries at most ``soft_cap + 1`` layers.
+
+    Deterministic and legible: concatenate the folded layers' lessons
+    oldest-first and dedupe by id (a newer statement of the same lesson wins),
+    *preserving each lesson's born_generation* so a human can still point at
+    which ancestor learned it. Past the cap this folds two layers per
+    reproduction, so the carried depth self-stabilises at ``soft_cap + 1``."""
+    target = soft_cap + 1
+    fold = len(ordered) - target + 1  # this many oldest layers → one
+    if fold < 2:
+        return ordered
+    merged: dict[str, Lesson] = {}
+    for _, blob in ordered[:fold]:
+        for lesson in deserialize_lessons(blob):
+            merged[lesson.id] = lesson  # later (newer) wins on id collision
+    consolidated = sorted(
+        merged.values(), key=lambda l: (l.born_generation, l.id)
+    )
+    head = ("layer_0_compacted", serialize_lessons(consolidated))
+    return [head, *ordered[fold:]]
+
+
 def reproduce(
     *,
     parent_identity: Identity,
@@ -97,6 +123,7 @@ def reproduce(
     parent_balance_usdc: float,
     minimum_viable_usdc: float,
     profit_transfer_fraction: float,
+    generation_soft_cap: int = 20,
     signer: PlatformSigner,
     spawner: ChildSpawner,
     audit: Any,
@@ -121,21 +148,47 @@ def reproduce(
     )
     new_blob = serialize_lessons(new_lessons)
 
-    # Assemble the child's identity and full layer set: all inherited layers
-    # plus the freshly distilled top layer.
+    # Assemble the child's identity and ordered layer set: every inherited
+    # layer (oldest first) plus the freshly distilled top layer.
     child = (
         parent_identity.child(l0_version=parent_identity.l0_version)
         if clock is None
         else _child_with_clock(parent_identity, clock)
     )
-    new_index = child_generation  # generation N child carries layers 0..N
-    child_blobs: dict[int, bytes] = dict(inherited_layer_blobs)
-    child_blobs[new_index] = new_blob
-    names = dict(inherited_layer_names)
-    names[new_index] = f"layer_{new_index}_lessons"
+    ordered: list[tuple[str, bytes]] = [
+        (inherited_layer_names[i], inherited_layer_blobs[i])
+        for i in sorted(inherited_layer_blobs)
+    ]
+    ordered.append((f"layer_{child_generation}_lessons", new_blob))
+
+    # COMPACT — past the generation soft cap, fold the oldest layers into one
+    # consolidated layer so a long lineage's DNA does not grow without bound
+    # (docs/engineering/06 §soft cap, 02). The platform keeps the originals
+    # for forensics; the child carries only the compacted form. The genome
+    # ships a deterministic fold; a coding-tier model does the prose
+    # consolidation in production.
+    if child_generation > generation_soft_cap:
+        before = len(ordered)
+        ordered = _compact(ordered, generation_soft_cap)
+        audit.log_event(
+            "reproduction.layer_compaction",
+            {
+                "generation": child_generation,
+                "soft_cap": generation_soft_cap,
+                "layers_before": before,
+                "layers_after": len(ordered),
+            },
+        )
+
+    child_blobs: dict[int, bytes] = {
+        i: blob for i, (_, blob) in enumerate(ordered)
+    }
+    names = {i: name for i, (name, _) in enumerate(ordered)}
 
     # SIGN — every layer is re-sealed under the *child's* identity, so an
-    # inherited layer cannot be replayed across lineages (manifest.py).
+    # inherited layer cannot be replayed across lineages (manifest.py). The
+    # compacted layer is freshly sealed too — it is the child's, not a
+    # spliced-in ancestor blob.
     entries = [
         _seal_layer(
             signer,
@@ -145,7 +198,7 @@ def reproduce(
             name=names[i],
             blob=child_blobs[i],
         )
-        for i in sorted(child_blobs)
+        for i in range(len(ordered))
     ]
     body = {
         "identity": ManifestIdentity(

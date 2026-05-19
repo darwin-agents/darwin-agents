@@ -132,11 +132,17 @@ def verify_manifest(
             f"layer chain not contiguous/ordered oldest-first: "
             f"{indices} != {expected}"
         )
-    if len(layers) != manifest.identity.generation + 1:
+    # An uncompacted generation-k Darwin carries exactly k+1 layers (0..k).
+    # Past the generation soft cap the reproduction event folds the oldest
+    # layers into one (docs/engineering/06, 02), so a compacted lineage
+    # carries *fewer* than generation+1 — never more. Contiguity (checked
+    # above) plus the per-layer lineage-bound signatures (checked below) keep
+    # the chain just as tamper/replay-proof; the count is only an upper bound.
+    if len(layers) > manifest.identity.generation + 1:
         raise ManifestError(
-            f"generation {manifest.identity.generation} must carry "
-            f"{manifest.identity.generation + 1} layers, manifest has "
-            f"{len(layers)}"
+            f"generation {manifest.identity.generation} carries "
+            f"{len(layers)} layers, more than the {manifest.identity.generation + 1} "
+            f"its reproduction history allows"
         )
 
     # 3. No extra blobs, no missing blobs. An attacker who slips an extra
