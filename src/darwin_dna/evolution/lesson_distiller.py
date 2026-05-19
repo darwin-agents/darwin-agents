@@ -13,7 +13,24 @@ sealed.
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from ..layers import Lesson
+
+# A staged lesson must have corroborated itself this many times before it
+# earns a sealed DNA layer. One-off runtime noise does not get inherited
+# forever; a *pattern* does. Mirrors ``Hyperparameters
+# .semantic_min_evidence_for_promotion`` (the genome default lives here so
+# distill stays a pure, hp-free function the eval harness can call).
+MIN_SEMANTIC_EVIDENCE = 3
+# A single generation cannot bloat the child's DNA: only the strongest
+# handful of staged lessons are promoted, the rest expire with the window.
+MAX_PROMOTED_SEMANTIC = 8
+# Only these map onto LessonKind safely; anything else is dropped (a staged
+# entry can never smuggle in an unknown lesson kind).
+_PROMOTABLE_KINDS = {"avoid", "prefer", "timing", "calibration"}
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 class DistillationError(Exception):
@@ -28,6 +45,8 @@ def distill(
     dead_ends: set[str],
     successful_strategy_id: str | None,
     profit_usdc: float,
+    staged_semantic: list[dict[str, Any]] | None = None,
+    min_semantic_evidence: int = MIN_SEMANTIC_EVIDENCE,
 ) -> list[Lesson]:
     """Produce a small, high-confidence lesson set from what actually
     happened. Deterministic; conservative; legible."""
@@ -83,6 +102,51 @@ def distill(
                 payload={"strategy_id": successful_strategy_id,
                          "profit_usdc": round(profit_usdc, 2)},
                 rationale="distilled from a profit window that survived measurement",
+                born_generation=generation,
+            )
+        )
+
+    # Promote from the semantic staging ground (docs/engineering/03: "the
+    # most useful ones get promoted to a DNA layer at the next
+    # reproduction"). Strongest-evidence first; dedupe by scope so a staged
+    # entry never shadows a deterministic lesson the lineage already learned;
+    # bounded so one generation cannot bloat the child's DNA.
+    taken_scopes = {l.scope for l in lessons}
+    ranked = sorted(
+        staged_semantic or [],
+        key=lambda s: (int(s.get("evidence", 0)), float(s.get("last_ts", 0.0))),
+        reverse=True,
+    )
+    for s in ranked:
+        if len([l for l in lessons if "-staged-" in l.id]) >= MAX_PROMOTED_SEMANTIC:
+            break
+        kind = str(s.get("kind", ""))
+        scope = str(s.get("scope", "")).strip()
+        statement = str(s.get("statement", "")).strip()
+        evidence = int(s.get("evidence", 0))
+        if (
+            kind not in _PROMOTABLE_KINDS
+            or not scope
+            or not statement
+            or scope in taken_scopes
+            or evidence < min_semantic_evidence
+        ):
+            continue
+        taken_scopes.add(scope)
+        slug = _SLUG_RE.sub("-", scope.lower()).strip("-") or "scope"
+        payload = dict(s.get("payload") or {})
+        payload["staged_evidence"] = evidence
+        lessons.append(
+            Lesson(
+                id=f"g{generation}-staged-{slug}",
+                kind=kind,  # validated against _PROMOTABLE_KINDS above
+                scope=scope,
+                statement=statement,
+                payload=payload,
+                rationale=(
+                    f"promoted from the semantic staging ground after "
+                    f"{evidence} corroborating runtime observations"
+                ),
                 born_generation=generation,
             )
         )

@@ -93,6 +93,7 @@ def reproduce(
     dead_ends: set[str],
     successful_strategy_id: str | None,
     profit_usdc: float,
+    staged_semantic: list[dict[str, Any]] | None = None,
     parent_balance_usdc: float,
     minimum_viable_usdc: float,
     profit_transfer_fraction: float,
@@ -116,6 +117,7 @@ def reproduce(
         dead_ends=dead_ends,
         successful_strategy_id=successful_strategy_id,
         profit_usdc=profit_usdc,
+        staged_semantic=staged_semantic,
     )
     new_blob = serialize_lessons(new_lessons)
 
