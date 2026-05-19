@@ -34,7 +34,7 @@ def snapshot(supervisor: Supervisor) -> dict[str, Any]:
     handles = list(supervisor._darwins.values())  # noqa: SLF001
     edges = list(supervisor._lineage)  # noqa: SLF001
     return {
-        "schema": "darwin-platform.snapshot/1",
+        "schema": "darwin-platform.snapshot/2",
         "captured_at": time.time(),
         "darwins": [asdict(supervisor._status(h)) for h in handles],  # noqa: SLF001
         "lineage_edges": [
@@ -46,6 +46,7 @@ def snapshot(supervisor: Supervisor) -> dict[str, Any]:
             }
             for e in edges
         ],
+        "alerts": [a.to_dict() for a in supervisor.monitor.all_alerts()],
     }
 
 

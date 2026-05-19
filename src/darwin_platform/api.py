@@ -29,6 +29,7 @@ except ImportError as exc:  # pragma: no cover
         "`pip install darwin-dna[platform]`"
     ) from exc
 
+from .monitoring import Severity
 from .snapshot import snapshot as build_snapshot
 from .supervisor import Supervisor, SupervisorError, UnknownDarwin
 
@@ -241,6 +242,45 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
             return await _sup(request).events(darwin_id, limit=limit, offset=offset)
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
+
+    # -- alerts (doc 08: quotas + anomaly detection) ----------------------
+    def _parse_severity(value: str | None) -> Severity | None:
+        if value is None or value == "":
+            return None
+        try:
+            return Severity(value)
+        except ValueError:
+            raise HTTPException(400, f"unknown severity: {value!r}")
+
+    @app.get("/darwins/{darwin_id}/alerts")
+    async def darwin_alerts(
+        darwin_id: str,
+        request: Request,
+        min_severity: str | None = Query(None),
+        since: float | None = Query(None),
+        limit: int | None = Query(None, ge=1, le=10_000),
+    ) -> dict[str, Any]:
+        sev = _parse_severity(min_severity)
+        try:
+            rows = await _sup(request).alerts(
+                darwin_id, min_severity=sev, since=since, limit=limit
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {"darwin_id": darwin_id, "alerts": rows}
+
+    @app.get("/platform/alerts")
+    async def fleet_alerts(
+        request: Request,
+        min_severity: str | None = Query(None),
+        since: float | None = Query(None),
+        limit: int | None = Query(None, ge=1, le=10_000),
+    ) -> dict[str, Any]:
+        sev = _parse_severity(min_severity)
+        rows = await _sup(request).fleet_alerts(
+            min_severity=sev, since=since, limit=limit
+        )
+        return {"alerts": rows}
 
     # -- snapshot (ops-side; not in doc 08) -------------------------------
     @app.get("/platform/snapshot")

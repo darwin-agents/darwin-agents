@@ -259,12 +259,13 @@ async def test_snapshot_captures_running_state(supervisor: Supervisor) -> None:
     )
 
     snap = snapshot(supervisor)
-    assert snap["schema"] == "darwin-platform.snapshot/1"
+    assert snap["schema"] == "darwin-platform.snapshot/2"
     ids = {d["darwin_id"] for d in snap["darwins"]}
     assert ids == {a.darwin_id, b.darwin_id}
     # Lineage edges may or may not exist (depends on whether either Darwin
     # has reproduced); the field is always present.
     assert "lineage_edges" in snap
+    assert "alerts" in snap
 
 
 async def test_router_classifies_and_notifies_once(supervisor: Supervisor) -> None:

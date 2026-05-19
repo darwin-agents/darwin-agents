@@ -183,5 +183,6 @@ async def test_snapshot_endpoint(client) -> None:
     await c.post("/darwins", json={"opening_usdc": 60.0})
     r = await c.get("/platform/snapshot")
     body = r.json()
-    assert body["schema"] == "darwin-platform.snapshot/1"
+    assert body["schema"] == "darwin-platform.snapshot/2"
     assert len(body["darwins"]) == 1
+    assert "alerts" in body
