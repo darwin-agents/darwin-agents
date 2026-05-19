@@ -55,9 +55,14 @@ class FakeStack:
     kill switch, post revenue, read the audit log) after boot."""
 
     def __init__(self, *, opening_usdc: float, clock: Callable[[], float],
-                 captcha_every: int = 7, escalation_auto: str | None = "approve"):
+                 captcha_every: int = 7, escalation_auto: str | None = "approve",
+                 signer: SigningService | None = None):
         self.clock = clock
-        self.signer = SigningService()
+        # The platform's signing key. Real deployments have one HSM-held key;
+        # callers (e.g. the supervisor hosting a fleet) inject the shared
+        # instance so every Darwin's manifest is signed by the same key.
+        # Default = own key, fine for single-Darwin tests.
+        self.signer = signer or SigningService()
         self.kill = KillFlag()
         self.pause = PauseFlag()
         self.audit_sink = MemoryAuditSink()
@@ -100,13 +105,17 @@ class FakeStack:
 def make_platform(
     *, opening_usdc: float = 100.0, clock: Callable[[], float] = time.time,
     captcha_every: int = 7, escalation_auto: str | None = "approve",
+    signer: SigningService | None = None,
 ) -> tuple[Platform, FakeStack]:
     """One-call fake world. Returns (platform, stack); keep the stack to
     drive and inspect the world during a run. ``escalation_auto`` controls
-    the unattended owner-response policy (default: approve)."""
+    the unattended owner-response policy (default: approve). ``signer``
+    overrides the per-stack key so a multi-Darwin host (e.g. the platform
+    Supervisor) can share one platform-side signing identity."""
     stack = FakeStack(opening_usdc=opening_usdc, clock=clock,
                       captcha_every=captcha_every,
-                      escalation_auto=escalation_auto)
+                      escalation_auto=escalation_auto,
+                      signer=signer)
     return stack.platform(), stack
 
 

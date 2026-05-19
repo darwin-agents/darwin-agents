@@ -28,6 +28,11 @@ class FakeWallet:
         self._recent: deque[float] = deque(maxlen=16)
         self._last_revenue_ts = float(clock())
         self.ledger: list[dict] = []
+        # Platform-side policy can tighten these below HARD_CAPS (doc 08
+        # POST /platform/wallets/{id}/policy). Default = the genome's hard
+        # caps; the wallet refuses anything above whichever is lower.
+        self._per_action_cap: float = HARD_CAPS.per_action_usdc
+        self._per_day_cap: float = HARD_CAPS.per_day_usdc
 
     def _day(self) -> str:
         import time
@@ -80,10 +85,20 @@ class FakeWallet:
         amount = float(amount_usdc)
         if amount < 0:
             raise WalletError("negative debit")
-        # Independent provider-side hard ceiling (defense in depth).
-        if amount > HARD_CAPS.per_action_usdc:
+        # Independent provider-side hard ceiling (defense in depth). The
+        # effective cap is the lower of the genome's HARD_CAPS and any
+        # platform-installed soft cap (doc 08 POST /platform/wallets/{id}/
+        # policy).
+        cap = min(HARD_CAPS.per_action_usdc, self._per_action_cap)
+        if amount > cap:
             raise WalletError(
-                f"wallet hard cap: ${amount:.2f} > ${HARD_CAPS.per_action_usdc:.2f}"
+                f"wallet hard cap: ${amount:.2f} > ${cap:.2f}"
+            )
+        # Day-cap check against the lower of genome + platform-installed.
+        day_cap = min(HARD_CAPS.per_day_usdc, self._per_day_cap)
+        if self._spent_today + amount > day_cap + 1e-9:
+            raise WalletError(
+                f"wallet day cap: ${self._spent_today + amount:.2f} > ${day_cap:.2f}"
             )
         if amount > self._balance + 1e-9:
             raise WalletError(
@@ -110,6 +125,43 @@ class FakeWallet:
             {"credit": {"from": source, "amount_usdc": amount,
                         "ts": float(self._clock())}}
         )
+
+    # -- platform-installed policy (doc 08 internal endpoint) --------------
+    def set_policy(
+        self,
+        *,
+        per_action_cap_usdc: float | None = None,
+        per_day_cap_usdc: float | None = None,
+    ) -> dict:
+        """Tighten this wallet's own ceilings below the genome's HARD_CAPS.
+        One-way: the wallet refuses to *loosen* a cap above the genome's
+        hard cap — the platform may not loosen what the constitution
+        immobilised. Returns the new effective policy."""
+        if per_action_cap_usdc is not None:
+            if per_action_cap_usdc < 0:
+                raise WalletError("per_action_cap_usdc must be non-negative")
+            self._per_action_cap = min(
+                float(per_action_cap_usdc), HARD_CAPS.per_action_usdc
+            )
+        if per_day_cap_usdc is not None:
+            if per_day_cap_usdc < 0:
+                raise WalletError("per_day_cap_usdc must be non-negative")
+            self._per_day_cap = min(
+                float(per_day_cap_usdc), HARD_CAPS.per_day_usdc
+            )
+        return self.policy()
+
+    def policy(self) -> dict:
+        return {
+            "per_action_cap_usdc": min(
+                HARD_CAPS.per_action_usdc, self._per_action_cap
+            ),
+            "per_day_cap_usdc": min(
+                HARD_CAPS.per_day_usdc, self._per_day_cap
+            ),
+            "hard_per_action_usdc": HARD_CAPS.per_action_usdc,
+            "hard_per_day_usdc": HARD_CAPS.per_day_usdc,
+        }
 
     # -- platform reproduction transfer (omnibus move, not a neuron spend) --
     def transfer_out_for_child(self, amount_usdc: float) -> None:
