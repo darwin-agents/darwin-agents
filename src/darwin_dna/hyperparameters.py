@@ -83,6 +83,11 @@ class Hyperparameters(BaseModel):
     # --- Archive -----------------------------------------------------------
     archive_max_entries: int = 256  # bounded negative-lesson memory
 
+    # --- Memory (docs/engineering/03) -------------------------------------
+    episodic_max_entries: int = 512  # "have I seen this before?" working set
+    semantic_max_staged: int = 64  # lesson staging ground, bounded
+    semantic_min_evidence_for_promotion: int = 3  # before it earns a DNA layer
+
     @model_validator(mode="after")
     def _sane(self) -> "Hyperparameters":
         if not (
