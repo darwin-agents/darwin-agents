@@ -246,6 +246,39 @@ class DarwinRuntime:
                 if until is not None and until():
                     break
 
+                # Kill is sacred (doc 09: honored within 5s) and must be
+                # polled at the loop boundary too — a paused Darwin must not
+                # be a Darwin shielded from the kill switch. Polling here
+                # before the pause check ensures a kill flipped *during* a
+                # pause halts on the next drive instead of indefinitely
+                # parking. The internal runner polls kill again at every
+                # node boundary; this is the outer-loop heartbeat boundary.
+                self.kill.check()
+
+                # Owner/supervisor pause (doc 09 level-3). The loop boundary
+                # is a safe checkpoint — the previous heartbeat checkpointed
+                # at every node. Halt here and return WITHOUT dying: the same
+                # life resumes from this checkpoint when ``run`` is next
+                # driven and the flag has cleared. Distinct from kill, which
+                # is terminal and unwinds via KillSignal.
+                if self.pause.paused():
+                    if not self.state.paused:
+                        self.state.paused = True
+                        self.audit.log_event(
+                            "owner_action",
+                            {"kind": "pause",
+                             "reason": self.pause.reason() or "owner paused",
+                             "tick": self.state.tick},
+                        )
+                        self._maybe_anchor()  # seal the chain at the pause
+                    break
+                if self.state.paused:  # the flag was lifted — resume the life
+                    self.state.paused = False
+                    self.audit.log_event(
+                        "owner_action",
+                        {"kind": "resume", "tick": self.state.tick},
+                    )
+
                 self.state.days_elapsed = (
                     self._clock() - self.identity.birth_ts
                 ) / 86_400.0
@@ -305,6 +338,7 @@ class DarwinRuntime:
             parent_balance_usdc=self.state.balance_usdc,
             minimum_viable_usdc=self._hp.minimum_viable_balance_usdc,
             profit_transfer_fraction=self._hp.profit_transfer_fraction,
+            generation_soft_cap=self._hp.generation_soft_cap,
             signer=self._p.signer,
             spawner=self._p.spawner,
             audit=self.audit,
