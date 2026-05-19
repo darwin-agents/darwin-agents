@@ -37,6 +37,8 @@ from typing import Any, Callable
 from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_fakes import FakeStack, make_child_platform
 
+from .escalation import EscalationRouter, NotificationSink, RoutedTicket
+
 
 # -- errors ----------------------------------------------------------------
 class SupervisorError(Exception):
@@ -97,6 +99,9 @@ class _Handle:
     # Tickets we have already routed to the genome's inbox so we don't
     # double-respond. Indexed by ticket id.
     handled_responses: set[str] = field(default_factory=set)
+    # Cursor into stack.escalation.tickets; new posts past this index get
+    # registered with the platform router on the next heartbeat boundary.
+    escalation_observed: int = 0
 
 
 # -- the supervisor --------------------------------------------------------
@@ -113,6 +118,7 @@ class Supervisor:
         *,
         heartbeat_seconds: float = 0.001,
         clock: Callable[[], float] = time.time,
+        notification_sink: NotificationSink | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -122,6 +128,10 @@ class Supervisor:
         self._darwins: dict[str, _Handle] = {}
         self._lineage: list[LineageEdge] = []
         self._closed = False
+        # The platform-side escalation router (doc 08). Tickets the genome
+        # posts to its inbox get observed at the heartbeat boundary, routed
+        # through this object, and notified via the (optional) sink.
+        self._router = EscalationRouter(sink=notification_sink, clock=clock)
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -207,11 +217,15 @@ class Supervisor:
         decision: str,
         data: dict[str, Any] | None = None,
     ) -> None:
-        """Route an owner decision to the genome's escalation inbox."""
+        """Route an owner decision to the genome's escalation inbox AND
+        record it on the platform-side router. Two writes — the inbox is
+        what the genome polls in ``perceive``; the router is what the
+        dashboard reads. They must agree."""
         if decision not in ("approve", "deny", "data"):
             raise SupervisorError(f"unknown decision: {decision}")
         h = self._get(darwin_id)
         h.stack.escalation.respond(escalation_id, decision, data or {})
+        self._router.mark_responded(escalation_id, decision, data or {})
         h.handled_responses.add(escalation_id)
 
     # -- lineage (doc 08: GET /darwins/{id}/lineage) ----------------------
@@ -279,15 +293,31 @@ class Supervisor:
         }
 
     # -- escalation inbox view (not a doc-08 endpoint; useful to UIs) -----
-    async def open_escalations(self, darwin_id: str) -> list[dict[str, Any]]:
-        """The tickets posted by the genome that the supervisor has not yet
-        responded to. Lets a real owner UI render the inbox."""
-        h = self._get(darwin_id)
+    async def open_escalations(
+        self, darwin_id: str, *, include_resolved: bool = False
+    ) -> list[dict[str, Any]]:
+        """Open (and optionally resolved) tickets the platform-side router
+        has classified for this Darwin. Each row carries the ticket class,
+        deadline, age, remaining seconds, and any owner response — exactly
+        the shape an owner dashboard needs to render countdowns."""
+        self._get(darwin_id)  # validate id (raises UnknownDarwin)
+        now = self._clock()
         return [
-            dict(t)
-            for t in h.stack.escalation.tickets
-            if t.get("ticket") and t["ticket"] not in h.handled_responses
+            tk.to_dict(now)
+            for tk in self._router.for_darwin(
+                darwin_id, include_resolved=include_resolved
+            )
         ]
+
+    async def get_escalation(
+        self, darwin_id: str, escalation_id: str
+    ) -> dict[str, Any]:
+        """One-ticket detail. 404-ish (UnknownDarwin / KeyError) on miss."""
+        self._get(darwin_id)
+        tk = self._router.get(escalation_id)
+        if tk is None or tk.darwin_id != darwin_id:
+            raise SupervisorError(f"unknown escalation: {escalation_id}")
+        return tk.to_dict(self._clock())
 
     # -- supervisor shutdown ----------------------------------------------
     async def shutdown(self, *, kill_running: bool = True) -> None:
@@ -311,6 +341,12 @@ class Supervisor:
     # -- introspection ----------------------------------------------------
     def list_ids(self) -> list[str]:
         return list(self._darwins)
+
+    @property
+    def router(self) -> EscalationRouter:
+        """Read-only handle for ops/snapshots. Mutating the router from
+        outside the supervisor is supported but not recommended."""
+        return self._router
 
     # -- internals --------------------------------------------------------
     def _get(self, darwin_id: str) -> _Handle:
@@ -337,11 +373,7 @@ class Supervisor:
             tick=int(st.tick),
             days_elapsed=float(st.days_elapsed),
             open_escalations=len(
-                [
-                    t
-                    for t in h.stack.escalation.tickets
-                    if t.get("ticket") and t["ticket"] not in h.handled_responses
-                ]
+                self._router.for_darwin(h.darwin_id, include_resolved=False)
             ),
         )
 
@@ -371,6 +403,9 @@ class Supervisor:
                 # generation — this is what a real platform's supervisor does
                 # in response to its signing endpoint being called.
                 self._observe_children(handle)
+                # And any new tickets the genome posted during this tick get
+                # classified + notified by the platform router.
+                self._observe_escalations(handle)
                 if not runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)
@@ -411,6 +446,31 @@ class Supervisor:
             if child_id not in self._darwins:
                 self._boot_child(parent, record, child_id)
         parent.children_observed = len(spawner.children)
+
+    def _observe_escalations(self, handle: _Handle) -> None:
+        """Sweep new tickets the genome posted to its inbox since last
+        heartbeat through the router (classify, deadline, notify). Idempotent
+        on ticket id, so a slow sink that fails to notify the first time
+        gets another chance on the next sweep without re-firing for the
+        ones that did notify."""
+        tickets = handle.stack.escalation.tickets
+        new = tickets[handle.escalation_observed :]
+        if not new:
+            return
+        for payload in new:
+            # The genome's posts include darwin_id; defensively inject the
+            # handle's id when a test or other caller posts a payload without
+            # one, so the router buckets correctly either way.
+            if not payload.get("darwin_id"):
+                payload = {**payload, "darwin_id": handle.darwin_id}
+            try:
+                self._router.register(payload)
+            except Exception:
+                # A malformed payload is a bug in whatever posted it. The
+                # supervisor must not die because of one bad ticket; skip it
+                # and let the others through.
+                continue
+        handle.escalation_observed = len(tickets)
 
     def _boot_child(self, parent: _Handle, record: dict, child_id: str) -> None:
         try:
