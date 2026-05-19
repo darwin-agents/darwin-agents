@@ -23,9 +23,16 @@ dependencies = [
 graph = ["langgraph>=0.2"]
 llm = ["litellm>=1.40", "httpx>=0.27"]
 # The platform control plane (docs/engineering/08): the Darwin Supervisor's
-# HTTP surface. The Supervisor class itself has no FastAPI dependency, so
-# tests can drive it in-process; the extra is only for serving the REST API.
-platform = ["fastapi>=0.110", "httpx>=0.27"]
+# HTTP surface and OpenTelemetry tracing. The Supervisor class itself has no
+# FastAPI dependency and tracing falls back to a NoOp shim when OTel is
+# absent, so tests can drive it on a slim install; the extra is for serving
+# the REST API and producing real spans.
+platform = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
