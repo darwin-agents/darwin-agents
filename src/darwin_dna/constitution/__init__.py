@@ -18,6 +18,7 @@ from .escalation_rules import (
     TicketClass,
     classify_escalation,
     classify_ticket,
+    ticket_timeout_seconds,
 )
 from .forbidden_actions import (
     SANCTIONED_JURISDICTIONS,
@@ -45,6 +46,7 @@ __all__ = [
     "TicketClass",
     "classify_escalation",
     "classify_ticket",
+    "ticket_timeout_seconds",
     "ESCALATION_PER_ACTION_REVIEW_USDC",
     "ForbiddenAction",
     "SANCTIONED_JURISDICTIONS",

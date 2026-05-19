@@ -103,3 +103,11 @@ def classify_ticket(blocker_kind: str) -> tuple[TicketClass, float]:
     Pure; deterministic; total (every input yields a class)."""
     klass = _BLOCKER_TO_CLASS.get(blocker_kind, TicketClass.INFO)
     return klass, _TICKET_TIMEOUT_SECONDS[klass]
+
+
+def ticket_timeout_seconds(klass: TicketClass) -> float:
+    """Owner-response deadline for a given ticket class. The genome enforces
+    this from inside (perceive sweeps timed-out tickets to a deterministic
+    deny); the platform reads it to surface countdowns and route notifications
+    without duplicating the constants."""
+    return _TICKET_TIMEOUT_SECONDS[klass]
