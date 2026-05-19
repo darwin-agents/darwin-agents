@@ -217,10 +217,16 @@ async def test_respond_escalation_routes_to_inbox() -> None:
         status = await sup.spawn(opening_usdc=80.0, escalation_auto=None)
         h = sup._darwins[status.darwin_id]  # noqa: SLF001
         # Post a synthetic ticket directly onto the inbox so the test does
-        # not need to wait for the genome to file a real one.
-        h.stack.escalation.post({"ticket": "T-1", "kind": "approval"})
+        # not need to wait for the genome to file a real one. Includes the
+        # ticket_class so the platform router can pick the right deadline.
+        h.stack.escalation.post(
+            {"ticket": "T-1", "neuron": "x", "ticket_class": "approval"}
+        )
+        # The supervisor's drive task observes new inbox posts at the
+        # heartbeat boundary; wait for the router to register T-1.
+        await _wait_until(lambda: sup.router.get("T-1") is not None)
         open_tickets = await sup.open_escalations(status.darwin_id)
-        assert any(t.get("ticket") == "T-1" for t in open_tickets)
+        assert any(t["ticket_id"] == "T-1" for t in open_tickets)
 
         await sup.respond_escalation(
             status.darwin_id,
@@ -232,7 +238,7 @@ async def test_respond_escalation_routes_to_inbox() -> None:
         assert "T-1" in h.handled_responses
         # And ``open_escalations`` no longer surfaces it.
         still_open = await sup.open_escalations(status.darwin_id)
-        assert all(t.get("ticket") != "T-1" for t in still_open)
+        assert all(t["ticket_id"] != "T-1" for t in still_open)
     finally:
         await sup.shutdown()
 
@@ -259,6 +265,119 @@ async def test_snapshot_captures_running_state(supervisor: Supervisor) -> None:
     # Lineage edges may or may not exist (depends on whether either Darwin
     # has reproduced); the field is always present.
     assert "lineage_edges" in snap
+
+
+async def test_router_classifies_and_notifies_once(supervisor: Supervisor) -> None:
+    """A new ticket on the inbox flows through the router, gets enriched
+    with class + deadline, and triggers a single notification — even if the
+    drive loop observes the inbox multiple times."""
+    status = await supervisor.spawn(opening_usdc=60.0, escalation_auto=None)
+    h = supervisor._darwins[status.darwin_id]  # noqa: SLF001
+    h.stack.escalation.post(
+        {
+            "ticket": "T-cap",
+            "neuron": "browser.operator",
+            "ticket_class": "captcha",
+            "detail": {"site": "example.com"},
+        }
+    )
+    await _wait_until(lambda: supervisor.router.get("T-cap") is not None)
+
+    # Class survived registration; deadline matches the constitution.
+    tk = supervisor.router.get("T-cap")
+    assert tk is not None
+    assert tk.ticket_class.value == "captcha"
+    # Captcha class is 15 minutes per the constitution.
+    assert (tk.deadline_ts - tk.opened_ts) == pytest.approx(15 * 60.0)
+    assert tk.notification_sent_ts is not None
+
+    # Idempotency: ticking past the post should not re-notify. Let several
+    # cycles elapse and then check the LogNotificationSink's call count.
+    sink = supervisor.router.sink
+    assert any(n["ticket_id"] == "T-cap" for n in sink.notifications)
+    initial = sum(1 for n in sink.notifications if n["ticket_id"] == "T-cap")
+    await asyncio.sleep(0.05)
+    final = sum(1 for n in sink.notifications if n["ticket_id"] == "T-cap")
+    assert final == initial == 1
+
+
+async def test_router_marks_responded_and_drops_from_open() -> None:
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status = await sup.spawn(opening_usdc=60.0, escalation_auto=None)
+        h = sup._darwins[status.darwin_id]  # noqa: SLF001
+        h.stack.escalation.post(
+            {"ticket": "T-2", "neuron": "x", "ticket_class": "approval"}
+        )
+        await _wait_until(lambda: sup.router.get("T-2") is not None)
+
+        await sup.respond_escalation(
+            status.darwin_id, escalation_id="T-2", decision="approve",
+            data={"note": "ok"},
+        )
+        tk = sup.router.get("T-2")
+        assert tk is not None
+        assert tk.status.value == "responded"
+        assert tk.response_decision == "approve"
+
+        # Open list filters it out; including resolved brings it back.
+        open_now = await sup.open_escalations(status.darwin_id)
+        assert all(t["ticket_id"] != "T-2" for t in open_now)
+        all_now = await sup.open_escalations(
+            status.darwin_id, include_resolved=True
+        )
+        assert any(t["ticket_id"] == "T-2" for t in all_now)
+    finally:
+        await sup.shutdown()
+
+
+async def test_router_marks_expired_observationally() -> None:
+    """Past-deadline tickets get an EXPIRED label from the router, but the
+    router does NOT impose the genome's auto-deny — that's perceive's job."""
+    # Drive the router with a controllable clock so we can step past the
+    # deadline without sleeping for 15 real minutes.
+    now = [1_700_000_000.0]
+    sup = Supervisor(heartbeat_seconds=0.0, clock=lambda: now[0])
+    try:
+        status = await sup.spawn(opening_usdc=60.0, escalation_auto=None)
+        h = sup._darwins[status.darwin_id]  # noqa: SLF001
+        h.stack.escalation.post(
+            {"ticket": "T-old", "neuron": "x", "ticket_class": "captcha"}
+        )
+        await _wait_until(lambda: sup.router.get("T-old") is not None)
+        assert sup.router.get("T-old").status.value == "open"
+
+        # Step the clock past the captcha 15-minute deadline.
+        now[0] += 16 * 60.0
+        tk = sup.router.get("T-old")
+        assert tk.status.value == "expired"
+        # ``open_escalations`` still surfaces it (still actionable until the
+        # genome's perceive sweeps it next heartbeat).
+        rows = await sup.open_escalations(status.darwin_id)
+        assert any(t["ticket_id"] == "T-old" for t in rows)
+    finally:
+        await sup.shutdown()
+
+
+async def test_router_uses_pluggable_sink() -> None:
+    """A real deployment swaps in a Twilio/FCM sink; tests verify the hook."""
+    calls: list[str] = []
+
+    class CountingSink:
+        def notify(self, ticket) -> None:
+            calls.append(ticket.ticket_id)
+
+    sup = Supervisor(heartbeat_seconds=0.0, notification_sink=CountingSink())
+    try:
+        status = await sup.spawn(opening_usdc=60.0, escalation_auto=None)
+        h = sup._darwins[status.darwin_id]  # noqa: SLF001
+        h.stack.escalation.post(
+            {"ticket": "T-sink", "neuron": "x", "ticket_class": "info"}
+        )
+        await _wait_until(lambda: "T-sink" in calls)
+        assert calls == ["T-sink"]
+    finally:
+        await sup.shutdown()
 
 
 async def test_shutdown_kills_remaining(supervisor: Supervisor) -> None:

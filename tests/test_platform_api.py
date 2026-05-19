@@ -97,10 +97,23 @@ async def test_escalation_response_endpoint(client) -> None:
     )
     did = r.json()["darwin_id"]
     h = sup._darwins[did]  # noqa: SLF001
-    h.stack.escalation.post({"ticket": "T-9", "kind": "approval"})
+    h.stack.escalation.post(
+        {"ticket": "T-9", "neuron": "browser.operator", "ticket_class": "approval"}
+    )
+    await _wait_until(lambda: sup.router.get("T-9") is not None)
 
     r = await c.get(f"/darwins/{did}/escalations")
-    assert any(t["ticket"] == "T-9" for t in r.json()["open"])
+    body = r.json()
+    rows = body["tickets"]
+    t9 = next(t for t in rows if t["ticket_id"] == "T-9")
+    assert t9["ticket_class"] == "approval"
+    # Approval class is 24h per the constitution.
+    assert t9["remaining_seconds"] == pytest.approx(24 * 3600.0, rel=0.01)
+
+    # Per-ticket detail endpoint.
+    r = await c.get(f"/darwins/{did}/escalations/T-9")
+    assert r.status_code == 200
+    assert r.json()["ticket_id"] == "T-9"
 
     r = await c.post(
         f"/darwins/{did}/escalations/T-9/respond",
@@ -109,7 +122,14 @@ async def test_escalation_response_endpoint(client) -> None:
     assert r.status_code == 200
 
     r = await c.get(f"/darwins/{did}/escalations")
-    assert all(t["ticket"] != "T-9" for t in r.json()["open"])
+    assert all(t["ticket_id"] != "T-9" for t in r.json()["tickets"])
+
+    # include_resolved brings it back.
+    r = await c.get(f"/darwins/{did}/escalations", params={"include_resolved": True})
+    rows = r.json()["tickets"]
+    t9 = next(t for t in rows if t["ticket_id"] == "T-9")
+    assert t9["status"] == "responded"
+    assert t9["response"]["decision"] == "approve"
 
 
 async def test_invalid_escalation_decision_400(client) -> None:

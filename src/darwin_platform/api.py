@@ -182,12 +182,33 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         return {"status": "responded"}
 
     @app.get("/darwins/{darwin_id}/escalations")
-    async def list_escalations(darwin_id: str, request: Request) -> dict[str, Any]:
+    async def list_escalations(
+        darwin_id: str,
+        request: Request,
+        include_resolved: bool = Query(False),
+    ) -> dict[str, Any]:
         try:
-            tickets = await _sup(request).open_escalations(darwin_id)
+            tickets = await _sup(request).open_escalations(
+                darwin_id, include_resolved=include_resolved
+            )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
-        return {"darwin_id": darwin_id, "open": tickets}
+        return {
+            "darwin_id": darwin_id,
+            "include_resolved": include_resolved,
+            "tickets": tickets,
+        }
+
+    @app.get("/darwins/{darwin_id}/escalations/{escalation_id}")
+    async def get_escalation(
+        darwin_id: str, escalation_id: str, request: Request
+    ) -> dict[str, Any]:
+        try:
+            return await _sup(request).get_escalation(darwin_id, escalation_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(404, str(exc))
 
     # -- lineage / ledger / events ----------------------------------------
     @app.get("/darwins/{darwin_id}/lineage")
