@@ -69,6 +69,13 @@ class FakeLLM:
                         "diff": f"+    # {fc}: take the cheaper fallback route\n",
                     }
                 ],
+                # The executable form the harness actually runs (the diff
+                # above travels only for audit/legibility).
+                "behavior_delta": {
+                    "kind": "backoff",
+                    "failure_class": fc,
+                    "after_failures": 2,
+                },
                 "cost_usdc": cost,
             }
 

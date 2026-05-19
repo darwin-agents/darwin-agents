@@ -22,12 +22,14 @@ from ..identity import Identity
 from ..layers import LayerStack
 from ..machinery.audit_logger import AuditLogger
 from ..machinery.kill_switch import KillSignal, KillSwitch
+from ..machinery.ledger import Ledger
 from ..machinery.llm_router import LLMRouter
 from ..manifest import Manifest
 from ..neurons import NeuronContext, build_catalog
 from ..orchestrator_skeleton import OrchestratorContext, OrchestratorState, build_graph
 from ..signature import load_platform_public_key
 from ..strategies import founding_strategy
+from .archive import MutationArchive
 from .reproduction import ChildSpawner, PlatformSigner, reproduce
 
 
@@ -111,6 +113,8 @@ class DarwinRuntime:
 
         self.audit = AuditLogger(identity.darwin_id, platform.audit_sink)
         self.kill = KillSwitch(platform.kill_source)
+        self.ledger = Ledger(identity.darwin_id)
+        self.archive = MutationArchive(hp.archive_max_entries)
         self.llm = LLMRouter(platform.llm_transport, hp, clock=clock)
         self.catalog = build_catalog(
             wallet=platform.wallet, provision=platform.provision
@@ -147,6 +151,8 @@ class DarwinRuntime:
             hp=hp,
             escalation=platform.escalation,
             checkpoint=platform.checkpoint,
+            ledger=self.ledger,
+            archive=self.archive,
             build_neuron_context=self._build_neuron_context,
             clock=clock,
         )

@@ -10,6 +10,57 @@ and resolving escalations deterministically are both that kind of check.
 
 from __future__ import annotations
 
+from ...machinery.ledger import LedgerError
+
+
+def _reconcile_ledger(state, ctx) -> bool:
+    """Journal new authoritative wallet movements into the double-entry
+    ledger and reconcile it against the wallet (doc 05). A drift beyond
+    tolerance is not recoverable — the genome halts itself gracefully (the
+    sim's I7 invariant, now enforced from inside the organism). Returns True
+    if it triggered a halt."""
+    wallet = ctx.wallet
+    ledger = ctx.ledger
+    movements_fn = getattr(wallet, "movements", None)
+    if ledger is None or not callable(movements_fn):
+        return False  # no authoritative feed → nothing to reconcile against
+    movs = movements_fn()
+    now = float(ctx.clock())
+    bal = float(wallet.balance_usdc())
+
+    if not ledger.seeded:
+        # Derive the opening so a mid-life boot reconciles by construction;
+        # divergence is then anything that moves the wallet without a
+        # corresponding movement in the feed.
+        net = 0.0
+        for mv in movs:
+            if "credit" in mv:
+                net += float(mv["credit"]["amount_usdc"])
+            elif "debit" in mv:
+                net -= float(mv["debit"]["amount_usdc"])
+            elif "reproduction_transfer" in mv:
+                net -= float(mv["reproduction_transfer"]["amount_usdc"])
+        ledger.seed_opening(bal - net, ts=now)
+
+    ledger.journal_new(movs, now=now)
+    try:
+        drift = ledger.reconcile(
+            bal, ctx.hp.ledger_reconciliation_tolerance_usdc
+        )
+    except LedgerError as exc:
+        ctx.audit.log_event("ledger.reconciliation_failed", {"error": str(exc)})
+        state.alive = False
+        state.death_reason = f"ledger reconciliation drift: {exc}"
+        state.route = "check_death"  # funnel into the graceful death sequence
+        return True
+
+    ctx.audit.log_event(
+        "ledger.reconciled",
+        {"drift_usdc": round(drift, 9),
+         "treasury_usdc": ledger.treasury_balance()},
+    )
+    return False
+
 
 def _resolve_escalations(state, ctx) -> None:
     # 1. Owner resolutions since last poll.
@@ -69,6 +120,12 @@ def run(state, ctx):
     ssr = getattr(wallet, "seconds_since_revenue", None)
     if callable(ssr):
         state.seconds_since_revenue = float(ssr())
+
+    # Reconcile the double-entry ledger against the authoritative wallet
+    # every heartbeat (doc 05). A drift beyond tolerance halts the Darwin —
+    # bail out of perceive immediately, the route is already check_death.
+    if _reconcile_ledger(state, ctx):
+        return state
 
     _resolve_escalations(state, ctx)
 

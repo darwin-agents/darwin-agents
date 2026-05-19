@@ -44,6 +44,12 @@ class FakeWallet:
     def balance_usdc(self) -> float:
         return round(self._balance, 6)
 
+    def movements(self) -> list[dict]:
+        """The authoritative movement feed the genome's ledger journals and
+        reconciles against (models the platform's wallet/LiteLLM spend feed,
+        doc 05/13). Returns the live list — the ledger tracks its own cursor."""
+        return self.ledger
+
     def spent_today_usdc(self) -> float:
         self._roll()
         return round(self._spent_today, 6)

@@ -16,6 +16,19 @@ from ...machinery.patch_validator import FileChange, Patch, validate_patch
 
 def run(state, ctx):
     failure_class = state.plan.get("failure_class", "")
+
+    # Don't spend coding-tier budget re-deriving a known dead end (doc 06:
+    # the archive carries negative lessons so the lineage doesn't re-try the
+    # same path).
+    archive = getattr(ctx, "archive", None)
+    if archive is not None and failure_class in archive.dead_ends():
+        ctx.audit.log_event(
+            "mutation.skipped_dead_end", {"failure_class": failure_class}
+        )
+        state.plan = {"action": "sleep", "reason": "known dead end; not re-proposing"}
+        state.route = "check_reproduction"
+        return state
+
     audit_id = ctx.audit.log_intent(
         "mutation.propose", {"failure_class": failure_class}
     )
@@ -57,8 +70,14 @@ def run(state, ctx):
         {"decision": decision.model_dump()},
     )
 
+    if archive is not None:
+        archive.record(failure_class, "proposed", patch.rationale)
+
     if not decision.ok:
         # Rejected patches are archived (negative lesson), never applied.
+        if archive is not None:
+            archive.record(failure_class, "rejected",
+                            decision.reason or "validator rejected")
         ctx.audit.log_event(
             "mutation.archived",
             {"reason": decision.reason, "path": decision.rejected_path},
@@ -67,10 +86,18 @@ def run(state, ctx):
         state.route = "check_reproduction"
         return state
 
+    # The candidate's *executable* form (the diff travels for audit only).
+    # The proposer must supply it — you can only empirically test something
+    # you can run (P5).
+    delta = resp.get("behavior_delta") or {
+        "kind": "backoff", "failure_class": failure_class, "after_failures": 3
+    }
     state.plan = {
         "action": "evaluate_mutation",
         "failure_class": failure_class,
         "patch": patch.model_dump(),
+        "behavior_delta": delta,
+        "recurrence": int(state.recurring_failures.get(failure_class, 1)),
     }
     state.route = "evaluate_mutation"
     return state

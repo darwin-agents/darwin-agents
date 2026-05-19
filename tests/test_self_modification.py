@@ -81,19 +81,46 @@ def test_propose_backs_off_when_coding_tier_unavailable():
     assert st.plan["action"] == "sleep"
 
 
-def test_evaluate_promotes_only_when_patch_targets_the_failure():
+def test_evaluate_promotes_only_on_measured_improvement_not_rationale():
+    # evaluate_mutation now *runs* the candidate through the in-DNA harness;
+    # the rationale string is irrelevant. A backoff that empirically reduces
+    # failures promotes; one that cannot (backs off after more occurrences
+    # than ever happen) is archived — same patch text, opposite verdict.
     ctx = _ctx(_LLM(None))
+    valid_patch = {"rationale": "anything",
+                   "changes": [{"path": "soma/strategies/x.py",
+                                "diff": "+    pass\n"}]}
+
     promote = OrchestratorState()
-    promote.plan = {"failure_class": "flaky_io",
-                    "patch": {"rationale": "address flaky_io by backing off"}}
+    promote.plan = {"failure_class": "flaky_io", "patch": valid_patch,
+                    "recurrence": 10,
+                    "behavior_delta": {"kind": "backoff",
+                                       "failure_class": "flaky_io",
+                                       "after_failures": 2}}
     evaluate_mutation.run(promote, ctx)
     assert promote.route == "apply_mutation"
 
     archive = OrchestratorState()
-    archive.plan = {"failure_class": "flaky_io",
-                    "patch": {"rationale": "unrelated cleanup"}}
+    archive.plan = {"failure_class": "flaky_io", "patch": valid_patch,
+                    "recurrence": 2,  # backoff after 5 never triggers
+                    "behavior_delta": {"kind": "backoff",
+                                       "failure_class": "flaky_io",
+                                       "after_failures": 5}}
     evaluate_mutation.run(archive, ctx)
     assert archive.route == "check_reproduction"
+
+    # A patch the validator rejects must never reach promotion, no matter
+    # what the harness would say.
+    dna = OrchestratorState()
+    dna.plan = {"failure_class": "flaky_io", "recurrence": 10,
+                "patch": {"rationale": "x",
+                          "changes": [{"path": "src/darwin_dna/x.py",
+                                       "diff": "+CAP=9\n"}]},
+                "behavior_delta": {"kind": "backoff",
+                                   "failure_class": "flaky_io",
+                                   "after_failures": 2}}
+    evaluate_mutation.run(dna, ctx)
+    assert dna.route == "check_reproduction"
 
 
 def test_apply_clears_the_recurrence_and_closes_the_gate():

@@ -64,6 +64,8 @@ class OrchestratorContext:
     hp: Any  # Hyperparameters
     escalation: Any  # EscalationInbox: .post(ticket_dict)
     checkpoint: CheckpointStore
+    ledger: Any  # machinery.Ledger — reconciled vs wallet every heartbeat
+    archive: Any  # evolution.MutationArchive — negative-lesson memory
     build_neuron_context: Callable[..., Any]
     clock: Callable[[], float] = time.time
 

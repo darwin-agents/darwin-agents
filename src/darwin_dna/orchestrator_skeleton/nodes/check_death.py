@@ -18,6 +18,17 @@ from __future__ import annotations
 
 def run(state, ctx):
     hp = ctx.hp
+
+    # Honour an already-decided death (e.g. ledger reconciliation drift set by
+    # perceive). check_death is the single funnel into the graceful death
+    # sequence, whatever the trigger.
+    if not state.alive:
+        if not state.death_reason:
+            state.death_reason = "halted"
+        ctx.audit.log_event("death_condition", {"reason": state.death_reason})
+        state.route = "__end__"
+        return state
+
     broke = state.balance_usdc < hp.minimum_viable_balance_usdc
     no_revenue = state.seconds_since_revenue > hp.revenue_grace_window_seconds
 
