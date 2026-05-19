@@ -38,6 +38,14 @@ from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_fakes import FakeStack, make_child_platform
 
 from .escalation import EscalationRouter, NotificationSink, RoutedTicket
+from .monitoring import (
+    Alert,
+    AlertSink,
+    DarwinSignals,
+    Monitor,
+    Quotas,
+    Severity,
+)
 
 
 # -- errors ----------------------------------------------------------------
@@ -102,6 +110,11 @@ class _Handle:
     # Cursor into stack.escalation.tickets; new posts past this index get
     # registered with the platform router on the next heartbeat boundary.
     escalation_observed: int = 0
+    # Cycle counter so the monitor doesn't run every single tick — most
+    # signals (spend velocity over an hour, failure rate, escalation rate)
+    # do not need sub-second resolution.
+    drive_cycles: int = 0
+    auto_paused_for: str | None = None  # alert kind, if we auto-paused
 
 
 # -- the supervisor --------------------------------------------------------
@@ -119,6 +132,10 @@ class Supervisor:
         heartbeat_seconds: float = 0.001,
         clock: Callable[[], float] = time.time,
         notification_sink: NotificationSink | None = None,
+        alert_sink: AlertSink | None = None,
+        quotas: Quotas | None = None,
+        auto_pause_on_critical: bool = False,
+        monitor_every_n_ticks: int = 5,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -132,6 +149,15 @@ class Supervisor:
         # posts to its inbox get observed at the heartbeat boundary, routed
         # through this object, and notified via the (optional) sink.
         self._router = EscalationRouter(sink=notification_sink, clock=clock)
+        # The platform-side anomaly monitor (doc 08/09). Polls each Darwin
+        # every N drive cycles, runs the detectors, dispatches alerts via the
+        # (optional) sink. ``auto_pause_on_critical`` is opt-in: a tight
+        # quota could otherwise auto-pause the fleet on a misconfiguration.
+        self._monitor = Monitor(
+            quotas=quotas, sink=alert_sink, clock=clock
+        )
+        self._auto_pause_on_critical = bool(auto_pause_on_critical)
+        self._monitor_every_n = max(1, int(monitor_every_n_ticks))
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -188,6 +214,10 @@ class Supervisor:
         if h.killed:
             raise SupervisorError(f"darwin {darwin_id} is killed; cannot resume")
         h.stack.pause.resume()
+        # Clear the auto-pause latch so a subsequent CRITICAL can pause again
+        # if the breach is still live. (A repeat breach is a different alert
+        # event from the operator's perspective.)
+        h.auto_paused_for = None
 
     # -- kill (doc 08: POST /darwins/{id}/kill) ---------------------------
     async def kill(self, darwin_id: str, *, reason: str = "owner kill") -> None:
@@ -348,6 +378,37 @@ class Supervisor:
         outside the supervisor is supported but not recommended."""
         return self._router
 
+    @property
+    def monitor(self) -> Monitor:
+        """Read-only handle for ops/snapshots."""
+        return self._monitor
+
+    async def alerts(
+        self,
+        darwin_id: str,
+        *,
+        min_severity: Severity | None = None,
+        since: float | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self._get(darwin_id)
+        rows = self._monitor.alerts_for(
+            darwin_id, min_severity=min_severity, since=since, limit=limit
+        )
+        return [a.to_dict() for a in rows]
+
+    async def fleet_alerts(
+        self,
+        *,
+        min_severity: Severity | None = None,
+        since: float | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self._monitor.all_alerts(
+            min_severity=min_severity, since=since, limit=limit
+        )
+        return [a.to_dict() for a in rows]
+
     # -- internals --------------------------------------------------------
     def _get(self, darwin_id: str) -> _Handle:
         h = self._darwins.get(darwin_id)
@@ -406,6 +467,13 @@ class Supervisor:
                 # And any new tickets the genome posted during this tick get
                 # classified + notified by the platform router.
                 self._observe_escalations(handle)
+                # The monitor records tick freshness on every cycle but only
+                # runs the detectors every N cycles to keep the heartbeat
+                # boundary cheap. Auto-actions are opt-in.
+                handle.drive_cycles += 1
+                self._monitor.observe_tick(handle.darwin_id, runtime.state.tick)
+                if handle.drive_cycles % self._monitor_every_n == 0:
+                    self._run_monitor(handle)
                 if not runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)
@@ -446,6 +514,58 @@ class Supervisor:
             if child_id not in self._darwins:
                 self._boot_child(parent, record, child_id)
         parent.children_observed = len(spawner.children)
+
+    def _signals_for(self, handle: _Handle) -> DarwinSignals:
+        rt = handle.runtime
+        st = rt.state
+        # Ticket open-timestamps from the router so escalation-rate detection
+        # uses the *platform* view (the genome's pending_escalations list is
+        # state-tick-indexed, not wall-clock).
+        opened = tuple(
+            t.opened_ts for t in self._router.all_for_darwin(handle.darwin_id)
+        )
+        return DarwinSignals(
+            darwin_id=handle.darwin_id,
+            now=self._clock(),
+            alive=bool(st.alive),
+            paused=bool(getattr(st, "paused", False)),
+            state_tick=int(st.tick),
+            last_tick_advance_ts=self._monitor.last_tick_advance(handle.darwin_id),
+            movements=tuple(handle.stack.wallet.movements()),
+            dispatches_done=int(st.dispatches_done),
+            successful_dispatches=int(st.successful_dispatches),
+            recurring_failures=dict(st.recurring_failures),
+            ticket_opened_ts=opened,
+        )
+
+    def _run_monitor(self, handle: _Handle) -> None:
+        """Build a signals snapshot, run detectors, optionally auto-pause on
+        a fresh CRITICAL. Auto-pause is gated by ``auto_pause_on_critical``
+        so a misconfigured quota cannot freeze the fleet."""
+        try:
+            signals = self._signals_for(handle)
+        except Exception:
+            return
+        fired = self._monitor.check(signals)
+        if not self._auto_pause_on_critical:
+            return
+        if handle.killed or not handle.runtime.state.alive:
+            return
+        # Pause once per detected CRITICAL kind so a sustained breach doesn't
+        # re-pause an already-paused Darwin forever. The Monitor's dedup
+        # already throttles sink emission; the auto-action gate here is
+        # idempotent per (darwin, kind) and clears on resume.
+        for alert in fired:
+            if alert.severity is not Severity.CRITICAL:
+                continue
+            if handle.auto_paused_for == alert.kind:
+                continue
+            handle.auto_paused_for = alert.kind
+            try:
+                handle.stack.pause.pause(f"auto: {alert.kind} critical")
+            except Exception:
+                handle.auto_paused_for = None
+            break
 
     def _observe_escalations(self, handle: _Handle) -> None:
         """Sweep new tickets the genome posted to its inbox since last
