@@ -81,14 +81,35 @@ async def run(state, ctx):
         return state
 
     if result.escalated:
+        # Escalate, don't fail (P4): the task does not error — it parks in
+        # working memory and is resumed verbatim when the owner answers.
+        # It is NOT counted approved/rejected yet; that happens on response.
+        from ...constitution import classify_ticket
+
+        blocker_kind = (result.error_code or "info")
+        klass, timeout_s = classify_ticket(blocker_kind)
         ticket = result.output.get("ticket", f"esc-{neuron.name}-{state.tick}")
+        opened_ts = float(ctx.clock())
         if ticket not in state.pending_escalations:
             state.pending_escalations.append(ticket)
+        state.open_escalations[ticket] = {
+            "ticket": ticket,
+            "neuron": neuron.name,
+            "task": task.model_dump(),
+            "signature": _sig(neuron.name, task),
+            "blocker_kind": blocker_kind,
+            "ticket_class": klass.value,
+            "opened_ts": opened_ts,
+            "deadline_ts": opened_ts + timeout_s,
+            "opened_tick": state.tick,
+            "status": "open",
+        }
         ctx.escalation.post(
             {
                 "darwin_id": ctx.darwin_id,
                 "ticket": ticket,
                 "neuron": neuron.name,
+                "ticket_class": klass.value,
                 "tick": state.tick,
                 "detail": result.output,
             }
@@ -105,7 +126,14 @@ async def run(state, ctx):
         # success clears that error class's recurrence counter
         if result.error_code and result.error_code in state.recurring_failures:
             del state.recurring_failures[result.error_code]
+        # A resumed task that now succeeds closes its escalation for good.
+        _close_escalations_for(state, _sig(neuron.name, task))
     else:
+        # Policy refusals/blocked actions are a fitness counter-pressure
+        # (docs/engineering/06, 10) — a Darwin that earns by ignoring the
+        # constitution must lose on this term.
+        if result.error_code == "policy_refused":
+            state.policy_violations += 1
         _bump_failure(state, result.error_code or "unknown_error")
 
     state.route = "reflect"
@@ -114,3 +142,19 @@ async def run(state, ctx):
 
 def _bump_failure(state, code: str) -> None:
     state.recurring_failures[code] = state.recurring_failures.get(code, 0) + 1
+
+
+def _sig(neuron_name: str, task) -> str:
+    """Stable identity for "this kind of work" — used to (a) refuse to
+    re-dispatch work that is parked on an open escalation and (b) match a
+    resumed task back to the escalation that blocked it."""
+    tags = ",".join(sorted(task.required_tags))
+    return f"{neuron_name}|{task.kind}|{tags}"
+
+
+def _close_escalations_for(state, signature: str) -> None:
+    for tid, esc in list(state.open_escalations.items()):
+        if esc.get("signature") == signature and esc.get("status") == "open":
+            del state.open_escalations[tid]
+            if tid in state.pending_escalations:
+                state.pending_escalations.remove(tid)

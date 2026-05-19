@@ -35,6 +35,26 @@ def run(state, ctx):
             state.route = "propose_mutation"
             return state
 
+    # Resume beats new work (P4): a parked task whose escalation the owner
+    # just approved is re-dispatched verbatim — the work continues where it
+    # paused, it was never failed.
+    if state.resume_queue:
+        item = state.resume_queue.pop(0)
+        state.plan = {
+            "action": "dispatch",
+            "neuron": item["neuron"],
+            "task": item["task"],
+            "strategy_id": ctx.strategy.spec.id,
+            "resumed_ticket": item.get("ticket"),
+        }
+        state.last_action = f"resume:{item['neuron']}"
+        ctx.audit.log_event(
+            "plan", {"action": "resume", "neuron": item["neuron"],
+                     "ticket": item.get("ticket")}
+        )
+        state.route = "dispatch"
+        return state
+
     obs = StrategyObservation(
         balance_usdc=state.balance_usdc,
         days_elapsed=state.days_elapsed,
@@ -44,6 +64,31 @@ def run(state, ctx):
         available_neurons=frozenset(state.available_neurons),
     )
     action = ctx.strategy.propose(obs)
+
+    # Don't re-dispatch work that is parked on an open escalation — that would
+    # just re-trigger the same blocker. Pause it (wait) until the owner
+    # answers; the resume_queue path above brings it back. This is the
+    # difference between "escalate, don't fail" and "fail in a loop".
+    if action.kind == "dispatch" and action.task is not None:
+        from .dispatch import _sig
+
+        blocked = {
+            e["signature"]
+            for e in state.open_escalations.values()
+            if e.get("status") == "open"
+        }
+        if _sig(action.neuron, action.task) in blocked:
+            state.plan = {
+                "action": "sleep",
+                "reason": f"{action.neuron} task parked on open escalation",
+            }
+            state.last_action = "paused_on_escalation"
+            ctx.audit.log_event(
+                "plan", {"action": "paused_on_escalation",
+                         "neuron": action.neuron}
+            )
+            state.route = "check_reproduction"
+            return state
 
     # Advisory reasoning-tier consult — but NOT when the decision is to wait.
     # A founding Darwin that pays coding/reasoning tokens to "think" while it

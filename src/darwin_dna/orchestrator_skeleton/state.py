@@ -48,6 +48,19 @@ class OrchestratorState(BaseModel):
     pending_capability_requests: list[str] = Field(default_factory=list)
     pending_escalations: list[str] = Field(default_factory=list)
 
+    # escalation pause/resume (P4, docs/engineering/08). A blocked unit of
+    # work does not fail — it parks here until the owner answers, then the
+    # exact task is re-dispatched (resumed). Keyed by ticket id.
+    open_escalations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    resume_queue: list[dict[str, Any]] = Field(default_factory=list)
+
+    # fitness counter-pressures, measured over the window since the last
+    # reproduction (reset there, like profit). These feed the anti-wireheading
+    # terms in fitness (docs/engineering/06, 10) — they must carry real data.
+    escalations_approved: int = 0
+    escalations_rejected: int = 0
+    policy_violations: int = 0
+
     # evolution
     profit_baseline_usdc: float = 0.0  # balance at last reproduction
     starting_capital_usdc: float = 0.0
