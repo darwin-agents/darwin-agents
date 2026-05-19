@@ -195,7 +195,10 @@ class DarwinRuntime:
                     self._clock() - self.identity.birth_ts
                 ) / 86_400.0
 
-                await self._graph.invoke(self.state)
+                # Always rebind: the internal runner mutates state in place,
+                # but the LangGraph runner returns a fresh state object — the
+                # loop must not depend on which engine is wired.
+                self.state = await self._graph.invoke(self.state)
 
                 if self.state.reproduce:
                     self._reproduce()

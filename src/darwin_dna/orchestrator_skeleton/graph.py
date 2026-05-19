@@ -152,11 +152,19 @@ def _build_langgraph(ctx: OrchestratorContext):  # pragma: no cover - optional p
     from langgraph.graph import END as LG_END
     from langgraph.graph import StateGraph
 
-    sg = StateGraph(dict)
+    # The schema MUST be the pydantic model, not bare ``dict``. With a model
+    # schema LangGraph rebuilds state from channels and merges each node's
+    # returned fields; with ``dict`` the updates never propagate (the runner
+    # would return the initial state — a real bug we hit and fixed here).
+    sg = StateGraph(OrchestratorState)
 
     def wrap(name, fn):
-        async def _node(d: dict):
-            st = OrchestratorState.model_validate(d)
+        async def _node(s):
+            # ``s`` is an OrchestratorState (schema-typed). Validate a fresh
+            # copy so node mutation can never alias a LangGraph channel.
+            st = OrchestratorState.model_validate(
+                s.model_dump() if hasattr(s, "model_dump") else s
+            )
             st.note(name)
             out = fn(st, ctx)
             if inspect.isawaitable(out):
@@ -164,7 +172,7 @@ def _build_langgraph(ctx: OrchestratorContext):  # pragma: no cover - optional p
             st = out if out is not None else st
             ctx.checkpoint.save(ctx.darwin_id, name, st.model_dump())
             ctx.kill_switch.check()
-            return st.model_dump()
+            return st.model_dump()  # full overwrite; no reducers, deterministic
 
         return _node
 
@@ -175,12 +183,12 @@ def _build_langgraph(ctx: OrchestratorContext):  # pragma: no cover - optional p
     # The node sets state.route; map it to the next node or to LangGraph END.
     edge_map = {k: k for k in _NODES}
     edge_map[END] = LG_END
+
+    def _route(s) -> str:
+        return s.route if hasattr(s, "route") else s["route"]
+
     for n in _NODES:
-        sg.add_conditional_edges(
-            n,
-            lambda d: OrchestratorState.model_validate(d).route,
-            edge_map,
-        )
+        sg.add_conditional_edges(n, _route, edge_map)
 
     compiled = sg.compile(checkpointer=MemorySaver())
 

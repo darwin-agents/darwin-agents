@@ -53,6 +53,7 @@ class SimReport:
     death_reason: str | None
     timeline: list[dict] = field(default_factory=list)
     invariants_ok: bool = True
+    engine: str = "internal"
 
 
 def _audit(stack):
@@ -126,7 +127,9 @@ def _check_invariants(rt, stack, scenario: Scenario, *, opening: float) -> None:
             raise InvariantError("I8: died without writing final records")
 
 
-async def _run(scenario: Scenario, days: int, *, verbose: bool) -> SimReport:
+async def _run(
+    scenario: Scenario, days: int, *, verbose: bool, engine: str = "internal"
+) -> SimReport:
     start_ts = 1_700_000_000.0
     world = SimWorld(start_ts=start_ts, revenue=scenario.revenue)
     platform, stack = make_platform(
@@ -137,7 +140,8 @@ async def _run(scenario: Scenario, days: int, *, verbose: bool) -> SimReport:
     hp = DEFAULT_HYPERPARAMETERS.model_copy(
         update={"heartbeat_interval_seconds": SIM_HEARTBEAT_SECONDS}
     )
-    rt = boot(platform, hp=hp, clock=world.clock, sleep=world.sleep)
+    rt = boot(platform, hp=hp, clock=world.clock, sleep=world.sleep,
+              engine=engine)
     # Revenue follows *published* content — writing alone earns nothing.
     world.bind(wallet=stack.wallet, content_getter=lambda: rt.state.published_pieces)
 
@@ -212,20 +216,27 @@ async def _run(scenario: Scenario, days: int, *, verbose: bool) -> SimReport:
 
 
 def run_simulation(
-    scenario_name: str = "default", days: int = 90, *, verbose: bool = False
+    scenario_name: str = "default", days: int = 90, *, verbose: bool = False,
+    engine: str = "internal",
 ) -> SimReport:
     scenario = SCENARIOS[scenario_name]
-    return asyncio.run(_run(scenario, days, verbose=verbose))
+    report = asyncio.run(_run(scenario, days, verbose=verbose, engine=engine))
+    report.engine = engine
+    return report
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run a Darwin in the simulated world")
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="default")
+    ap.add_argument("--engine", choices=["internal", "langgraph"],
+                    default="internal")
     args = ap.parse_args()
 
-    print(f"== simulation: {args.scenario}, {args.days} simulated days ==")
-    report = run_simulation(args.scenario, args.days, verbose=True)
+    print(f"== simulation: {args.scenario}, {args.days} simulated days, "
+          f"engine={args.engine} ==")
+    report = run_simulation(args.scenario, args.days, verbose=True,
+                            engine=args.engine)
     print("-" * 56)
     print(
         f"result: alive={report.alive} "
