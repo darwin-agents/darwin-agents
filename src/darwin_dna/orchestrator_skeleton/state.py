@@ -24,6 +24,11 @@ class OrchestratorState(BaseModel):
     tick: int = 0
     alive: bool = True
     halt: bool = False
+    # Owner/supervisor pause (docs/engineering/09 level-3). Distinct from
+    # death: a paused Darwin is still alive — it halts at a checkpoint and
+    # resumes the same life when the flag clears. Deterministically False
+    # for any run nobody pauses, so it does not perturb cross-engine parity.
+    paused: bool = False
     death_reason: str | None = None
     route: str = "perceive"  # set by each node for the next edge
 
