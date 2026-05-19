@@ -20,6 +20,7 @@ from ._base import (
     NeuronResult,
     Plan,
     Task,
+    vault_put,
 )
 
 
@@ -77,10 +78,18 @@ class InfrastructureProvisioner(BaseNeuron):
                 output={"ticket": ticket.id},
             )
 
-        # Persist credentials through the centralized vault path, never inline.
+        # Persist credentials through the centralized vault path, never
+        # inline. Infrastructure connection strings are scoped secrets
+        # (doc 16: ``scoped/infrastructure/``) — write with an explicit tier
+        # so the blast radius is set at write time, never inferred later.
         if context.vault is not None and "creds" in result:
-            context.vault.put(f"infra:{kind}:{result.get('id', 'new')}",
-                              str(result["creds"]))
+            vault_put(
+                context.vault,
+                f"infra:{kind}:{result.get('id', 'new')}",
+                str(result["creds"]),
+                tier="scoped",
+                scope="infrastructure",
+            )
         context.audit.log_outcome(intent, "ok", {"id": result.get("id")})
         return NeuronResult(
             ok=True,

@@ -17,11 +17,18 @@ from ._base import (
     NeuronResult,
     Plan,
     Task,
+    vault_put,
 )
+
+_TIERS = {"public", "scoped", "sensitive"}
 
 
 @runtime_checkable
 class VaultPort(Protocol):
+    # The genome contract is intentionally minimal: every vault backend can
+    # ``put(key, value)``. The tier model (doc 16) rides on top via the
+    # ``ScopedVaultView`` the orchestrator injects; ``vault_put`` bridges the
+    # two so this neuron names a tier without depending on the concrete type.
     def put(self, key: str, value: str) -> None: ...
 
 
@@ -42,10 +49,17 @@ class VaultWriter(BaseNeuron):
     ]
 
     async def plan(self, task: Task, context: NeuronContext) -> Plan:
+        # The caller names the tier; an unrecognised/absent tier is treated as
+        # ``scoped`` — the safe default is the *narrower* blast radius, never
+        # public, and never an implicit sensitive write.
+        tier = str(task.payload.get("tier", "scoped")).lower()
+        payload = dict(task.payload)
+        payload["tier"] = tier if tier in _TIERS else "scoped"
         return Plan(
-            steps=[f"store {task.payload.get('key', '<key>')!r}"],
+            steps=[f"store {task.payload.get('key', '<key>')!r} "
+                   f"@tier={payload['tier']}"],
             est_cost=self.cost_estimate,
-            payload=dict(task.payload),
+            payload=payload,
         )
 
     async def execute(self, plan: Plan, context: NeuronContext) -> NeuronResult:
@@ -57,9 +71,15 @@ class VaultWriter(BaseNeuron):
         vault = context.vault
         if vault is None:
             return NeuronResult(ok=False, error_code="vault_unavailable")
-        intent = context.audit.log_intent("neuron.vault.writer", {"key": key})
+        tier = plan.payload.get("tier", "scoped")
+        scope = plan.payload.get("scope")
+        # The key alone is logged, plus the tier (blast radius is not a
+        # secret); the value never is (P7, doc 16).
+        intent = context.audit.log_intent(
+            "neuron.vault.writer", {"key": key, "tier": tier}
+        )
         try:
-            vault.put(key, str(value))
+            vault_put(vault, key, str(value), tier=tier, scope=scope)
         except Exception as exc:
             context.audit.log_outcome(intent, "fail", {"error": str(exc)})
             return NeuronResult(ok=False, error_code="vault_unavailable")

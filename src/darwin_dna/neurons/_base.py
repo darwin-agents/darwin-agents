@@ -165,3 +165,29 @@ class BaseNeuron:
             {"neuron": self.name, "blocker": blocker.model_dump(), "ticket": ticket.id},
         )
         return ticket
+
+
+def vault_put(
+    vault: Any,
+    key: str,
+    value: str,
+    *,
+    tier: str = "scoped",
+    scope: str | None = None,
+) -> None:
+    """Write a secret through whatever vault handle the neuron was given,
+    naming its tier explicitly (docs/engineering/16).
+
+    In production ``context.vault`` is a ``ScopedVaultView`` that enforces the
+    public/scoped/sensitive model and takes ``tier=``/``scope=``. The neuron
+    must not hard-depend on that concrete type — the genome ``VaultPort``
+    contract only promises ``put(key, value)`` — so this degrades to the bare
+    signature for a plain backend. Either way the tier is *stated* at the
+    write site, never inferred three nodes later."""
+    from ..machinery.vault import VaultTier
+
+    try:
+        vault.put(key, value, tier=VaultTier(tier), scope=scope)
+    except TypeError:
+        # A non-tiered backend: still write, just without the tier metadata.
+        vault.put(key, value)
