@@ -113,3 +113,16 @@ def serialize_lessons(lessons: list[Lesson]) -> bytes:
     """Canonical bytes for a layer's lessons — what the platform hashes and
     signs, and what :meth:`LayerStack.load` re-hashes to detect tampering."""
     return canonical_bytes([l.model_dump() for l in lessons])
+
+
+def deserialize_lessons(blob: bytes) -> list[Lesson]:
+    """Parse a layer blob back into lessons. Used by the reproduction event's
+    layer-compaction step (docs/engineering/06) to fold several already-sealed
+    layers into one. Mirrors exactly the parse :meth:`LayerStack.load` does
+    *after* verification — callers must only pass blobs they have verified."""
+    import json
+
+    raw = json.loads(blob.decode("utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("layer payload must be a list of lessons")
+    return [Lesson.model_validate(x) for x in raw]
