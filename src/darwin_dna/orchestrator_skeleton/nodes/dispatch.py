@@ -14,6 +14,8 @@ not fail the task (P4).
 
 from __future__ import annotations
 
+from ...machinery.audit_logger import AuditError
+
 
 def _select(catalog, required_tags, recency):
     candidates = [
@@ -60,8 +62,16 @@ async def run(state, ctx):
     nctx = ctx.build_neuron_context(neuron.name)
     state.dispatches_done += 1
     try:
-        plan_obj = await neuron.plan(task, nctx)
+        plan_obj = await neuron.plan(task, nctx)  # cheap, no side effects
+        # P8: poll again immediately before the side-effecting call. plan()
+        # may have taken time; a kill that arrived during it must stop the
+        # action *before* execute(), not at the next node boundary.
+        ctx.kill_switch.check()
         result = await neuron.execute(plan_obj, nctx)
+    except AuditError:
+        # P7 "no log, no action": if the audit logger failed we must HALT,
+        # not treat it as a recoverable neuron crash. Propagate.
+        raise
     except Exception as exc:  # a neuron blowing up must not kill the organism
         ctx.audit.log_event(
             "dispatch.neuron_crashed", {"neuron": neuron.name, "error": str(exc)}
