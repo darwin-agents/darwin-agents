@@ -24,7 +24,7 @@ from .fake_platform import (
     mint_genesis,
 )
 from .fake_sandbox import FakeBrowser, FakeSandbox
-from .fake_vault import FakeVault
+from .fake_vault import FakeVault, MemoryOwnerGrantStore
 from .fake_wallet import FakeWallet
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "FakeBrowser",
     "FakeSandbox",
     "FakeVault",
+    "MemoryOwnerGrantStore",
     "FakeWallet",
     "KillFlag",
     "MemoryAuditSink",
@@ -62,6 +63,7 @@ class FakeStack:
         self.escalation = MemoryEscalationInbox(auto=escalation_auto)
         self.provision = FakeProvisioner()
         self.vault = FakeVault()
+        self.vault_grants = MemoryOwnerGrantStore()
         self.wallet = FakeWallet(opening_usdc=opening_usdc, clock=clock)
         self.llm = FakeLLM(wallet=self.wallet)
         self.browser = FakeBrowser(wallet=self.wallet, captcha_every=captcha_every)
@@ -82,6 +84,7 @@ class FakeStack:
             wallet=self.wallet,
             provision=self.provision,
             vault=self.vault,
+            vault_grants=self.vault_grants,
             checkpoint=self.checkpoint,
             escalation=self.escalation,
             signer=self.signer,
