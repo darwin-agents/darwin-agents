@@ -40,6 +40,12 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["src", "."]
 filterwarnings = ["error::DeprecationWarning"]
+# docs/engineering/18 testing strategy: unit/integration run every commit;
+# the simulation tier is heavier ("run nightly"). Mark it so a fast loop can
+# `-m "not slow"` while CI/nightly runs everything (the default).
+markers = [
+    "slow: simulation-tier test (multi-day sim; minutes, not milliseconds)",
+]
 
 [tool.uv]
 package = true

@@ -147,8 +147,14 @@ def build_graph(ctx: OrchestratorContext, engine: str = "internal"):
 
 def _build_langgraph(ctx: OrchestratorContext):  # pragma: no cover - optional path
     """Wire the identical node functions into LangGraph. Kept thin: the
-    behaviour lives in the node modules, not the framework."""
-    from langgraph.checkpoint.memory import MemorySaver
+    behaviour lives in the node modules, not the framework.
+
+    No LangGraph checkpointer: a heartbeat is one fresh, stateless run from
+    check_death to END. Node-boundary durability is our own
+    ``ctx.checkpoint.save`` (which ``boot`` restores from) — a LangGraph
+    MemorySaver would only be a second, in-process copy we never read, and
+    with a thread per heartbeat it grows without bound over a long life.
+    """
     from langgraph.graph import END as LG_END
     from langgraph.graph import StateGraph
 
@@ -190,20 +196,16 @@ def _build_langgraph(ctx: OrchestratorContext):  # pragma: no cover - optional p
     for n in _NODES:
         sg.add_conditional_edges(n, _route, edge_map)
 
-    compiled = sg.compile(checkpointer=MemorySaver())
+    compiled = sg.compile()  # stateless: one fresh run per heartbeat
 
     class _LGRunner:
-        """One ``invoke`` == one heartbeat. Each heartbeat gets its OWN
-        checkpoint thread (``darwin_id:tick``): intra-heartbeat node
-        checkpointing is preserved, but the next heartbeat starts fresh at
-        check_death instead of resuming a thread that already reached END."""
+        """One ``invoke`` == one heartbeat: a fresh, stateless run from
+        check_death to END. No thread bookkeeping, no per-heartbeat memory
+        accumulation — durability is ``ctx.checkpoint`` in the node wrap."""
 
         async def invoke(self, state: OrchestratorState) -> OrchestratorState:
             ctx.kill_switch.check()
-            cfg = {
-                "configurable": {"thread_id": f"{ctx.darwin_id}:{state.tick}"}
-            }
-            out = await compiled.ainvoke(state.model_dump(), cfg)
+            out = await compiled.ainvoke(state.model_dump())
             return OrchestratorState.model_validate(out)
 
     return _LGRunner()
