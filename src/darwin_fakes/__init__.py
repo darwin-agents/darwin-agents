@@ -52,14 +52,14 @@ class FakeStack:
     kill switch, post revenue, read the audit log) after boot."""
 
     def __init__(self, *, opening_usdc: float, clock: Callable[[], float],
-                 captcha_every: int = 7):
+                 captcha_every: int = 7, escalation_auto: str | None = "approve"):
         self.clock = clock
         self.signer = SigningService()
         self.kill = KillFlag()
         self.audit_sink = MemoryAuditSink()
         self.anchor_store = MemoryAnchorStore()
         self.checkpoint = MemoryCheckpointStore()
-        self.escalation = MemoryEscalationInbox()
+        self.escalation = MemoryEscalationInbox(auto=escalation_auto)
         self.provision = FakeProvisioner()
         self.vault = FakeVault()
         self.wallet = FakeWallet(opening_usdc=opening_usdc, clock=clock)
@@ -92,12 +92,14 @@ class FakeStack:
 
 def make_platform(
     *, opening_usdc: float = 100.0, clock: Callable[[], float] = time.time,
-    captcha_every: int = 7,
+    captcha_every: int = 7, escalation_auto: str | None = "approve",
 ) -> tuple[Platform, FakeStack]:
     """One-call fake world. Returns (platform, stack); keep the stack to
-    drive and inspect the world during a run."""
+    drive and inspect the world during a run. ``escalation_auto`` controls
+    the unattended owner-response policy (default: approve)."""
     stack = FakeStack(opening_usdc=opening_usdc, clock=clock,
-                      captcha_every=captcha_every)
+                      captcha_every=captcha_every,
+                      escalation_auto=escalation_auto)
     return stack.platform(), stack
 
 

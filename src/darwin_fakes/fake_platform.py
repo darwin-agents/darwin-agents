@@ -88,13 +88,39 @@ class MemoryCheckpointStore:
         return self._latest.get(darwin_id)
 
 
-# -- escalation inbox ------------------------------------------------------
+# -- escalation inbox + owner response channel -----------------------------
 class MemoryEscalationInbox:
-    def __init__(self) -> None:
+    """Owner notification bus + supervisor response channel.
+
+    ``auto`` lets an *unattended* sim/test progress deterministically as if
+    an attentive owner answered every ticket the same way ("approve" models a
+    prompt owner / fast captcha solving — the realistic baseline). Set
+    ``auto=None`` to drive responses manually via :meth:`respond` (and to
+    exercise timeouts by advancing the clock).
+    """
+
+    def __init__(self, auto: str | None = "approve") -> None:
         self.tickets: list[dict] = []
+        self._auto = auto
+        self._responses: list[dict] = []  # queued, drained by poll_responses
 
     def post(self, ticket: dict) -> None:
         self.tickets.append(deepcopy(ticket))
+        if self._auto is not None:
+            self._responses.append(
+                {"ticket": ticket.get("ticket"), "decision": self._auto,
+                 "data": {}}
+            )
+
+    def respond(self, ticket: str, decision: str, data: dict | None = None) -> None:
+        """Owner (or a test) resolves a ticket: approve | deny | data."""
+        self._responses.append(
+            {"ticket": ticket, "decision": decision, "data": data or {}}
+        )
+
+    def poll_responses(self, darwin_id: str) -> list[dict]:
+        out, self._responses = self._responses, []
+        return [deepcopy(r) for r in out]
 
 
 # -- signing service (HSM stand-in) ---------------------------------------
