@@ -48,6 +48,30 @@ class KillFlag:
         return self._reason
 
 
+# -- pause flag (resumable; NOT a kill) ------------------------------------
+class PauseFlag:
+    """Owner/supervisor pause. Unlike :class:`KillFlag` this is reversible:
+    ``pause()`` then ``resume()`` and the same life continues."""
+
+    def __init__(self) -> None:
+        self._paused = False
+        self._reason: str | None = None
+
+    def pause(self, reason: str = "owner paused") -> None:
+        self._paused = True
+        self._reason = reason
+
+    def resume(self) -> None:
+        self._paused = False
+        self._reason = None
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def reason(self) -> str | None:
+        return self._reason
+
+
 # -- audit sink (append-only) ---------------------------------------------
 class MemoryAuditSink:
     def __init__(self) -> None:

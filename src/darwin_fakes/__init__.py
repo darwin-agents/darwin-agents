@@ -16,6 +16,7 @@ from .fake_platform import (
     FakeProvisioner,
     FakeSpawner,
     KillFlag,
+    PauseFlag,
     MemoryAnchorStore,
     MemoryAuditSink,
     MemoryCheckpointStore,
@@ -35,6 +36,7 @@ __all__ = [
     "MemoryOwnerGrantStore",
     "FakeWallet",
     "KillFlag",
+    "PauseFlag",
     "MemoryAuditSink",
     "MemoryAnchorStore",
     "MemoryCheckpointStore",
@@ -57,6 +59,7 @@ class FakeStack:
         self.clock = clock
         self.signer = SigningService()
         self.kill = KillFlag()
+        self.pause = PauseFlag()
         self.audit_sink = MemoryAuditSink()
         self.anchor_store = MemoryAnchorStore()
         self.checkpoint = MemoryCheckpointStore()
@@ -78,6 +81,7 @@ class FakeStack:
             layer_blobs=self.layer_blobs,
             layer_names=self.layer_names,
             kill_source=self.kill,
+            pause_source=self.pause,
             audit_sink=self.audit_sink,
             anchor_store=self.anchor_store,
             llm_transport=self.llm,
