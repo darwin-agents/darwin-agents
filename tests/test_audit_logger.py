@@ -78,6 +78,64 @@ def test_concurrent_writes_are_serialized():
     log.verify()  # the chain linearized correctly under contention
 
 
+def test_same_day_reanchor_after_appending_is_not_tamper():
+    # Regression: the death/kill shutdown appends final records then
+    # re-anchors the SAME day. Append-only growth must not look like tamper,
+    # or the graceful-death path itself crashes.
+    sink, store = MemoryAuditSink(), MemoryAnchorStore()
+    log = AuditLogger("d", sink)
+    log.log_event("birth", {})
+    log.anchor(store, day="2026-05-18")
+    log.log_event("death.begin", {})
+    log.anchor(store, day="2026-05-18")  # must NOT raise
+    log.log_event("death.end", {})
+    log.anchor(store, day="2026-05-18")  # nor here
+    log.verify()
+
+
+def test_payload_tamper_is_caught_by_chain_verify():
+    # A clumsy tamper (rewrite payload, leave the hash) is caught the moment
+    # the chain is re-verified — no Merkle anchor needed.
+    sink = MemoryAuditSink()
+    log = AuditLogger("d", sink)
+    log.log_event("birth", {})
+    log.log_event("spend", {"amount": 5})
+    sink._records[1]["payload"] = {"amount": 9999}
+    with pytest.raises(AuditError):
+        log.verify()
+
+
+def test_rehashed_forged_chain_is_caught_by_merkle_anchor():
+    # The real threat the Merkle anchor exists for: an attacker who rewrites
+    # history AND recomputes every hash, so the chain is internally
+    # consistent and verify() passes — but it no longer reproduces the root
+    # the platform already witnessed.
+    from darwin_dna.machinery.audit_logger import GENESIS_HASH, _hash_record
+
+    sink, store = MemoryAuditSink(), MemoryAnchorStore()
+    log = AuditLogger("d", sink)
+    log.log_event("birth", {})
+    log.log_event("spend", {"amount": 5})
+    log.anchor(store, day="2026-05-18")  # platform witnesses this prefix
+
+    # Forge: rewrite record 1's payload, then re-chain hashes forward so the
+    # chain is self-consistent (verify() would pass on the forged chain).
+    recs = sink._records
+    recs[1]["payload"] = {"amount": 9999}
+    prev = GENESIS_HASH
+    for r in recs:
+        r["prev_hash"] = prev
+        r["hash"] = _hash_record(
+            r["seq"], r["prev_hash"], r["ts"], r["kind"], r["payload"]
+        )
+        prev = r["hash"]
+
+    fresh = AuditLogger("d", sink)  # forged chain is internally consistent...
+    fresh.verify()  # ...so verify() passes
+    with pytest.raises(AuditError, match="diverge|tamper"):
+        fresh.anchor(store, day="2026-05-18")  # ...but the anchor catches it
+
+
 def test_merkle_anchor_mismatch_halts():
     sink = MemoryAuditSink()
     store = MemoryAnchorStore()
