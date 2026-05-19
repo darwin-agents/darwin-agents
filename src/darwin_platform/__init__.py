@@ -11,6 +11,13 @@ behind the same Supervisor surface. Escalation router, anomaly detection,
 billing, and the Next.js dashboard are out of scope here.
 """
 
+from .escalation import (
+    EscalationRouter,
+    LogNotificationSink,
+    NotificationSink,
+    RoutedTicket,
+    TicketStatus,
+)
 from .snapshot import snapshot, write_snapshot
 from .supervisor import (
     DarwinStatus,
@@ -26,6 +33,11 @@ __all__ = [
     "LineageEdge",
     "SupervisorError",
     "UnknownDarwin",
+    "EscalationRouter",
+    "RoutedTicket",
+    "TicketStatus",
+    "NotificationSink",
+    "LogNotificationSink",
     "snapshot",
     "write_snapshot",
 ]
