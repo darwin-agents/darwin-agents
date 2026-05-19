@@ -17,13 +17,13 @@ The platform is the "habitat" that hosts Darwins. It is intentionally boring inf
    │ Next.js  │         │ FastAPI    │               │ (Stripe,     │
    │ (dash)   │         │ (control)  │               │  Coinbase,   │
    └────┬─────┘         └─────┬──────┘               │  email)      │
-        │                     │                       └──────┬───────┘
-        └──────────┬──────────┴───────────────────────────────┘
+        │                     │                       └──────┬──────┘
+        └──────────┬──────────┴──────────────────────────────┘
                    ▼
-         ┌──────────────────────┐         ┌────────────────────────┐
+         ┌──────────────────────┐         ┌─────────────────────────┐
          │  Auth & Identity     │         │  Notification bus       │
          │  (Clerk / WorkOS)    │         │  (push / email / webhook│
-         └──────────┬───────────┘         └────────────────────────┘
+         └──────────┬───────────┘         └─────────────────────────┘
                     │
                     ▼
          ┌────────────────────────────────────────────────────┐
@@ -44,10 +44,10 @@ The platform is the "habitat" that hosts Darwins. It is intentionally boring inf
                   ▼
          (Per-Darwin: namespace → microVMs → vault → wallet → DB schema)
 
-         ┌─────────────────────────────────────────────────────────┐
-         │ Shared state (per-tenant scoped via RLS / namespacing)  │
+         ┌──────────────────────────────────────────────────────────┐
+         │ Shared state (per-tenant scoped via RLS / namespacing)   │
          │   Postgres   │  Object store (S3)  │  Vault  │ Audit log │
-         └─────────────────────────────────────────────────────────┘
+         └──────────────────────────────────────────────────────────┘
 ```
 
 ## The Darwin Supervisor
@@ -68,6 +68,7 @@ GET    /darwins/{id}/events              → event log (paginated)
 ```
 
 Internal-only:
+
 ```
 POST   /platform/darwins/{id}/quarantine → suspend pending review (compliance)
 POST   /platform/signing/dna             → sign a new DNA layer
@@ -105,6 +106,7 @@ The supervisor watches every Darwin for:
 - **Behavioral anomaly.** Is the Darwin doing something it hasn't done before? (Useful for spotting prompt-injection takeovers.)
 
 Thresholds trigger graded responses:
+
 1. Log + dashboard warning.
 2. Throttle the offending resource.
 3. Pause and notify the owner.

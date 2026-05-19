@@ -6,25 +6,25 @@ Darwin has two levels: the **platform** (one instance, multi-tenant SaaS) and th
 
 ```
 ┌──────────────────────────── PLATFORM (multi-tenant SaaS) ────────────────────────────┐
-│                                                                                       │
+│                                                                                      │
 │   ┌───────────┐   ┌──────────────┐   ┌────────────┐   ┌──────────────────────────┐   │
-│   │  Web app  │   │  Identity &  │   │  Billing & │   │ Owner notification bus    │   │
+│   │  Web app  │   │  Identity &  │   │  Billing & │   │ Owner notification bus   │   │
 │   │ (Next.js) │   │  KYC (Auth)  │   │  Treasury  │   │ (push / email / webhook) │   │
-│   └─────┬─────┘   └──────┬───────┘   │   ledger   │   └────────────┬──────────────┘   │
-│         │                │            └─────┬──────┘                │                  │
-│         │                ▼                  ▼                       │                  │
-│         │        ┌───────────────────────────────────────┐          │                  │
-│         └──────► │  Control plane (Darwin Supervisor)    │ ◄────────┘                  │
-│                  │  - spawn / kill / pause / resume       │                             │
-│                  │  - kill-switch enforcement             │                             │
-│                  │  - resource quotas, anomaly detection  │                             │
-│                  └────────────────────┬───────────────────┘                             │
-│                                       │                                                 │
-└───────────────────────────────────────┼─────────────────────────────────────────────────┘
+│   └─────┬─────┘   └──────┬───────┘   │   ledger   │   └────────────┬─────────────┘   │
+│         │                │           └─────┬──────┘                │                 │
+│         │                ▼                  ▼                      │                 │
+│         │        ┌────────────────────────────────────────┐        │                 │
+│         └──────► │  Control plane (Darwin Supervisor)     │ ◄──────┘                 │
+│                  │  - spawn / kill / pause / resume       │                          │
+│                  │  - kill-switch enforcement             │                          │
+│                  │  - resource quotas, anomaly detection  │                          │
+│                  └────────────────────┬───────────────────┘                          │
+│                                       │                                              │
+└───────────────────────────────────────┼──────────────────────────────────────────────┘
                                         │ provisions / supervises N
                                         ▼
    ┌─────────────────────── ONE DARWIN ORGANISM (per user, isolated) ───────────────────┐
-   │                                                                                     │
+   │                                                                                    │
    │   ┌──────────────────── DNA CORE (immutable, signed) ─────────────────────────┐    │
    │   │  rules · ethics · evolution loop · kill-switch · treasury policy · audit  │    │
    │   │  Layer N   ← sealed lessons from generation N                             │    │
@@ -32,41 +32,41 @@ Darwin has two levels: the **platform** (one instance, multi-tenant SaaS) and th
    │   │  ...                                                                      │    │
    │   │  Layer 0   ← founding genome (this is the first Darwin you ship)          │    │
    │   └────────────────────────────────┬──────────────────────────────────────────┘    │
-   │                                    │ read-only                                      │
-   │                                    ▼                                                │
-   │   ┌──────────────── SOMA (mutable agent code, sandboxed) ────────────────────┐     │
-   │   │   Orchestrator (LangGraph) — plans, delegates, monitors                  │     │
-   │   │       │                                                                  │     │
-   │   │       ├──► Strategy engine (which business, which neurons, when)        │     │
-   │   │       ├──► Self-modification engine (proposes & tests soma rewrites)    │     │
-   │   │       └──► Escalation manager (talks to the owner via the platform)     │     │
+   │                                    │ read-only                                     │
+   │                                    ▼                                               │
+   │   ┌──────────────── SOMA (mutable agent code, sandboxed) ─────────────────────┐    │
+   │   │   Orchestrator (LangGraph) — plans, delegates, monitors                   │    │
+   │   │       │                                                                   │    │
+   │   │       ├──► Strategy engine (which business, which neurons, when)          │    │
+   │   │       ├──► Self-modification engine (proposes & tests soma rewrites)      │    │
+   │   │       └──► Escalation manager (talks to the owner via the platform)       │    │
    │   └────────────────────────────────┬──────────────────────────────────────────┘    │
-   │                                    │ dispatches tasks                               │
-   │                                    ▼                                                │
-   │   ┌──────────────── NEURONS (specialized workers, sandboxed) ──────────────┐       │
-   │   │  content │ accounts │ browser │ ads │ trading │ support │ analytics    │       │
-   │   │  ...each one a replaceable module with a stable contract...            │       │
-   │   └─────────────────────────────────┬────────────────────────────────────────┘     │
-   │                                     │                                                │
-   │   ┌─────────────────────────────────▼────────────────────────────────────────┐     │
-   │   │  TREASURY (per-Darwin USDC wallet, programmable spend rules via x402)    │     │
-   │   │  + SHARED VAULT (KYC docs + account creds + API keys + DB credentials —  │     │
-   │   │    bidirectional: user and Darwin both write; platform UI has RO view)   │     │
-   │   │  + DARWIN-OWNED DATABASES (provisioned on demand, credentials in vault,  │     │
-   │   │    platform UI reads them to render the Darwin's data in the dashboard)  │     │
-   │   │  + EVENT LOG (append-only, hash-chained audit trail)                     │     │
-   │   └────────────────────────────────────────────────────────────────────────────     │
-   │                                                                                     │
-   └─────────────────────────────────────────────────────────────────────────────────────┘
+   │                                    │ dispatches tasks                              │
+   │                                    ▼                                               │
+   │   ┌──────────────── NEURONS (specialized workers, sandboxed) ─────────────────┐    │
+   │   │  content │ accounts │ browser │ ads │ trading │ support │ analytics       │    │
+   │   │  ...each one a replaceable module with a stable contract...               │    │
+   │   └────────────────────────────────┬──────────────────────────────────────────┘    │
+   │                                    │                                               │
+   │   ┌────────────────────────────────▼──────────────────────────────────────────┐    │
+   │   │  TREASURY (per-Darwin USDC wallet, programmable spend rules via x402)     │    │
+   │   │  + SHARED VAULT (KYC docs + account creds + API keys + DB credentials —   │    │
+   │   │    bidirectional: user and Darwin both write; platform UI has RO view)    │    │
+   │   │  + DARWIN-OWNED DATABASES (provisioned on demand, credentials in vault,   │    │
+   │   │    platform UI reads them to render the Darwin's data in the dashboard)   │    │
+   │   │  + EVENT LOG (append-only, hash-chained audit trail)                      │    │
+   │   └───────────────────────────────────────────────────────────────────────────┘    │
+   │                                                                                    │
+   └────────────────────────────────────────────────────────────────────────────────────┘
                                         │
                                         ▼ outbound only, via gateways
-                                  ┌──────────────────────┐
-                                  │  External world      │
-                                  │  - LLM / image / video│ ← via platform LiteLLM gateway (model-agnostic)
-                                  │  - Payment rails     │ ← USDC/x402 + Stripe Privy
-                                  │  - Web (browsers)    │ ← via Browser-Use on Browserbase
-                                  │  - APIs (ads, blogs) │ ← via per-neuron integrations
-                                  └──────────────────────┘
+                                  ┌────────────────────────┐
+                                  │  External world        │
+                                  │  - LLM / image / video │ ← via platform LiteLLM gateway (model-agnostic)
+                                  │  - Payment rails       │ ← USDC/x402 + Stripe Privy
+                                  │  - Web (browsers)      │ ← via Browser-Use on Browserbase
+                                  │  - APIs (ads, blogs)   │ ← via per-neuron integrations
+                                  └────────────────────────┘
 ```
 
 For a richer rendering of this diagram see [`19-system-diagrams.md`](19-system-diagrams.md).

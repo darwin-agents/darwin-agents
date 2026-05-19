@@ -57,7 +57,7 @@ This shows what's running in our infrastructure to host many Darwins.
                           ┌────────────────────────┴────────────────────────┐
                           ▼                                                 ▼
                 ┌────────────────────────────────────────────────────────────────────────────────┐
-                │                  SHARED PLATFORM SERVICES                                       │
+                │                  SHARED PLATFORM SERVICES                                      │
                 │  ┌────────────────┐  ┌────────────────┐  ┌─────────────────┐  ┌─────────────┐  │
                 │  │  LiteLLM Proxy │  │ HashiCorp      │  │ Egress proxy    │  │ Temporal    │  │
                 │  │  - all LLM     │  │ Vault          │  │ - per-tenant    │  │ - durable   │  │
@@ -71,7 +71,7 @@ This shows what's running in our infrastructure to host many Darwins.
                             │                   │                   │                  │
                             ▼                   ▼                   ▼                  ▼
                 ┌────────────────────────────────────────────────────────────────────────────────┐
-                │                       SHARED STATE STORES                                       │
+                │                       SHARED STATE STORES                                      │
                 │  ┌─────────────────────┐  ┌─────────────────────────┐  ┌──────────────────┐    │
                 │  │ Platform Postgres   │  │ Organism Postgres       │  │ Object storage   │    │
                 │  │ (Aurora)            │  │ cluster                 │  │ (S3)             │    │
@@ -81,14 +81,14 @@ This shows what's running in our infrastructure to host many Darwins.
                 │  │ - escalations       │  │ - platform UI has RO    │  │ - vault backups  │    │
                 │  │ - LangGraph state   │  │   access for dashboard  │  │                  │    │
                 │  └─────────────────────┘  └─────────────────────────┘  └──────────────────┘    │
-                │                                                                                 │
+                │                                                                                │
                 │  ┌─────────────────────┐  ┌─────────────────────────┐                          │
                 │  │ Redis (ElastiCache) │  │ LanceDB                 │                          │
                 │  │ - rate limits       │  │ - per-Darwin vector     │                          │
                 │  │ - prompt cache      │  │   memory (lightweight)  │                          │
                 │  │ - session locks     │  │                         │                          │
                 │  └─────────────────────┘  └─────────────────────────┘                          │
-                └─────────────────────────────────────────────────────────────────────────────────┘
+                └────────────────────────────────────────────────────────────────────────────────┘
                                                    │
                                                    ▼
                                   ┌────────────────────────────────┐
@@ -115,52 +115,54 @@ Zooming into one tenant — what runs inside one Darwin's Kubernetes namespace.
                           │   NetworkPolicy: deny all except → egress proxy         │
                           ├─────────────────────────────────────────────────────────┤
                           │                                                         │
-                          │   ┌─────────────────────────────────────────────────┐  │
-                          │   │       ORCHESTRATOR microVM (E2B)                │  │
-                          │   │       (long-lived, rotated every 12h)           │  │
+                          │   ┌─────────────────────────────────────────────────┐   │
+                          │   │       ORCHESTRATOR microVM (E2B)                │   │
+                          │   │       (long-lived, rotated every 12h)           │   │
+                          │   │                                                 │   │
+                          │   │   ┌─────────── DNA (read-only, signed) ────┐    │   │
+                          │   │   │  Layer N  (sealed lessons)             │    │   │
+                          │   │   │  ...                                   │    │   │
+                          │   │   │  Layer 1  (sealed lessons)             │    │   │
+                          │   │   │  Layer 0  (founding genome)            │    │   │
+                          │   │   │  Constitution, fitness, kill switch,   │    │   │
+                          │   │   │  audit logger, treasury policy         │    │   │
+                          │   │   └────────────────────────────────────────┘    │   │
+                          │   │                                                 │   │
+                          │   │   ┌─────────── SOMA (read-write) ──────────┐    │   │
+                          │   │   │  LangGraph orchestrator (running)      │    │   │
+                          │   │   │  ┌──────────────────────────────┐      │    │   │
+                          │   │   │  │ perceive → plan → dispatch   │      │    │   │
+                          │   │   │  │     ↓        ↓        ↓      │      │    │   │
+                          │   │   │  │  reflect ← propose_mutation  │      │    │   │
+                          │   │   │  │            evaluate → apply  │      │    │   │
+                          │   │   │  │     ↓                        │      │    │   │
+                          │   │   │  │  check_death / reproduction  │      │    │   │
+                          │   │   │  └──────────────────────────────┘      │    │   │
+                          │   │   │                                        │    │   │
+                          │   │   │  Strategies, neuron clients, memory    │    │   │
+                          │   │   └────────────────────────────────────────┘    │   │
+                          │   └─────────────────────┬───────────────────────────┘   │
+                          │                         │                               │
+                          │                         │ dispatches neuron tasks       │
+                          │                         ▼                               │
+                          │   ┌───── NEURON microVMs (ephemeral, per-dispatch) ──┐  │
                           │   │                                                  │  │
-                          │   │   ┌─────────── DNA (read-only, signed) ────┐    │  │
-                          │   │   │  Layer N  (sealed lessons)             │    │  │
-                          │   │   │  ...                                    │    │  │
-                          │   │   │  Layer 1  (sealed lessons)             │    │  │
-                          │   │   │  Layer 0  (founding genome)            │    │  │
-                          │   │   │  Constitution, fitness, kill switch,    │    │  │
-                          │   │   │  audit logger, treasury policy          │    │  │
-                          │   │   └─────────────────────────────────────────┘    │  │
+                          │   │   content.writer    browser.operator             │  │
+                          │   │   accounts.mgr      analytics                    │  │
+                          │   │   ads.manager       support.responder            │  │
+                          │   │   research.scout    payments.facilitator         │  │
+                          │   │   infrastructure.provisioner                     │  │
+                          │   │   vault.writer                                   │  │
                           │   │                                                  │  │
-                          │   │   ┌─────────── SOMA (read-write) ──────────┐    │  │
-                          │   │   │  LangGraph orchestrator (running)       │    │  │
-                          │   │   │  ┌──────────────────────────────┐      │    │  │
-                          │   │   │  │ perceive → plan → dispatch   │      │    │  │
-                          │   │   │  │     ↓        ↓        ↓      │      │    │  │
-                          │   │   │  │  reflect ← propose_mutation  │      │    │  │
-                          │   │   │  │            evaluate → apply  │      │    │  │
-                          │   │   │  │     ↓                         │      │    │  │
-                          │   │   │  │  check_death / reproduction  │      │    │  │
-                          │   │   │  └──────────────────────────────┘      │    │  │
-                          │   │   │                                          │    │  │
-                          │   │   │  Strategies, neuron clients, memory     │    │  │
-                          │   │   └──────────────────────────────────────────┘    │  │
-                          │   └─────────────────────┬───────────────────────────────┘  │
-                          │                          │                                   │
-                          │                          │ dispatches neuron tasks           │
-                          │                          ▼                                   │
-                          │   ┌─────────── NEURON microVMs (ephemeral, per-dispatch) ─┐ │
-                          │   │                                                       │ │
-                          │   │   content.writer    browser.operator    accounts.mgr │ │
-                          │   │   ads.manager       support.responder   analytics    │ │
-                          │   │   research.scout    payments.facilitator             │ │
-                          │   │   infrastructure.provisioner   vault.writer          │ │
-                          │   │                                                       │ │
-                          │   │   Each gets: scoped vault creds, scratch FS,         │ │
-                          │   │   egress through proxy, no DNA write access          │ │
-                          │   └───────────────────────────────────────────────────────┘ │
-                          │                                                                │
-                          └──────────────────────────────┬─────────────────────────────────┘
+                          │   │   Each gets: scoped vault creds, scratch FS,     │  │
+                          │   │   egress through proxy, no DNA write access      │  │
+                          │   └──────────────────────────────────────────────────┘  │
+                          │                                                         │
+                          └──────────────────────────────┬──────────────────────────┘
                                                          │
                                   ┌──────────────────────┼─────────────────────────────────┐
                                   │  All outbound through the platform egress proxy        │
-                                  ▼                                                         ▼
+                                  ▼                                                        ▼
                           ┌──────────────────────────┐                       ┌─────────────────────────┐
                           │   THIS DARWIN'S SLICE    │                       │   EXTERNAL WORLD        │
                           │   OF PLATFORM SERVICES   │                       │                         │
@@ -203,7 +205,7 @@ How a single LLM call from a Darwin neuron reaches a provider and comes back, wi
    ┌─────────────────────────────────────────────────┐
    │   LiteLLM Proxy (platform-operated)             │
    │   ┌─────────────────────────────────────────┐   │
-   │   │ 1. Auth virtual key                      │   │
+   │   │ 1. Auth virtual key                     │   │
    │   │ 2. Check per-key budget (block if over) │   │
    │   │ 3. Resolve tier → model_list[tier]      │   │
    │   │ 4. Pick model (cost-based routing)      │   │
@@ -216,24 +218,24 @@ How a single LLM call from a Darwin neuron reaches a provider and comes back, wi
             │                            │
             │ (cache hit)                │ (cache miss)
             ▼                            ▼
-   ┌─────────────────────┐    ┌─────────────────────────┐
-   │   Redis prompt cache│    │   Provider (Anthropic,  │
-   │   (per-tenant keyed)│    │   OpenAI, Google, ...)  │
-   └─────────────────────┘    └─────────────────────────┘
+   ┌──────────────────────┐   ┌─────────────────────────┐
+   │   Redis prompt cache │   │   Provider (Anthropic,  │
+   │   (per-tenant keyed) │   │   OpenAI, Google, ...)  │
+   └──────────────────────┘   └─────────────────────────┘
                                          │
                                          ▼
                               ┌─────────────────────────┐
                               │   Response, usage data  │
                               └─────────────────────────┘
 
-                              ┌──────────────────────────────────────────┐
+                              ┌───────────────────────────────────────────┐
    Background:                │   Reconciliation worker (every minute)    │
    ──────────                 │   - reads LiteLLM PG per-key spend table  │
                               │   - writes ledger entries to platform PG  │
                               │   - tags with darwin_id, category, tier   │
                               │   - charges Darwin's USDC wallet via x402 │
                               │     at hourly settlement window           │
-                              └──────────────────────────────────────────┘
+                              └───────────────────────────────────────────┘
 ```
 
 Cross-references: [`13-llm-routing-litellm.md`](13-llm-routing-litellm.md), [`17-payments-providers.md`](17-payments-providers.md)
@@ -246,7 +248,7 @@ How the bidirectional vault works between user, Darwin, and platform UI. This is
 
 ```
                        ┌─────────────────────────────────────────┐
-                       │  User (via Dashboard, mobile app)        │
+                       │  User (via Dashboard, mobile app)       │
                        └────────────────┬────────────────────────┘
                                         │
                                         │ writes:
@@ -259,7 +261,7 @@ How the bidirectional vault works between user, Darwin, and platform UI. This is
                                         │ - everything Darwin
                                         │   has written
                                         ▼
-                       ┌─────────────────────────────────────────┐
+                       ┌──────────────────────────────────────────┐
                        │ Vault namespace: darwins/{darwin_id}/    │
                        │                                          │
                        │   public/                                │
@@ -299,14 +301,14 @@ How the bidirectional vault works between user, Darwin, and platform UI. This is
                             ────────────────────────────────────────────
 
                        ┌──────────────────────────────────────────────────────┐
-                       │  infrastructure.provisioner neuron                    │
-                       │  ─────────────────────────────────                    │
-                       │  Darwin requests: "I need a Postgres DB for X"        │
+                       │  infrastructure.provisioner neuron                   │
+                       │  ─────────────────────────────────                   │
+                       │  Darwin requests: "I need a Postgres DB for X"       │
                        └──────────────────────┬───────────────────────────────┘
                                               │
                                               ▼
                        ┌──────────────────────────────────────────────────────┐
-                       │  Platform supervisor                                  │
+                       │  Platform supervisor                                 │
                        │  - creates DB in organism Postgres cluster           │
                        │  - writes DSN to Vault under scoped/infrastructure/  │
                        │  - grants Darwin's neuron role on the DB             │
@@ -321,21 +323,21 @@ How the bidirectional vault works between user, Darwin, and platform UI. This is
                        │  │ - the Darwin's    │ │ - additional DBs  │         │
                        │  │   working DB      │ │   if requested    │         │
                        │  └─────────┬─────────┘ └─────────┬─────────┘         │
-                       │            │                     │                    │
-                       │            │ Darwin writes       │                    │
-                       │            │ (full access via    │                    │
-                       │            │  vault credentials) │                    │
-                       │            │                     │                    │
-                       │            │ Platform UI reads   │                    │
-                       │            │ (RO, to render in   │                    │
-                       │            │  Data browser tab)  │                    │
-                       └────────────┴─────────────────────┴────────────────────┘
-                                          │
-                                          ▼
+                       │            │                     │                   │
+                       │            │ Darwin writes       │                   │
+                       │            │ (full access via    │                   │
+                       │            │  vault credentials) │                   │
+                       │            │                     │                   │
+                       │            │ Platform UI reads   │                   │
+                       │            │ (RO, to render in   │                   │
+                       │            │  Data browser tab)  │                   │
+                       └────────────┴─────────────────────┴───────────────────┘
+                                             │
+                                             ▼
                        ┌──────────────────────────────────────────────────────┐
-                       │  User Dashboard → Data browser tab                    │
-                       │  Browse what your Darwin built: content drafts,       │
-                       │  subscribers, customer records, etc.                  │
+                       │  User Dashboard → Data browser tab                   │
+                       │  Browse what your Darwin built: content drafts,      │
+                       │  subscribers, customer records, etc.                 │
                        └──────────────────────────────────────────────────────┘
 ```
 
@@ -349,28 +351,28 @@ How the **Anatomy** and **Timeline** views are powered.
 
 ```
                                                   ┌───────────────────────────┐
-                                                  │  USER                      │
-                                                  │  (browser / mobile app)    │
+                                                  │  USER                     │
+                                                  │  (browser / mobile app)   │
                                                   └─────────────┬─────────────┘
                                                                 │
                                                                 │ websocket + HTTP
                                                                 ▼
                                                   ┌───────────────────────────┐
-                                                  │  Next.js dashboard         │
+                                                  │  Next.js dashboard        │
                                                   │  ┌─────────────────────┐  │
-                                                  │  │  Anatomy canvas      │  │
-                                                  │  │  (react-flow / D3,   │  │
-                                                  │  │   force layout)      │  │
+                                                  │  │  Anatomy canvas     │  │
+                                                  │  │  (react-flow / D3,  │  │
+                                                  │  │   force layout)     │  │
                                                   │  ├─────────────────────┤  │
-                                                  │  │  Timeline canvas     │  │
-                                                  │  │  (virtualized        │  │
-                                                  │  │   horizontal feed)   │  │
+                                                  │  │  Timeline canvas    │  │
+                                                  │  │  (virtualized       │  │
+                                                  │  │   horizontal feed)  │  │
                                                   │  └─────────────────────┘  │
                                                   └─────────────┬─────────────┘
                                                                 │
                                                                 ▼
                                                   ┌───────────────────────────┐
-                                                  │  Platform API              │
+                                                  │  Platform API             │
                                                   │  ┌─────────────────────┐  │
                                                   │  │  /anatomy/stream    │  │
                                                   │  │  /timeline/stream   │  │
@@ -380,7 +382,7 @@ How the **Anatomy** and **Timeline** views are powered.
                                 ┌───────────────────────────────┼───────────────────────────────┐
                                 │                               │                               │
                                 ▼                               ▼                               ▼
-                  ┌────────────────────────┐    ┌──────────────────────────┐    ┌──────────────────────────┐
+                  ┌──────────────────────────┐    ┌───────────────────────────┐    ┌───────────────────────────┐
                   │  ANATOMY DATA            │    │  TIMELINE DATA            │    │  CONTEXT DATA             │
                   │                          │    │                           │    │                           │
                   │  - Neuron registry       │    │  - Event log (PG, sliced  │    │  - Treasury balance       │
@@ -393,14 +395,14 @@ How the **Anatomy** and **Timeline** views are powered.
                   │    heatmap (Honeycomb    │    │  - Reproduction events    │    │  - DNA layer manifest     │
                   │    or our own metrics)   │    │                           │    │                           │
                   └──────────┬───────────────┘    └────────────┬──────────────┘    └────────────┬──────────────┘
-                             │                                 │                                 │
-                             └─────────────────────────────────┼─────────────────────────────────┘
+                             │                                 │                                │
+                             └─────────────────────────────────┼────────────────────────────────┘
                                                                │
                                                                ▼
-                                          ┌─────────────────────────────────────┐
-                                          │  Platform Postgres + Honeycomb       │
-                                          │  + per-Darwin LangGraph state        │
-                                          └─────────────────────────────────────┘
+                                              ┌─────────────────────────────────────┐
+                                              │  Platform Postgres + Honeycomb      │
+                                              │  + per-Darwin LangGraph state       │
+                                              └─────────────────────────────────────┘
 
 Interaction:
   - User clicks a neuron in Anatomy → Timeline filters to that neuron's events
@@ -474,9 +476,9 @@ What happens, in order, when a Darwin crosses the reproduction threshold.
        │                                      │                                     │ (11) initial heartbeat
        │                                      │                                     │      perceive → plan → ...
        │                                      │                                     │
-       │ (12) RESUME parent                   │ (12) AUDIT log entry: REPRODUCED   │
-       │      orchestrator continues          │      (parent_id, child_id, gen,    │
-       │                                      │       transferred_usdc, layer_hash)│
+       │ (12) RESUME parent                   │ (12) AUDIT log entry: REPRODUCED    │
+       │      orchestrator continues          │      (parent_id, child_id, gen,     │
+       │                                      │       transferred_usdc, layer_hash) │
        │                                      │                                     │
        │ (13) NOTIFY owner                    │                                     │
        │      "Your Darwin just reproduced!"  │                                     │

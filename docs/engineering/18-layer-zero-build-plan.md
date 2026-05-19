@@ -24,7 +24,7 @@ Before writing a line of Layer 0 code, internalize these:
 
 1. **Layer 0 must boot a Darwin into a working state.** Even if the agent is naive and unprofitable, the loop must run, neurons must dispatch, the ledger must reconcile. We are not allowed to ship Layer 0 that "would work after a few mutations". It must work on first boot.
 2. **Layer 0 contains no model names.** Only capability profiles (`tier=reasoning`, `tier=coding`, etc.).
-3. **Layer 0 is in scope for self-reflection but out of scope for self-modification.** A Darwin can *read* its DNA (to understand its own rules) but cannot patch it.
+3. **Layer 0 is in scope for self-reflection but out of scope for self-modification.** A Darwin can _read_ its DNA (to understand its own rules) but cannot patch it.
 4. **Layer 0 is small.** Aim for under 5,000 lines of meaningful Python. If it grows past that, we're doing too much in DNA and not enough in soma.
 5. **Layer 0 has 100% test coverage on its hot paths.** Kill-switch handler, signature verification, treasury policy engine, audit logger — each gets a paranoid test suite. These are the components a malicious soma might try to bypass.
 6. **Layer 0 has no external dependencies beyond a curated allowlist.** We don't want a supply-chain attack on a random transitive dependency to compromise the constitution. Allowlist: standard library, `pydantic`, `cryptography`, `langgraph`, `litellm` (client-only, for capability-profile routing), `httpx`, `structlog`. That's the budget. Anything else goes in the soma.
@@ -105,6 +105,7 @@ About 25 files, mostly small. Most of the line count will be in: `audit_logger.p
 ## The hot paths — paranoid implementation
 
 These four are the "if you screw these up the constitution is compromised" pieces. They get:
+
 - Property-based tests (Hypothesis)
 - Adversarial test cases (the soma is malicious in the test, trying to bypass)
 - Fuzz testing
@@ -116,6 +117,7 @@ These four are the "if you screw these up the constitution is compromised" piece
 Verifies every DNA layer is signed by the platform's signing key. Refuses to boot if any signature is invalid or any expected layer is missing.
 
 Key properties under test:
+
 - Tampered layer fails verification.
 - Out-of-order layers fail validation.
 - Missing layers fail validation.
@@ -127,6 +129,7 @@ Key properties under test:
 Polls the platform's kill flag at every main-loop iteration and on entry to every neuron dispatch. When flipped, halts before any side-effecting action.
 
 Key properties under test:
+
 - Flag-flip → halt within one heartbeat.
 - Halt happens before any pending side-effecting action.
 - Halt writes a deterministic final ledger entry.
@@ -137,6 +140,7 @@ Key properties under test:
 The write-before-act primitive. Every neuron dispatch, every payment, every mutation, every reproduction goes through `audit_logger.log_intent()` first, gets committed only after it succeeds, and gets a final `log_outcome()` whether it succeeds or fails. The chain hashes; tampering is detectable.
 
 Key properties under test:
+
 - Hash chain is unbroken across crashes and restarts.
 - Concurrent writes are serialized correctly.
 - The logger's failure halts the Darwin (no log, no action).
@@ -147,6 +151,7 @@ Key properties under test:
 Every outbound payment passes through this engine before the wallet SDK can sign anything. Layers: DNA hard caps → owner soft caps → strategy envelope → escalation rules → anomaly detection.
 
 Key properties under test:
+
 - A payment over the DNA hard cap is refused, always, regardless of overrides.
 - A payment to a forbidden counterparty category is refused.
 - The engine's decision is logged with its rationale before the payment is allowed to proceed.
@@ -158,18 +163,18 @@ Key properties under test:
 The founding graph is intentionally simple. Sophistication is the soma's job. The graph:
 
 ```
-                    ┌────────────┐
-                    │ check_death│ ◄── always run at top of loop
-                    └─────┬──────┘
+                    ┌─────────────┐
+                    │ check_death │ ◄── always run at top of loop
+                    └─────┬───────┘
                           │ alive
                           ▼
-                    ┌────────────┐
-                    │  perceive  │ ◄── pull treasury, inbox, environment
-                    └─────┬──────┘
+                    ┌─────────────┐
+                    │  perceive   │ ◄── pull treasury, inbox, environment
+                    └─────┬───────┘
                           ▼
-                    ┌────────────┐
-                    │    plan    │ ◄── tier=reasoning; decides next action
-                    └─────┬──────┘
+                    ┌─────────────┐
+                    │    plan     │ ◄── tier=reasoning; decides next action
+                    └─────┬───────┘
                           │
             ┌─────────────┼─────────────────┬──────────────────┐
             ▼             ▼                 ▼                  ▼
@@ -180,7 +185,7 @@ The founding graph is intentionally simple. Sophistication is the soma's job. Th
            │             │ (LangGraph        │                  │
            ▼             │   interrupt)      ▼                  │
        ┌────────┐        │           ┌─────────────────┐        │
-       │ reflect│        │           │evaluate_mutation│        │
+       │reflect │        │           │evaluate_mutation│        │
        └───┬────┘        │           └────────┬────────┘        │
            │             │                    │                 │
            │             │             ┌──────┴────────┐        │
@@ -192,9 +197,9 @@ The founding graph is intentionally simple. Sophistication is the soma's job. Th
            └─────────────┴─────────────┴─────────────┴──────────┘
                           │
                           ▼
-                    ┌─────────────────┐
+                    ┌──────────────────┐
                     │check_reproduction│
-                    └─────────────────┘
+                    └──────────────────┘
                           │
                           └────► loop
 ```
@@ -204,6 +209,7 @@ The graph is checkpointed at every node boundary. The Darwin can survive a sandb
 The planner's system prompt is the most important text in the whole project. It carries: the metaphor, the principles, the constitution, the available neurons (from the registry), the current state schema, and the planner's expected output schema. We will iterate on it heavily through Phase 0. First draft goes in `orchestrator_skeleton/prompts/planner_system.txt` and is version-controlled.
 
 Self-modification is gated behind two conditions, both of which must be true before `propose_mutation` is enabled:
+
 1. The Darwin has executed at least 100 successful neuron dispatches in its lifetime.
 2. A specific recurring failure pattern has been detected by the reflect node (≥ 3 occurrences of the same error class).
 
@@ -214,7 +220,8 @@ This bias toward earning-before-mutating is critical for the early phases. We do
 Layer 0 ships with exactly one strategy: **content + affiliate**. The Darwin starts a topical blog, writes content with `content.writer`, publishes via `content.publisher` (when we add it in phase 1), inserts affiliate links from a curated provider list, and measures via `analytics.measurer`.
 
 Why only one:
-- We want to test that *evolution finds new strategies*, not that humans pre-loaded them.
+
+- We want to test that _evolution finds new strategies_, not that humans pre-loaded them.
 - More starter strategies means more code in Layer 0 that needs to be maintained, audited, and (eventually) deprecated.
 - One strategy means a clear baseline against which mutations can be measured.
 
