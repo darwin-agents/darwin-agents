@@ -15,7 +15,9 @@ from .allowed_categories import ALLOWED_CATEGORIES, is_allowed
 from .escalation_rules import (
     ESCALATION_PER_ACTION_REVIEW_USDC,
     EscalationReason,
+    TicketClass,
     classify_escalation,
+    classify_ticket,
 )
 from .forbidden_actions import (
     SANCTIONED_JURISDICTIONS,
@@ -40,7 +42,9 @@ __all__ = [
     "ALLOWED_CATEGORIES",
     "is_allowed",
     "EscalationReason",
+    "TicketClass",
     "classify_escalation",
+    "classify_ticket",
     "ESCALATION_PER_ACTION_REVIEW_USDC",
     "ForbiddenAction",
     "SANCTIONED_JURISDICTIONS",

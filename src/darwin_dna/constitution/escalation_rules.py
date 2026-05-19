@@ -64,3 +64,42 @@ def classify_escalation(action: ActionDescriptor) -> EscalationReason | None:
             return EscalationReason.OVER_PER_ACTION_REVIEW
 
     return None
+
+
+class TicketClass(str, Enum):
+    """Escalation ticket classes and their owner-response deadlines
+    (docs/engineering/08, the escalation router). A timeout produces a
+    *deterministic* outcome (deny + re-plan), never a hang — a Darwin must
+    never be silently stuck (P4)."""
+
+    CAPTCHA = "captcha"  # ephemeral; owner has minutes
+    KYC = "kyc"  # up to 72h, then auto-fail
+    APPROVAL = "approval"  # spend/action approval; up to 24h, then auto-deny
+    INFO = "info"  # Darwin needs an answer; up to 7 days
+
+
+# Deadlines in seconds, measured on the Darwin's own clock.
+_TICKET_TIMEOUT_SECONDS: dict[TicketClass, float] = {
+    TicketClass.CAPTCHA: 15 * 60.0,
+    TicketClass.KYC: 72 * 3600.0,
+    TicketClass.APPROVAL: 24 * 3600.0,
+    TicketClass.INFO: 7 * 86_400.0,
+}
+
+# A neuron's blocker kind / error class → ticket class. Unknown blockers are
+# treated as INFO (the most lenient deadline) so a misclassification never
+# auto-fails work prematurely.
+_BLOCKER_TO_CLASS: dict[str, TicketClass] = {
+    "captcha": TicketClass.CAPTCHA,
+    "kyc": TicketClass.KYC,
+    "spend_approval": TicketClass.APPROVAL,
+    "approval": TicketClass.APPROVAL,
+    "policy_escalated": TicketClass.APPROVAL,
+}
+
+
+def classify_ticket(blocker_kind: str) -> tuple[TicketClass, float]:
+    """Map a neuron blocker/error class to (ticket class, timeout seconds).
+    Pure; deterministic; total (every input yields a class)."""
+    klass = _BLOCKER_TO_CLASS.get(blocker_kind, TicketClass.INFO)
+    return klass, _TICKET_TIMEOUT_SECONDS[klass]
