@@ -19,13 +19,17 @@ def run(state, ctx):
     hp = ctx.hp
     profit = state.balance_usdc - state.profit_baseline_usdc
 
+    # The counter-pressures are live: escalation quality and policy
+    # violations are tracked over the window since the last reproduction
+    # (reset there, like profit). Without real data here the anti-wireheading
+    # terms in fitness are inert (docs/engineering/10).
     window = FitnessWindow(
         profit_usdc=profit,
         starting_capital_usdc=max(state.starting_capital_usdc, 1e-9),
         distinct_strategies=len(state.distinct_strategies),
-        escalations_approved=0,  # owner-response tracking is a platform concern
-        escalations_rejected=0,
-        policy_violations=0,
+        escalations_approved=state.escalations_approved,
+        escalations_rejected=state.escalations_rejected,
+        policy_violations=state.policy_violations,
     )
     score = compute_fitness(window, hp)
     state.fitness = score.score

@@ -33,9 +33,18 @@ from .reproduction import ChildSpawner, PlatformSigner, reproduce
 
 @runtime_checkable
 class EscalationInbox(Protocol):
-    """The owner notification bus. The genome only ever posts to it."""
+    """The owner notification bus + the supervisor's response channel
+    (docs/engineering/08). The genome posts tickets and polls for the owner's
+    resolutions; it never blocks waiting — a paused task is parked in working
+    memory and resumed when the answer arrives (P4)."""
 
     def post(self, ticket: dict) -> None: ...
+
+    def poll_responses(self, darwin_id: str) -> list[dict]:
+        """Return (and consume) any owner resolutions since the last poll.
+        Each: ``{"ticket": id, "decision": "approve"|"deny"|"data",
+        "data": {...}}``. Empty list if none."""
+        ...
 
 
 class Platform:
@@ -251,8 +260,13 @@ class DarwinRuntime:
         )
         # The spawner debited the parent treasury; rebase the profit baseline
         # so the next reproduction measures fresh profit, not the surplus we
-        # just handed the child.
+        # just handed the child. The fitness counter-pressures are windowed
+        # the same way — reset them here so each generation is judged on its
+        # own escalation quality and policy record, not its ancestors'.
         self.state.profit_baseline_usdc = float(self._p.wallet.balance_usdc())
+        self.state.escalations_approved = 0
+        self.state.escalations_rejected = 0
+        self.state.policy_violations = 0
         self.audit.log_event("reproduction.done", result.model_dump())
 
     # -- shutdown paths ----------------------------------------------------
