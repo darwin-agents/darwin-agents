@@ -21,7 +21,7 @@ from dataclasses import asdict
 from typing import Any
 
 try:  # pragma: no cover - import-time guard
-    from fastapi import Body, FastAPI, HTTPException, Query, Request
+    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
@@ -29,6 +29,13 @@ except ImportError as exc:  # pragma: no cover
         "`pip install darwin-dna[platform]`"
     ) from exc
 
+from .auth import (
+    OWNER,
+    PLATFORM_OPERATOR,
+    AuthContext,
+    TokenStore,
+    disabled_context,
+)
 from .monitoring import Severity
 from .snapshot import snapshot as build_snapshot
 from .supervisor import Supervisor, SupervisorError, UnknownDarwin
@@ -57,6 +64,16 @@ class PauseRequest(BaseModel):
 class EscalationResponseRequest(BaseModel):
     decision: str = Field(pattern=r"^(approve|deny|data)$")
     data: dict[str, Any] | None = None
+
+
+class QuarantineRequest(BaseModel):
+    reason: str
+    operator: str = "platform"
+
+
+class WalletPolicyRequest(BaseModel):
+    per_action_cap_usdc: float | None = Field(default=None, ge=0)
+    per_day_cap_usdc: float | None = Field(default=None, ge=0)
 
 
 # -- app factory ------------------------------------------------------------
@@ -281,6 +298,64 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
             min_severity=sev, since=since, limit=limit
         )
         return {"alerts": rows}
+
+    # -- internal: quarantine (doc 08 + doc 09 level 4) -------------------
+    @app.post("/platform/darwins/{darwin_id}/quarantine")
+    async def quarantine_darwin(
+        darwin_id: str, request: Request, req: QuarantineRequest
+    ) -> dict[str, str]:
+        try:
+            await _sup(request).quarantine(
+                darwin_id, reason=req.reason, operator=req.operator
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        return {"status": "quarantined"}
+
+    @app.delete("/platform/darwins/{darwin_id}/quarantine")
+    async def unquarantine_darwin(
+        darwin_id: str,
+        request: Request,
+        operator: str = Query("platform"),
+    ) -> dict[str, str]:
+        try:
+            await _sup(request).unquarantine(darwin_id, operator=operator)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {"status": "cleared"}
+
+    # -- internal: wallet policy (doc 08 POST /platform/wallets/.../policy)
+    @app.post("/platform/wallets/{darwin_id}/policy")
+    async def set_wallet_policy(
+        darwin_id: str, request: Request, req: WalletPolicyRequest
+    ) -> dict[str, Any]:
+        try:
+            return await _sup(request).set_wallet_policy(
+                darwin_id,
+                per_action_cap_usdc=req.per_action_cap_usdc,
+                per_day_cap_usdc=req.per_day_cap_usdc,
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/platform/wallets/{darwin_id}/policy")
+    async def get_wallet_policy(darwin_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return await _sup(request).get_wallet_policy(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    # -- internal: signing public key (doc 08; HSM-backed in production) --
+    @app.get("/platform/signing/public_key")
+    async def signing_public_key(request: Request) -> dict[str, str]:
+        pem = _sup(request).signing_public_key_pem().decode("ascii")
+        return {"format": "PEM", "public_key": pem}
 
     # -- snapshot (ops-side; not in doc 08) -------------------------------
     @app.get("/platform/snapshot")

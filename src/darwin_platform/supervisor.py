@@ -36,6 +36,7 @@ from typing import Any, Callable
 
 from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_fakes import FakeStack, make_child_platform
+from darwin_fakes.fake_platform import SigningService
 
 from .escalation import EscalationRouter, NotificationSink, RoutedTicket
 from .monitoring import (
@@ -46,6 +47,7 @@ from .monitoring import (
     Quotas,
     Severity,
 )
+from .tracing import annotate_span_with_runtime, span
 
 
 # -- errors ----------------------------------------------------------------
@@ -74,11 +76,26 @@ class DarwinStatus:
     alive: bool
     paused: bool
     killed: bool
+    quarantined: bool
+    quarantine_reason: str | None
     death_reason: str | None
     balance_usdc: float
     tick: int
     days_elapsed: float
     open_escalations: int
+
+
+@dataclass(frozen=True)
+class QuarantineState:
+    """Doc-09 level-4 graded response. Distinct from owner pause: triggered
+    by a confirmed policy/compliance issue, not by the owner; cannot be
+    cleared by the owner's ``resume`` endpoint; requires an explicit platform
+    ``unquarantine`` (or a kill)."""
+
+    active: bool
+    reason: str | None = None
+    operator: str | None = None
+    applied_ts: float | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +132,9 @@ class _Handle:
     # do not need sub-second resolution.
     drive_cycles: int = 0
     auto_paused_for: str | None = None  # alert kind, if we auto-paused
+    quarantine: QuarantineState = field(
+        default_factory=lambda: QuarantineState(active=False)
+    )
 
 
 # -- the supervisor --------------------------------------------------------
@@ -158,6 +178,12 @@ class Supervisor:
         )
         self._auto_pause_on_critical = bool(auto_pause_on_critical)
         self._monitor_every_n = max(1, int(monitor_every_n_ticks))
+        # Single platform-side signing identity (doc 02, doc 18 §"Signing and
+        # release"). One HSM key in reality; one SigningService here, shared
+        # across every Darwin spawned by this Supervisor instance so all
+        # manifests verify against the same public key. The signing private
+        # key never leaves this object — the genome only ever sees PEM.
+        self._signer = SigningService()
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -173,28 +199,33 @@ class Supervisor:
         spawner observer."""
         if self._closed:
             raise SupervisorError("supervisor is closed")
-
-        stack = FakeStack(
-            opening_usdc=opening_usdc,
-            clock=self._clock,
-            escalation_auto=escalation_auto,
-        )
-        # Genome's _sleep set to no-op: the supervisor schedules the gaps
-        # between heartbeats itself with asyncio.sleep, so the event loop
-        # never blocks on time.sleep even with many Darwins on one loop.
-        runtime = boot(stack.platform(), sleep=lambda _: None)
-        handle = _Handle(
-            darwin_id=runtime.identity.darwin_id,
-            stack=stack,
-            runtime=runtime,
-            spawned_at=self._clock(),
-            parent_id=parent_id,
-        )
-        self._darwins[handle.darwin_id] = handle
-        handle.task = asyncio.create_task(
-            self._drive(handle), name=f"darwin:{handle.darwin_id}"
-        )
-        return self._status(handle)
+        with span(
+            "supervisor.spawn",
+            attributes={"opening_usdc": opening_usdc, "parent_id": parent_id},
+        ) as s:
+            stack = FakeStack(
+                opening_usdc=opening_usdc,
+                clock=self._clock,
+                escalation_auto=escalation_auto,
+                signer=self._signer,
+            )
+            # Genome's _sleep set to no-op: the supervisor schedules the gaps
+            # between heartbeats itself with asyncio.sleep, so the event loop
+            # never blocks on time.sleep even with many Darwins on one loop.
+            runtime = boot(stack.platform(), sleep=lambda _: None)
+            handle = _Handle(
+                darwin_id=runtime.identity.darwin_id,
+                stack=stack,
+                runtime=runtime,
+                spawned_at=self._clock(),
+                parent_id=parent_id,
+            )
+            self._darwins[handle.darwin_id] = handle
+            annotate_span_with_runtime(s, runtime)
+            handle.task = asyncio.create_task(
+                self._drive(handle), name=f"darwin:{handle.darwin_id}"
+            )
+            return self._status(handle)
 
     # -- status (doc 08: GET /darwins/{id}) -------------------------------
     async def status(self, darwin_id: str) -> DarwinStatus:
@@ -204,39 +235,158 @@ class Supervisor:
     async def pause(self, darwin_id: str, *, reason: str = "owner paused") -> None:
         """Flip the platform pause flag. The genome notices at the next
         heartbeat boundary, anchors, and breaks — same life, not a death."""
-        h = self._get(darwin_id)
-        if h.killed:
-            raise SupervisorError(f"darwin {darwin_id} is killed; pause is a no-op")
-        h.stack.pause.pause(reason)
+        with span("supervisor.pause", darwin_id=darwin_id,
+                  attributes={"reason": reason}) as s:
+            h = self._get(darwin_id)
+            if h.killed:
+                raise SupervisorError(
+                    f"darwin {darwin_id} is killed; pause is a no-op"
+                )
+            annotate_span_with_runtime(s, h.runtime)
+            h.stack.pause.pause(reason)
 
     async def resume(self, darwin_id: str) -> None:
+        with span("supervisor.resume", darwin_id=darwin_id) as s:
+            h = self._get(darwin_id)
+            if h.killed:
+                raise SupervisorError(f"darwin {darwin_id} is killed; cannot resume")
+            if h.quarantine.active:
+                raise SupervisorError(
+                    f"darwin {darwin_id} is quarantined "
+                    f"(reason: {h.quarantine.reason!r}); requires unquarantine, "
+                    f"not resume"
+                )
+            annotate_span_with_runtime(s, h.runtime)
+            h.stack.pause.resume()
+            # Clear the auto-pause latch so a subsequent CRITICAL can pause
+            # again if the breach is still live. (A repeat breach is a
+            # different alert event from the operator's perspective.)
+            h.auto_paused_for = None
+
+    # -- platform-side quarantine (doc 08/09 level 4) ---------------------
+    async def quarantine(
+        self,
+        darwin_id: str,
+        *,
+        reason: str,
+        operator: str = "platform",
+    ) -> None:
+        """Move a Darwin to doc-09 level 4: pause + flag for platform review.
+        Cannot be cleared via owner ``resume`` — only ``unquarantine`` or a
+        kill. Idempotent: re-quarantining records the new reason/operator
+        but does not double-pause."""
+        with span(
+            "supervisor.quarantine",
+            darwin_id=darwin_id,
+            attributes={"reason": reason, "operator": operator},
+        ) as s:
+            h = self._get(darwin_id)
+            if h.killed:
+                raise SupervisorError(
+                    f"darwin {darwin_id} is killed; quarantine is a no-op"
+                )
+            annotate_span_with_runtime(s, h.runtime)
+            h.quarantine = QuarantineState(
+                active=True,
+                reason=reason,
+                operator=operator,
+                applied_ts=self._clock(),
+            )
+            # Pause if not already paused; the pause flag is shared with owner
+            # pause so a Darwin already paused stays paused under quarantine.
+            try:
+                h.stack.pause.pause(f"quarantine:{reason}")
+            except Exception:
+                # The fake should not raise here, but a misbehaving pause
+                # source must not block the quarantine state.
+                pass
+
+    async def unquarantine(self, darwin_id: str, *, operator: str = "platform") -> None:
+        """Clear the quarantine flag. Does NOT auto-resume — an operator
+        clearing quarantine has to make a separate ``resume`` call so the
+        two state transitions are independently auditable."""
+        with span(
+            "supervisor.unquarantine",
+            darwin_id=darwin_id,
+            attributes={"operator": operator},
+        ) as s:
+            h = self._get(darwin_id)
+            if not h.quarantine.active:
+                return
+            annotate_span_with_runtime(s, h.runtime)
+            h.quarantine = QuarantineState(active=False)
+
+    # -- platform-side wallet policy (doc 08 POST /platform/wallets/...) --
+    async def set_wallet_policy(
+        self,
+        darwin_id: str,
+        *,
+        per_action_cap_usdc: float | None = None,
+        per_day_cap_usdc: float | None = None,
+    ) -> dict[str, Any]:
+        """Tighten a Darwin's per-action / per-day spend caps below the
+        genome's hard caps. The platform may only LOWER caps (the
+        constitution's hard caps are inviolable); the wallet enforces that.
+        Returns the new effective policy."""
+        with span(
+            "supervisor.set_wallet_policy",
+            darwin_id=darwin_id,
+            attributes={
+                "per_action_cap_usdc": per_action_cap_usdc,
+                "per_day_cap_usdc": per_day_cap_usdc,
+            },
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            wallet = h.stack.wallet
+            if not hasattr(wallet, "set_policy"):
+                raise SupervisorError(
+                    "wallet does not support platform-installed policy"
+                )
+            return wallet.set_policy(
+                per_action_cap_usdc=per_action_cap_usdc,
+                per_day_cap_usdc=per_day_cap_usdc,
+            )
+
+    async def get_wallet_policy(self, darwin_id: str) -> dict[str, Any]:
         h = self._get(darwin_id)
-        if h.killed:
-            raise SupervisorError(f"darwin {darwin_id} is killed; cannot resume")
-        h.stack.pause.resume()
-        # Clear the auto-pause latch so a subsequent CRITICAL can pause again
-        # if the breach is still live. (A repeat breach is a different alert
-        # event from the operator's perspective.)
-        h.auto_paused_for = None
+        wallet = h.stack.wallet
+        if not hasattr(wallet, "policy"):
+            raise SupervisorError("wallet does not expose policy")
+        return wallet.policy()
+
+    # -- platform signing service surface (doc 08) ------------------------
+    def signing_public_key_pem(self) -> bytes:
+        """The platform's signing public key in PEM. Operators verify against
+        this to confirm any DNA manifest signature in the system. In a real
+        deployment this comes from an HSM; here it's the fake SigningService
+        the Supervisor instantiated and shares across every Darwin it spawns.
+        Available regardless of whether any Darwins have been spawned yet."""
+        return self._signer.public_key_pem()
 
     # -- kill (doc 08: POST /darwins/{id}/kill) ---------------------------
     async def kill(self, darwin_id: str, *, reason: str = "owner kill") -> None:
         """Flip the platform kill flag. The genome polls it at the loop
         boundary and at every node boundary (doc 09: ≤5s latency), then runs
         ``_halt_on_kill`` which writes the final audit record and anchors."""
-        h = self._get(darwin_id)
-        h.killed = True
-        h.stack.kill.flip(reason)
+        with span("supervisor.kill", darwin_id=darwin_id,
+                  attributes={"reason": reason}) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            h.killed = True
+            h.stack.kill.flip(reason)
 
     # -- force reproduction (doc 08: POST /darwins/{id}/reproduce/force) --
     async def force_reproduce(self, darwin_id: str) -> None:
         """Set the genome's reproduce flag for the next heartbeat. The
         genome still runs its own treasury/fitness gates inside ``_reproduce``;
         forcing requests, it does not bypass."""
-        h = self._get(darwin_id)
-        if not h.runtime.state.alive:
-            raise SupervisorError(f"darwin {darwin_id} is not alive")
-        h.reproduce_requested = True
+        with span("supervisor.force_reproduce", darwin_id=darwin_id) as s:
+            h = self._get(darwin_id)
+            if not h.runtime.state.alive:
+                raise SupervisorError(f"darwin {darwin_id} is not alive")
+            annotate_span_with_runtime(s, h.runtime)
+            h.reproduce_requested = True
 
     # -- escalations (doc 08: POST .../escalations/{eid}/respond) ---------
     async def respond_escalation(
@@ -253,10 +403,16 @@ class Supervisor:
         dashboard reads. They must agree."""
         if decision not in ("approve", "deny", "data"):
             raise SupervisorError(f"unknown decision: {decision}")
-        h = self._get(darwin_id)
-        h.stack.escalation.respond(escalation_id, decision, data or {})
-        self._router.mark_responded(escalation_id, decision, data or {})
-        h.handled_responses.add(escalation_id)
+        with span(
+            "supervisor.respond_escalation",
+            darwin_id=darwin_id,
+            attributes={"escalation_id": escalation_id, "decision": decision},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            h.stack.escalation.respond(escalation_id, decision, data or {})
+            self._router.mark_responded(escalation_id, decision, data or {})
+            h.handled_responses.add(escalation_id)
 
     # -- lineage (doc 08: GET /darwins/{id}/lineage) ----------------------
     async def lineage(self, darwin_id: str) -> dict[str, Any]:
@@ -429,6 +585,8 @@ class Supervisor:
             alive=bool(st.alive),
             paused=bool(getattr(st, "paused", False)),
             killed=h.killed,
+            quarantined=h.quarantine.active,
+            quarantine_reason=h.quarantine.reason,
             death_reason=st.death_reason,
             balance_usdc=float(h.stack.wallet.balance_usdc()),
             tick=int(st.tick),
@@ -547,6 +705,24 @@ class Supervisor:
         except Exception:
             return
         fired = self._monitor.check(signals)
+        # Only open a span when alerts actually fired — keeps the trace
+        # signal-to-noise high (the monitor runs every N ticks).
+        if fired:
+            with span(
+                "supervisor.alerts",
+                darwin_id=handle.darwin_id,
+                attributes={"count": len(fired)},
+            ) as s:
+                annotate_span_with_runtime(s, handle.runtime)
+                s.set_attribute(
+                    "kinds", ",".join(sorted({a.kind for a in fired}))
+                )
+                s.set_attribute(
+                    "max_severity",
+                    max(a.severity.value for a in fired)
+                    if fired
+                    else "",
+                )
         if not self._auto_pause_on_critical:
             return
         if handle.killed or not handle.runtime.state.alive:
@@ -560,11 +736,17 @@ class Supervisor:
                 continue
             if handle.auto_paused_for == alert.kind:
                 continue
-            handle.auto_paused_for = alert.kind
-            try:
-                handle.stack.pause.pause(f"auto: {alert.kind} critical")
-            except Exception:
-                handle.auto_paused_for = None
+            with span(
+                "supervisor.auto_pause",
+                darwin_id=handle.darwin_id,
+                attributes={"kind": alert.kind},
+            ) as s:
+                annotate_span_with_runtime(s, handle.runtime)
+                handle.auto_paused_for = alert.kind
+                try:
+                    handle.stack.pause.pause(f"auto: {alert.kind} critical")
+                except Exception:
+                    handle.auto_paused_for = None
             break
 
     def _observe_escalations(self, handle: _Handle) -> None:
@@ -583,38 +765,58 @@ class Supervisor:
             # one, so the router buckets correctly either way.
             if not payload.get("darwin_id"):
                 payload = {**payload, "darwin_id": handle.darwin_id}
-            try:
-                self._router.register(payload)
-            except Exception:
-                # A malformed payload is a bug in whatever posted it. The
-                # supervisor must not die because of one bad ticket; skip it
-                # and let the others through.
-                continue
+            with span(
+                "escalation.register",
+                darwin_id=handle.darwin_id,
+                attributes={
+                    "ticket_id": payload.get("ticket"),
+                    "ticket_class": payload.get("ticket_class"),
+                    "neuron": payload.get("neuron"),
+                },
+            ) as s:
+                annotate_span_with_runtime(s, handle.runtime)
+                try:
+                    self._router.register(payload)
+                except Exception:
+                    # A malformed payload is a bug in whatever posted it.
+                    # The supervisor must not die because of one bad
+                    # ticket; skip it and let the others through.
+                    continue
         handle.escalation_observed = len(tickets)
 
     def _boot_child(self, parent: _Handle, record: dict, child_id: str) -> None:
-        try:
-            child_platform, child_stack = make_child_platform(
-                signer=parent.stack.signer,
-                child_manifest_json=record["child_manifest"],
-                child_layer_blobs=record["child_layer_blobs"],
-                opening_usdc=float(record["budget_usdc"]),
-                clock=self._clock,
-            )
-            child_runtime = boot(child_platform, sleep=lambda _: None)
-        except Exception:
-            # A child whose DNA fails to verify is the platform's problem,
-            # not the parent's — log nothing here (caller has audit context),
-            # surface via lineage edges and absence from _darwins.
-            return
-        child_handle = _Handle(
+        with span(
+            "supervisor.boot_child",
             darwin_id=child_id,
-            stack=child_stack,
-            runtime=child_runtime,
-            spawned_at=self._clock(),
-            parent_id=parent.darwin_id,
-        )
-        self._darwins[child_id] = child_handle
-        child_handle.task = asyncio.create_task(
-            self._drive(child_handle), name=f"darwin:{child_id}"
-        )
+            attributes={
+                "parent_id": parent.darwin_id,
+                "budget_usdc": float(record.get("budget_usdc", 0.0)),
+            },
+        ) as s:
+            try:
+                child_platform, child_stack = make_child_platform(
+                    signer=parent.stack.signer,
+                    child_manifest_json=record["child_manifest"],
+                    child_layer_blobs=record["child_layer_blobs"],
+                    opening_usdc=float(record["budget_usdc"]),
+                    clock=self._clock,
+                )
+                child_runtime = boot(child_platform, sleep=lambda _: None)
+            except Exception:
+                # A child whose DNA fails to verify is the platform's
+                # problem, not the parent's — log nothing here (caller has
+                # audit context), surface via lineage edges and absence
+                # from _darwins.
+                return
+            annotate_span_with_runtime(s, child_runtime)
+            child_handle = _Handle(
+                darwin_id=child_id,
+                stack=child_stack,
+                runtime=child_runtime,
+                spawned_at=self._clock(),
+                parent_id=parent.darwin_id,
+            )
+            self._darwins[child_id] = child_handle
+            child_handle.task = asyncio.create_task(
+                self._drive(child_handle), name=f"darwin:{child_id}"
+            )

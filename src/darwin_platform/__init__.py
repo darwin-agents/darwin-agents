@@ -32,6 +32,7 @@ from .snapshot import snapshot, write_snapshot
 from .supervisor import (
     DarwinStatus,
     LineageEdge,
+    QuarantineState,
     Supervisor,
     SupervisorError,
     UnknownDarwin,
@@ -41,6 +42,7 @@ __all__ = [
     "Supervisor",
     "DarwinStatus",
     "LineageEdge",
+    "QuarantineState",
     "SupervisorError",
     "UnknownDarwin",
     "EscalationRouter",
