@@ -1,0 +1,113 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+  Default-deny egress + targeted allow rules (doc 08 §"Outbound network
+  filter"). NetworkPolicy is the K8s analogue of the doc-described
+  egress proxy: the supervisor can only reach destinations the operator
+  explicitly named.
+
+  Ingress is allowed from pods carrying the configured client label.
+  This is intentionally simple — production deployments usually layer a
+  service mesh (Istio / Linkerd) for richer policy + mTLS.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "darwin-platform.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- with .Values.networkPolicy.ingress.from }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.service.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.ingress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.dns }}
+    # DNS — every workload needs it. Allow to any pod that listens on
+    # 53/udp or 53/tcp (the typical kube-dns shape).
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.litellm }}
+    {{- if or .namespace .podLabels }}
+    # LiteLLM proxy — the only LLM destination the supervisor should reach.
+    - to:
+        - namespaceSelector:
+            {{- if .namespace }}
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+            {{- end }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .port | default 4000 }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.otlp }}
+    {{- if or .namespace .podLabels }}
+    # OTLP collector — Jaeger / Tempo / Honeycomb agent for traces.
+    - to:
+        - namespaceSelector:
+            {{- if .namespace }}
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+            {{- end }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+      ports:
+        {{- range .ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.postgres }}
+    {{- if or .namespace .podLabels }}
+    # Postgres — reserved for the future Postgres-backed persistence port.
+    - to:
+        - namespaceSelector:
+            {{- if .namespace }}
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+            {{- end }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .port | default 5432 }}
+    {{- end }}
+    {{- end }}
+    {{- range .Values.networkPolicy.egress.extraCIDRs }}
+    # Operator-supplied public destination (e.g. Coinbase / Vault HCP).
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr }}
+      ports:
+        {{- range .ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+{{- end }}

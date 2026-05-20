@@ -53,6 +53,7 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
+          {{- if or .Values.tracing.endpoint .Values.extraEnv }}
           env:
             {{- if .Values.tracing.endpoint }}
             - name: OTEL_SERVICE_NAME
@@ -65,6 +66,7 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
