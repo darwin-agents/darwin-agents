@@ -116,27 +116,26 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 from .adapters.multichain import ChainNetwork
                 clients[ChainNetwork.BASE] = Web3ChainClient(**kwargs)
             if _have_solana:
-                try:
-                    import solana  # noqa: F401
-                except ImportError as exc:
-                    raise ImportError(
-                        "Solana chain requires the 'solana' SDK: "
-                        "pip install solana"
-                    ) from exc
-                # User wires the rpc_client + keypair from the SDK.
-                # The CLI's role is to expose the URL + secret; the
-                # operator provides a factory hook for environment-
-                # specific construction. For now, raise a clear hint.
-                raise ImportError(
-                    "Solana wiring needs an operator-supplied keypair "
-                    "+ RPC client; pass solana_chain_factory directly "
-                    "via Supervisor(...) instead of CLI flags."
+                from .adapters.multichain import ChainNetwork
+                from .adapters.solana_sdk import build_solana_chain_client
+                cluster = "mainnet" if "mainnet" in (
+                    _solana_rpc or ""
+                ).lower() else "devnet"
+                clients[ChainNetwork.SOLANA] = build_solana_chain_client(
+                    rpc_url=_solana_rpc,
+                    private_key_hex=_solana_key,
+                    cluster=cluster,
                 )
             if _have_stellar:
-                raise ImportError(
-                    "Stellar wiring needs an operator-supplied keypair "
-                    "+ Horizon server; pass stellar_chain_factory "
-                    "directly via Supervisor(...) instead of CLI flags."
+                from .adapters.multichain import ChainNetwork
+                from .adapters.stellar_sdk import build_stellar_chain_client
+                network = "public" if (
+                    "horizon.stellar.org" in (_horizon or "").lower()
+                ) else "testnet"
+                clients[ChainNetwork.STELLAR] = build_stellar_chain_client(
+                    horizon_url=_horizon,
+                    secret=_stellar_secret,
+                    network=network,
                 )
             if len(clients) > 1:
                 from .adapters.multichain import (
