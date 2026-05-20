@@ -323,17 +323,22 @@ class Supervisor:
         *,
         per_action_cap_usdc: float | None = None,
         per_day_cap_usdc: float | None = None,
+        per_lifetime_cap_usdc: float | None = None,
     ) -> dict[str, Any]:
-        """Tighten a Darwin's per-action / per-day spend caps below the
-        genome's hard caps. The platform may only LOWER caps (the
+        """Tighten a Darwin's per-action / per-day / per-lifetime spend caps
+        below the genome's hard caps. The platform may only LOWER caps (the
         constitution's hard caps are inviolable); the wallet enforces that.
-        Returns the new effective policy."""
+        The same caps flow into the genome's policy engine via the wallet's
+        ``owner_soft_caps`` method, so a refused spend is logged with policy
+        rationale, not as a generic wallet_error. Returns the new effective
+        policy."""
         with span(
             "supervisor.set_wallet_policy",
             darwin_id=darwin_id,
             attributes={
                 "per_action_cap_usdc": per_action_cap_usdc,
                 "per_day_cap_usdc": per_day_cap_usdc,
+                "per_lifetime_cap_usdc": per_lifetime_cap_usdc,
             },
         ) as s:
             h = self._get(darwin_id)
@@ -346,6 +351,7 @@ class Supervisor:
             return wallet.set_policy(
                 per_action_cap_usdc=per_action_cap_usdc,
                 per_day_cap_usdc=per_day_cap_usdc,
+                per_lifetime_cap_usdc=per_lifetime_cap_usdc,
             )
 
     async def get_wallet_policy(self, darwin_id: str) -> dict[str, Any]:
