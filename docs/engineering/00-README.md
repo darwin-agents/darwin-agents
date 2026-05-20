@@ -35,6 +35,12 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`21-phase-one-evolution-build-plan.md`](21-phase-one-evolution-build-plan.md) — self-modification staging, reproduction, real economic activity, and the evolution loop
 - [`22-phase-two-multi-tenant-build-plan.md`](22-phase-two-multi-tenant-build-plan.md) — tenant isolation, full payment stack, user dashboard, and operational maturity for alpha
 
+## Reference & hardening
+
+- [`23-data-model-reference.md`](23-data-model-reference.md) — canonical Postgres schemas, state machine, checkpoint format, audit shape, migration strategy
+- [`24-security-threat-model.md`](24-security-threat-model.md) — attack surfaces, adversarial soma contract, red-team checklist, kill-switch timing proof
+- [`25-operational-runbook.md`](25-operational-runbook.md) — deployment, monitoring, failure modes, recovery, soak test operations
+
 ## Related (in `overview/`)
 
 - [`../overview/02-design-principles.md`](../overview/02-design-principles.md) — the P1–P10 principles every doc here is checked against
