@@ -13,7 +13,7 @@ import pytest
 
 from darwin_dna.constitution import OwnerSoftCaps
 from darwin_dna.hyperparameters import HARD_CAPS
-from darwin_platform.adapters import ChainClient, RealWallet, WalletError
+from darwin_platform.adapters import RealWallet, WalletError
 
 
 @dataclass

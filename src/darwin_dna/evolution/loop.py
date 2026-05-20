@@ -14,7 +14,7 @@ unbroken — on first boot, with no mutations applied.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 from ..constitution import assert_constitution_invariants
 from ..hyperparameters import DEFAULT_HYPERPARAMETERS, Hyperparameters

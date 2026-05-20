@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 

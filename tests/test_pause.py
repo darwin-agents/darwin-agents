@@ -12,9 +12,7 @@ import asyncio
 
 import pytest
 
-from darwin_dna.evolution import boot
 from darwin_dna.machinery.pause_switch import PauseSwitch
-from darwin_fakes import make_platform
 
 
 def _events_of(stack, kind: str):

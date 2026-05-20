@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("fastapi")
 httpx = pytest.importorskip("httpx")
 
-from darwin_platform import Quotas, Supervisor  # noqa: E402
+from darwin_platform import Supervisor  # noqa: E402
 from darwin_platform.api import _render_metrics, build_app  # noqa: E402
 
 

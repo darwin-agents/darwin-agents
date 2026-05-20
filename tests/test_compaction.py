@@ -110,7 +110,7 @@ def test_verify_manifest_rejects_more_layers_than_generation_plus_one(vclock):
     # is structurally impossible and must still be rejected.
     hp = Hyperparameters(generation_soft_cap=20)
     platform, stack = make_platform(opening_usdc=200.0, clock=vclock)
-    rt = boot(platform, hp=hp, clock=vclock, sleep=vclock.sleep)
+    boot(platform, hp=hp, clock=vclock, sleep=vclock.sleep)
     # Forge a manifest claiming generation 0 but carrying 2 layers.
     from darwin_dna.manifest import (
         LayerEntry, Manifest, ManifestIdentity, layer_signed_payload, sha256_hex

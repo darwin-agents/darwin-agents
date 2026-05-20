@@ -20,7 +20,7 @@ import pytest
 
 from darwin_dna.hyperparameters import HARD_CAPS
 from darwin_fakes.fake_wallet import FakeWallet, WalletError
-from darwin_platform import Supervisor, SupervisorError, UnknownDarwin
+from darwin_platform import Supervisor, SupervisorError
 
 
 async def _wait_until(

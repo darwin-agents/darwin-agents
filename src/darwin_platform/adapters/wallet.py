@@ -30,7 +30,7 @@ process — it lives in the ChainClient's secured backend.
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from darwin_dna.constitution import OwnerSoftCaps
 from darwin_dna.hyperparameters import HARD_CAPS

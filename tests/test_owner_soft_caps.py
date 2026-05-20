@@ -16,7 +16,6 @@ from typing import Callable
 import pytest
 
 from darwin_dna.constitution import (
-    OwnerSoftCaps,
     SpendIntent,
 )
 from darwin_dna.machinery.treasury_policy import Verdict, evaluate

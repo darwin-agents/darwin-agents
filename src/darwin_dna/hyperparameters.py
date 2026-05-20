@@ -15,7 +15,7 @@ Concretely there are two tiers in this file:
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 
 
 class HardCaps(BaseModel):

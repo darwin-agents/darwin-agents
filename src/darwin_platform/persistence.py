@@ -32,14 +32,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from contextlib import closing
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from darwin_dna.constitution import TicketClass
 
-from .auth import AuthContext, TokenStore
+from .auth import AuthContext
 from .billing import BillingLedger, BillingPolicy, BillingService
 from .escalation import (
     EscalationRouter,

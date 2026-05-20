@@ -148,7 +148,6 @@ async def test_observe_children_records_lineage_edges(supervisor: Supervisor) ->
     same process, recording the parent->child edge. We stage a synthetic
     spawn record (signed by the parent's signer) rather than wait for the
     full 90-day economic path that the sim tests already cover."""
-    from darwin_dna._version import LAYER_0_VERSION
     from darwin_fakes.fake_platform import mint_genesis
 
     parent = await supervisor.spawn(opening_usdc=80.0)

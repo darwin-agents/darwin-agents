@@ -27,7 +27,6 @@ from darwin_fakes.fake_wallet import FakeWallet, WalletError
 from darwin_platform import (
     BillingLedger,
     BillingPolicy,
-    BillingService,
     Supervisor,
     SupervisorError,
 )
@@ -216,7 +215,6 @@ async def test_metered_debits_accrue_platform_revenue() -> None:
     )
     try:
         status = await sup.spawn(opening_usdc=200.0)
-        h = sup._darwins[status.darwin_id]  # noqa: SLF001
         # Wait for a few heartbeats — the fake LLM debits the wallet on
         # each call. Plan + reasoning calls in the founding loop should
         # produce metered entries within a few ticks.

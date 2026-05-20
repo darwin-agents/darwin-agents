@@ -40,7 +40,7 @@ from darwin_fakes import FakeStack, make_child_platform
 from darwin_fakes.fake_platform import SigningService
 
 from .billing import BillingPolicy, BillingService
-from .escalation import EscalationRouter, NotificationSink, RoutedTicket
+from .escalation import EscalationRouter, NotificationSink
 from .monitoring import (
     Alert,
     AlertSink,

@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
 
 from darwin_dna.evolution import boot
 from darwin_dna.hyperparameters import DEFAULT_HYPERPARAMETERS

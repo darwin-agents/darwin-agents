@@ -9,7 +9,7 @@ no state, just arithmetic over numbers the caller supplies.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from ..hyperparameters import HARD_CAPS, HardCaps
 

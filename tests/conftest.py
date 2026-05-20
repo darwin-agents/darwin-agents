@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_fakes import FakeStack, make_platform
+from darwin_fakes import make_platform
 from darwin_fakes.fake_platform import SigningService, mint_genesis
 
 

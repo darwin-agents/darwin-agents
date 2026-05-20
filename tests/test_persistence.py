@@ -266,7 +266,6 @@ async def test_billing_policy_overrides_persistent_default(tmp_path: Path) -> No
 
 # -- lineage edges survive restart + lineage() works for inactive darwins
 async def test_lineage_edges_survive_restart(tmp_path: Path) -> None:
-    from darwin_dna.layers import LAYER_0_LESSONS, serialize_lessons
     from darwin_fakes.fake_platform import mint_genesis
     from darwin_platform import LineageEdge
 
@@ -345,7 +344,6 @@ async def test_escalation_router_tickets_survive_restart(tmp_path: Path) -> None
         )
         # Snapshot for restart-time comparison.
         tip_open = sup.router.get("T-open").to_dict(time.time())
-        tip_resp = sup.router.get("T-resp").to_dict(time.time())
     finally:
         await sup.shutdown()
 
@@ -363,7 +361,7 @@ async def test_escalation_router_tickets_survive_restart(tmp_path: Path) -> None
 
 
 async def test_monitor_alerts_survive_restart(tmp_path: Path) -> None:
-    from darwin_platform import Quotas, Severity
+    from darwin_platform import Quotas
 
     db = tmp_path / "p.db"
     # Configure a trip-easy quota so the failure_rate detector fires on a

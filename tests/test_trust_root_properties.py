@@ -10,7 +10,6 @@ and only accept what was actually signed by the platform key.
 from __future__ import annotations
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 

@@ -35,10 +35,10 @@ system prompts that callers can override via ``system_prompts``.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
-from darwin_dna.machinery.llm_router import LLMError, LLMTransport, Tier
+from darwin_dna.machinery.llm_router import LLMError, Tier
 
 
 _PLAN_SYSTEM_FALLBACK = (

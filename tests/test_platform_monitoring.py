@@ -14,10 +14,7 @@ from typing import Callable
 import pytest
 
 from darwin_platform import (
-    Alert,
-    AlertSink,
     DarwinSignals,
-    LogAlertSink,
     Monitor,
     Quotas,
     Severity,
