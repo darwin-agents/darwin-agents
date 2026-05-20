@@ -144,6 +144,19 @@ CREATE TABLE IF NOT EXISTS monitor_alerts (
 );
 CREATE INDEX IF NOT EXISTS monitor_alerts_darwin_idx ON monitor_alerts(darwin_id);
 CREATE INDEX IF NOT EXISTS monitor_alerts_ts_idx     ON monitor_alerts(ts);
+
+CREATE TABLE IF NOT EXISTS darwin_lifecycle (
+    darwin_id      TEXT PRIMARY KEY,
+    opening_usdc   {real} NOT NULL,
+    last_balance   {real},
+    parent_id      TEXT,
+    spawned_at     {real} NOT NULL,
+    alive          INTEGER NOT NULL,
+    killed         INTEGER NOT NULL,
+    kill_reason    TEXT,
+    escalation_auto TEXT
+);
+CREATE INDEX IF NOT EXISTS darwin_lifecycle_alive_idx ON darwin_lifecycle(alive);
 """
 
 
@@ -347,6 +360,9 @@ class PersistenceStore:
 
     def lineage_registry(self) -> "PersistentLineageRegistry":
         return PersistentLineageRegistry(self._backend)
+
+    def lifecycle_store(self) -> "PersistentLifecycleStore":
+        return PersistentLifecycleStore(self._backend)
 
     def escalation_router(
         self,
@@ -833,3 +849,158 @@ class PersistentMonitor(Monitor):
                 ],
             )
         return fired
+
+
+# -- darwin lifecycle (doc 08 HA: runtime resume after failover) -----------
+class LifecycleRecord:
+    """Per-Darwin lifecycle snapshot used to resume after process restart
+    or leader failover. Holds JUST what's needed to re-spawn a fresh
+    runtime with the same opening budget; the audit chain stays
+    authoritative for in-life events."""
+
+    __slots__ = (
+        "darwin_id", "opening_usdc", "last_balance", "parent_id",
+        "spawned_at", "alive", "killed", "kill_reason", "escalation_auto",
+    )
+
+    def __init__(
+        self,
+        *,
+        darwin_id: str,
+        opening_usdc: float,
+        last_balance: float | None,
+        parent_id: str | None,
+        spawned_at: float,
+        alive: bool,
+        killed: bool,
+        kill_reason: str | None,
+        escalation_auto: str | None,
+    ) -> None:
+        self.darwin_id = darwin_id
+        self.opening_usdc = opening_usdc
+        self.last_balance = last_balance
+        self.parent_id = parent_id
+        self.spawned_at = spawned_at
+        self.alive = alive
+        self.killed = killed
+        self.kill_reason = kill_reason
+        self.escalation_auto = escalation_auto
+
+    def to_json(self) -> dict:
+        return {
+            "darwin_id": self.darwin_id,
+            "opening_usdc": self.opening_usdc,
+            "last_balance": self.last_balance,
+            "parent_id": self.parent_id,
+            "spawned_at": self.spawned_at,
+            "alive": self.alive,
+            "killed": self.killed,
+            "kill_reason": self.kill_reason,
+            "escalation_auto": self.escalation_auto,
+        }
+
+
+class PersistentLifecycleStore:
+    """Backend-backed lifecycle table for runtime resume.
+
+    Write-through on every spawn / kill / balance snapshot. The supervisor
+    reads on startup (in leader mode) and re-spawns each ``alive=True``
+    Darwin with the last persisted balance as its opening budget."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    def upsert_spawn(
+        self,
+        *,
+        darwin_id: str,
+        opening_usdc: float,
+        parent_id: str | None,
+        spawned_at: float,
+        escalation_auto: str | None,
+    ) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO darwin_lifecycle "
+                "(darwin_id, opening_usdc, last_balance, parent_id, "
+                "spawned_at, alive, killed, kill_reason, escalation_auto) "
+                "VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?) "
+                "ON CONFLICT(darwin_id) DO UPDATE SET "
+                "opening_usdc = excluded.opening_usdc, "
+                "parent_id = excluded.parent_id, "
+                "spawned_at = excluded.spawned_at, "
+                "alive = 1, killed = 0, kill_reason = NULL, "
+                "escalation_auto = excluded.escalation_auto",
+                (
+                    darwin_id, float(opening_usdc), float(opening_usdc),
+                    parent_id, float(spawned_at), escalation_auto,
+                ),
+            )
+
+    def mark_killed(
+        self, darwin_id: str, *, reason: str | None,
+    ) -> None:
+        with self._backend:
+            self._backend.execute(
+                "UPDATE darwin_lifecycle SET alive = 0, killed = 1, "
+                "kill_reason = ? WHERE darwin_id = ?",
+                (reason, darwin_id),
+            )
+
+    def snapshot_balance(
+        self, darwin_id: str, *, balance_usdc: float,
+    ) -> None:
+        with self._backend:
+            self._backend.execute(
+                "UPDATE darwin_lifecycle SET last_balance = ? "
+                "WHERE darwin_id = ?",
+                (float(balance_usdc), darwin_id),
+            )
+
+    def get(self, darwin_id: str) -> LifecycleRecord | None:
+        row = self._backend.execute(
+            "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
+            "spawned_at, alive, killed, kill_reason, escalation_auto "
+            "FROM darwin_lifecycle WHERE darwin_id = ?",
+            (darwin_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _lifecycle_from_row(row)
+
+    def list_alive(self) -> list[LifecycleRecord]:
+        rows = list(self._backend.execute(
+            "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
+            "spawned_at, alive, killed, kill_reason, escalation_auto "
+            "FROM darwin_lifecycle WHERE alive = 1 ORDER BY spawned_at ASC"
+        ).fetchall())
+        return [_lifecycle_from_row(r) for r in rows]
+
+    def list_all(self) -> list[LifecycleRecord]:
+        rows = list(self._backend.execute(
+            "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
+            "spawned_at, alive, killed, kill_reason, escalation_auto "
+            "FROM darwin_lifecycle ORDER BY spawned_at ASC"
+        ).fetchall())
+        return [_lifecycle_from_row(r) for r in rows]
+
+
+def _lifecycle_from_row(row) -> LifecycleRecord:
+    def _get(key, default=None):
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return default
+    return LifecycleRecord(
+        darwin_id=_get("darwin_id"),
+        opening_usdc=float(_get("opening_usdc") or 0.0),
+        last_balance=(
+            float(_get("last_balance")) if _get("last_balance") is not None else None
+        ),
+        parent_id=_get("parent_id"),
+        spawned_at=float(_get("spawned_at") or 0.0),
+        alive=bool(_get("alive")),
+        killed=bool(_get("killed")),
+        kill_reason=_get("kill_reason"),
+        escalation_auto=_get("escalation_auto"),
+    )
