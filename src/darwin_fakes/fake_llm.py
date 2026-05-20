@@ -76,6 +76,12 @@ class FakeLLM:
                     "failure_class": fc,
                     "after_failures": 2,
                 },
+                # Path-C (doc 04 phase 3): FakeLLM never emits a neuron
+                # proposal by default — the 90-day sim shouldn't grow
+                # the catalog from coding-tier hallucinations. Tests
+                # that exercise the Path-C path stub the transport
+                # directly instead.
+                "neuron_proposal": None,
                 "cost_usdc": cost,
             }
 

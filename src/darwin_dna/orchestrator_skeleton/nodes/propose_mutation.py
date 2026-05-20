@@ -92,12 +92,73 @@ def run(state, ctx):
     delta = resp.get("behavior_delta") or {
         "kind": "backoff", "failure_class": failure_class, "after_failures": 3
     }
+    # Path-C: the LLM may additionally propose a new neuron via
+    # ``resp["neuron_proposal"]``. Doc 04 phase 3. The proposal travels
+    # alongside the BehaviorDelta and is evaluated by the harness; an
+    # admitted proposal joins the catalog at apply_mutation time. The
+    # admission gate's contract validator is also called here so we
+    # surface invalid proposals with a clear reason rather than letting
+    # them blow up at apply time.
+    proposal_payload = resp.get("neuron_proposal")
+    proposal_dict = None
+    if proposal_payload is not None:
+        proposal_dict = _validate_and_normalise_proposal(
+            proposal_payload, ctx,
+        )
+        if proposal_dict is None:
+            ctx.audit.log_event(
+                "neuron_proposal.skipped",
+                {"failure_class": failure_class,
+                 "reason": "invalid proposal payload"},
+            )
     state.plan = {
         "action": "evaluate_mutation",
         "failure_class": failure_class,
         "patch": patch.model_dump(),
         "behavior_delta": delta,
+        "neuron_proposal": proposal_dict,
         "recurrence": int(state.recurring_failures.get(failure_class, 1)),
     }
     state.route = "evaluate_mutation"
     return state
+
+
+def _validate_and_normalise_proposal(payload, ctx) -> dict | None:
+    """Coerce the LLM's free-form proposal into a NeuronProposal that
+    passes the contract validator. Returns the dict form on success, or
+    None when the payload is unusable. Never raises so a malformed
+    proposal doesn't poison the mutation flow."""
+    if not isinstance(payload, dict):
+        return None
+    try:
+        from ...machinery.neuron_proposal import (
+            NeuronProposal,
+            NeuronProposalError,
+            validate_proposal,
+        )
+    except Exception:
+        return None
+    try:
+        proposal = NeuronProposal(
+            name=str(payload.get("name", "")),
+            rationale=str(payload.get("rationale", "")),
+            capability_tags=frozenset(payload.get("capability_tags", [])),
+            steps=tuple(payload.get("steps", [])),
+            est_cost_usdc_p50=float(payload.get("est_cost_usdc_p50", 0.0)),
+            est_cost_usdc_p95=float(payload.get("est_cost_usdc_p95", 0.0)),
+        )
+    except Exception as exc:
+        ctx.audit.log_event(
+            "neuron_proposal.malformed",
+            {"reason": str(exc)[:200]},
+        )
+        return None
+    try:
+        validate_proposal(proposal, existing_catalog=ctx.catalog)
+    except NeuronProposalError as exc:
+        ctx.audit.log_event(
+            "neuron_proposal.refused",
+            {"name": proposal.name, "reason": str(exc)},
+        )
+        return None
+    return proposal.to_json()

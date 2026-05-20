@@ -21,8 +21,87 @@ def run(state, ctx):
     if failure_class in state.recurring_failures:
         del state.recurring_failures[failure_class]
     state.mutation_gate_open = False
-    ctx.audit.log_outcome(audit_id, "ok", {"applied": True})
-    ctx.audit.log_event("mutation.applied", {"failure_class": failure_class})
+
+    # Path-C (doc 04 phase 3): if the proposal carries a neuron_proposal
+    # AND the eval harness scored it favourably, submit + admit it into
+    # the runtime catalog so the next dispatch can route to it. Failure
+    # here is non-fatal — the behavior_delta still applies; the proposal
+    # is just skipped.
+    admitted_neuron: str | None = None
+    proposal_dict = state.plan.get("neuron_proposal")
+    if proposal_dict and getattr(ctx, "neuron_admission", None) is not None:
+        admitted_neuron = _admit_proposal(proposal_dict, ctx)
+
+    ctx.audit.log_outcome(
+        audit_id, "ok",
+        {"applied": True, "admitted_neuron": admitted_neuron},
+    )
+    ctx.audit.log_event(
+        "mutation.applied",
+        {"failure_class": failure_class,
+         "admitted_neuron": admitted_neuron},
+    )
     state.plan = {"action": "mutation_applied"}
     state.route = "check_reproduction"
     return state
+
+
+def _admit_proposal(proposal_dict: dict, ctx) -> str | None:
+    """Submit + admit a Path-C neuron proposal. Returns the admitted
+    name on success, None on any refusal (validator, contract check,
+    cap reached). Never raises so a bad proposal doesn't poison the
+    apply step."""
+    try:
+        from ...machinery.neuron_proposal import (
+            NeuronProposal,
+            NeuronProposalError,
+        )
+    except Exception:
+        return None
+    try:
+        proposal = NeuronProposal(
+            name=str(proposal_dict.get("name", "")),
+            rationale=str(proposal_dict.get("rationale", "")),
+            capability_tags=frozenset(
+                proposal_dict.get("capability_tags", [])
+            ),
+            steps=tuple(proposal_dict.get("steps", [])),
+            est_cost_usdc_p50=float(
+                proposal_dict.get("est_cost_usdc_p50", 0.0)
+            ),
+            est_cost_usdc_p95=float(
+                proposal_dict.get("est_cost_usdc_p95", 0.0)
+            ),
+        )
+    except Exception:
+        return None
+    gate = ctx.neuron_admission
+    try:
+        gate.submit(proposal, existing_catalog=ctx.catalog)
+    except NeuronProposalError as exc:
+        ctx.audit.log_event(
+            "neuron_proposal.submit_refused",
+            {"name": proposal.name, "reason": str(exc)},
+        )
+        return None
+    # Use the runtime helper if available — that's the path that
+    # also re-runs the catalog loader's contract check + updates
+    # ctx.catalog in place.
+    admit_via_runtime = getattr(ctx, "admit_neuron_proposal_helper", None)
+    if callable(admit_via_runtime):
+        try:
+            admit_via_runtime(proposal.name)
+            return proposal.name
+        except Exception:
+            return None
+    # Fallback: gate-only admit (no catalog merge — useful for tests
+    # that don't have a full runtime in the context).
+    try:
+        gate.admit(proposal.name)
+        return proposal.name
+    except NeuronProposalError as exc:
+        ctx.audit.log_event(
+            "neuron_proposal.admit_refused",
+            {"name": proposal.name, "reason": str(exc)},
+        )
+        return None

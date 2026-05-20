@@ -213,6 +213,11 @@ class DarwinRuntime:
             build_neuron_context=self._build_neuron_context,
             clock=clock,
         )
+        # Path-C plumbing on the context so the orchestrator nodes can
+        # submit + admit neuron proposals without reaching past the
+        # context bundle into the runtime (doc 04 phase 3).
+        ctx.neuron_admission = self.neuron_admission
+        ctx.admit_neuron_proposal_helper = self.admit_neuron_proposal
         # Kept for introspection/tests. The soma swaps strategy/catalog
         # *through the context*, never by rebinding runtime attributes (those
         # are not what the graph reads).

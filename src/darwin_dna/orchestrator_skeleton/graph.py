@@ -70,6 +70,12 @@ class OrchestratorContext:
     semantic: Any  # machinery.SemanticMemory — lesson staging ground
     build_neuron_context: Callable[..., Any]
     clock: Callable[[], float] = time.time
+    # Path-C admission gate (doc 04 phase 3). Set by the evolution loop
+    # so the orchestrator's apply_mutation node can submit + admit
+    # Darwin-generated neurons. Optional — tests that don't drive
+    # Path-C leave this as None and the apply step skips the admit.
+    neuron_admission: Any = None
+    admit_neuron_proposal_helper: Callable[[str], None] | None = None
 
 
 # The graph topology, exactly the doc's diagram. Each entry:
