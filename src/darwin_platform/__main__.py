@@ -21,6 +21,8 @@ Real-adapter flags (all optional; fakes are used when omitted):
   --vault-mount                      KV mount point (default: secret)
   --browserbase-url                  Browserbase WS endpoint (env BROWSERBASE_URL)
   --browserbase-api-key              Browserbase API key (env BROWSERBASE_API_KEY)
+  --e2b-api-key / E2B_API_KEY        E2B API key for the sandbox adapter
+  --sanctions-denylist               JSON file with {denylist: [...], denied_prefixes: [...]}
 
 Examples::
 
@@ -125,6 +127,24 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             return BrowserUseClient(wallet=wallet, browser_factory=_agent_factory)
         factories["browser_factory"] = _browser_factory
 
+    # -- sandbox (doc 14: E2BSandbox) ---------------------------------------
+    e2b_key = args.e2b_api_key or os.environ.get("E2B_API_KEY")
+    if e2b_key:
+        def _sandbox_factory(wallet, *, _key=e2b_key):
+            from .adapters.sandbox import E2BSandbox
+            try:
+                import e2b  # noqa: F401
+            except ImportError as exc:
+                raise ImportError(
+                    "Real sandbox requires the [e2b] extra: "
+                    "pip install 'darwin-dna[e2b]'"
+                ) from exc
+            def _session_factory(*, key=_key):
+                import e2b as _e2b
+                return _e2b.Sandbox(api_key=key)
+            return E2BSandbox(wallet=wallet, sandbox_factory=_session_factory)
+        factories["sandbox_factory"] = _sandbox_factory
+
     # -- x402 (doc 17: X402PaymentClient wrapping httpx) --------------------
     # Wire an x402 client whenever we have a real wallet — the client just
     # needs an HTTP client (httpx) and the wallet for payment settlement.
@@ -177,9 +197,27 @@ def _serve(args: argparse.Namespace) -> int:
 
     real_factories = _build_real_factories(args)
 
+    sanctions = None
+    denylist_path = getattr(args, "sanctions_denylist", None)
+    if denylist_path:
+        from .sanctions import LocalDenylistScreener
+        try:
+            data = json.loads(Path(denylist_path).expanduser().read_text())
+        except Exception as exc:  # pragma: no cover - input validation
+            print(
+                f"failed to read sanctions denylist {denylist_path}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        sanctions = LocalDenylistScreener(
+            denylist=set(data.get("denylist", [])),
+            denied_prefixes=tuple(data.get("denied_prefixes", [])),
+        )
+
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
+        sanctions_screener=sanctions,
         **real_factories,
     )
 
@@ -324,6 +362,32 @@ def build_parser() -> argparse.ArgumentParser:
     browser_group.add_argument(
         "--browserbase-api-key", default=None, metavar="KEY",
         help="Browserbase API key. Env: BROWSERBASE_API_KEY",
+    )
+
+    sandbox_group = serve.add_argument_group(
+        "real sandbox (doc 14)",
+        "Connect to E2B for code-running neurons. Requires the [e2b] extra. "
+        "When omitted the in-memory FakeSandbox is used.",
+    )
+    sandbox_group.add_argument(
+        "--e2b-api-key", default=None, metavar="KEY",
+        help="E2B API key. Env: E2B_API_KEY",
+    )
+
+    compliance_group = serve.add_argument_group(
+        "compliance (doc 17)",
+        "Sanctions screening run before every wallet outbound transfer. "
+        "Default = no screener (development); production wires the OFAC "
+        "denylist or a real provider (Chainalysis, TRM Labs) via the "
+        "SanctionsScreener Protocol.",
+    )
+    compliance_group.add_argument(
+        "--sanctions-denylist", default=None, metavar="PATH",
+        help=(
+            "Path to a JSON file: "
+            '{"denylist": ["0xdead..."], "denied_prefixes": ["0xff"]}. '
+            "Loaded into a LocalDenylistScreener at startup."
+        ),
     )
 
     serve.set_defaults(func=_serve)
