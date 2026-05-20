@@ -28,6 +28,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from .watermark import NoOpWatermarker, Watermarker
+
 
 # Doc 16: "retention 90 days after last use" for KYC and sensitive uploads.
 DEFAULT_SENSITIVE_TTL_SECONDS: float = 90 * 86_400.0
@@ -54,6 +56,7 @@ class VaultEntryRef:
     uploaded_at: float
     uploaded_by: str | None
     expires_at: float | None  # only set when the retention service tracks it
+    watermarked: bool = False  # True iff the embedded HMAC stamp was added
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -211,10 +214,16 @@ class VaultAdminService:
         vault_resolver: Callable[[str], Any],
         retention: VaultRetentionService | None = None,
         clock: Callable[[], float] = time.time,
+        watermarker: Watermarker | None = None,
     ) -> None:
         self._resolve = vault_resolver
         self._retention = retention or VaultRetentionService(clock=clock)
         self._clock = clock
+        # Doc 16: invisible watermark embedded into the document bytes
+        # so leaked KYC docs are traceable to (darwin_id, upload_ts)
+        # even when the audit chain is unreachable. Defaults to the
+        # NoOp variant; production wires HmacWatermarker via Supervisor.
+        self._watermarker: Watermarker = watermarker or NoOpWatermarker()
         # Per-Darwin index of what we wrote. The raw vault stores values
         # under their full paths; this index keeps the listing query cheap
         # (and avoids enumerating the underlying KV which a real provider
@@ -251,17 +260,41 @@ class VaultAdminService:
         # value is the source of truth; the sidecar is observable
         # provenance for the operator audit view. If the second write
         # fails, the value is still present and the next put() overwrites.
-        sha = _hash_value(value)
+        uploaded_at = self._clock()
+        # Watermark embedding (doc 16). Sensitive-tier uploads get the
+        # invisible HMAC stamp; others pass through the NoOp by default.
+        # The watermark record's hmac goes into the sidecar metadata so
+        # forensics has the "expected" value at hand.
+        stored_value = value
+        wm_record = None
+        if tier == "sensitive":
+            try:
+                value_bytes = value.encode("utf-8") if isinstance(value, str) else value
+                marked, wm_record = self._watermarker.stamp(
+                    value=value_bytes, darwin_id=darwin_id,
+                    upload_ts=uploaded_at,
+                    original_filename=original_filename,
+                )
+                stored_value = (
+                    marked.decode("utf-8", errors="replace")
+                    if isinstance(value, str) else marked
+                )
+            except Exception:
+                # Watermarking must NEVER block an upload — the audit
+                # sidecar is still the primary record.
+                wm_record = None
+        sha = _hash_value(value)  # hash of the ORIGINAL bytes for sidecar
         meta = {
             "sha256": sha,
             "size_bytes": len(value.encode("utf-8")),
-            "uploaded_at": self._clock(),
+            "uploaded_at": uploaded_at,
             "uploaded_by": uploaded_by or "unknown",
             "tier": tier,
             "scope": scope,
             "original_filename": original_filename,
+            "watermark": wm_record.to_dict() if wm_record is not None else None,
         }
-        vault.put(path, value)
+        vault.put(path, stored_value)
         # Sidecar is JSON for inspectability. Fail-soft: if the backend
         # doesn't accept the metadata write, the value still landed.
         try:
@@ -286,6 +319,7 @@ class VaultAdminService:
             uploaded_at=meta["uploaded_at"],
             uploaded_by=meta["uploaded_by"],
             expires_at=expires_at,
+            watermarked=wm_record is not None and wm_record.hmac_b64 != "",
         )
         self._index.setdefault(darwin_id, {})[path] = ref
         return ref
@@ -310,6 +344,7 @@ class VaultAdminService:
                     key=r.key, path=r.path, sha256=r.sha256,
                     size_bytes=r.size_bytes, uploaded_at=r.uploaded_at,
                     uploaded_by=r.uploaded_by, expires_at=exp,
+                    watermarked=r.watermarked,
                 )
                 self._index[darwin_id][r.path] = r
             out.append(r)
