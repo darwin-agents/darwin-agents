@@ -226,6 +226,7 @@ class Supervisor:
         billing_policy: BillingPolicy | None = None,
         llm_transport_factory: Callable[..., Any] | None = None,
         persistence_path: str | Path | None = None,
+        leader_election: Any | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -312,6 +313,81 @@ class Supervisor:
             self._audit = self._persistence.audit_log
         else:
             self._audit = OperatorAuditLog(clock=clock)
+        # HA leader election (doc 08; Postgres-port follow-on). Default
+        # NoLeaderElection always reports leader — right for single-replica
+        # deploys. When multiple replicas share Postgres, pass a
+        # PostgresAdvisoryLockElection so exactly one instance drives.
+        from .leadership import LeaderElection, NoLeaderElection
+
+        if leader_election is None:
+            self._leader: LeaderElection = NoLeaderElection()
+        else:
+            self._leader = leader_election
+        self._leader_started = False
+        self._leader_watch_task: asyncio.Task | None = None
+        # Track which handles have an active drive task so we can
+        # cancel/restart en masse on leadership transitions.
+        self._observed_leader_state: bool = self._leader.is_leader
+
+    # -- leader election (doc 08 HA, Postgres-port follow-on) -------------
+    @property
+    def is_leader(self) -> bool:
+        """True when this Supervisor instance is the current drive-loop
+        leader. Followers serve only ``/healthz`` + ``/metrics`` + reads
+        of persistent state; the k8s Service ``readinessProbe`` (set to
+        ``/readyz``) should keep mutating traffic off them."""
+        return self._leader.is_leader
+
+    async def ensure_leader_started(self) -> None:
+        """Start the leader election + transition watch task. Idempotent;
+        safe to call from any path that depends on leader status. The
+        FastAPI lifespan handler calls this on startup."""
+        if self._leader_started:
+            return
+        self._leader_started = True
+        await self._leader.start()
+        self._observed_leader_state = self._leader.is_leader
+        # Background reconciler: when leadership flips, cancel any
+        # running drive tasks (we lost the lock and shouldn't keep
+        # writing). On gain, we don't auto-resume previously-spawned
+        # Darwins — the operator re-spawns via the API once readiness
+        # routes traffic back to this pod.
+        loop = asyncio.get_event_loop()
+        self._leader_watch_task = loop.create_task(self._watch_leadership())
+
+    async def _watch_leadership(self) -> None:
+        # Tick frequency: the election impl already does its own
+        # heartbeat (e.g. 5s for Postgres advisory lock); we just need
+        # to react to the boolean changing. 0.5s polling is cheap.
+        while not self._closed:
+            try:
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                break
+            if self._closed:
+                break
+            current = self._leader.is_leader
+            if current == self._observed_leader_state:
+                continue
+            self._observed_leader_state = current
+            if not current:
+                # Lost leadership: cancel every running drive task so we
+                # stop writing to the persistent store. The new leader
+                # picks up after the operator re-spawns.
+                for h in list(self._darwins.values()):
+                    if h.task is not None and not h.task.done():
+                        h.task.cancel()
+
+    def _require_leader(self) -> None:
+        """Defense in depth — the readiness probe should already keep
+        traffic off followers, but if a write reaches one we refuse
+        cleanly rather than silently committing in-memory state that
+        would be lost on the next leader switch."""
+        if not self._leader.is_leader:
+            raise SupervisorError(
+                "supervisor is not the current leader; "
+                "the request should have been routed to the leader pod"
+            )
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -328,6 +404,8 @@ class Supervisor:
         spawner observer."""
         if self._closed:
             raise SupervisorError("supervisor is closed")
+        await self.ensure_leader_started()
+        self._require_leader()
         with span(
             "supervisor.spawn",
             attributes={"opening_usdc": opening_usdc, "parent_id": parent_id},
@@ -986,6 +1064,21 @@ class Supervisor:
         """Stop driving every Darwin. If ``kill_running``, flip every kill
         flag first so the genomes write a clean final audit record."""
         self._closed = True
+        # Stop the leadership watch task first so it doesn't observe
+        # mid-shutdown state and try to react to it.
+        if self._leader_watch_task is not None:
+            self._leader_watch_task.cancel()
+            try:
+                await self._leader_watch_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._leader_watch_task = None
+        # Release the advisory lock (or whatever the impl holds) so a
+        # waiting follower can win quickly.
+        try:
+            await self._leader.stop()
+        except Exception:
+            pass
         for h in list(self._darwins.values()):
             if kill_running and not h.killed and h.runtime.state.alive:
                 h.killed = True
