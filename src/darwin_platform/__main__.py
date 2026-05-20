@@ -327,6 +327,47 @@ def _build_alert_sink(args: argparse.Namespace):
     return FanOutAlertSink(sinks)
 
 
+def _build_k8s_driver(args: argparse.Namespace):
+    """Build a :class:`darwin_platform.k8s.K8sDarwinDriver` when
+    ``--driver=k8s`` is set; otherwise ``None`` (the supervisor uses
+    its in-process drive loop)."""
+    if getattr(args, "driver", "in-process") != "k8s":
+        return None
+    from .k8s.driver import make_default_k8s_driver
+    from .k8s.manifests import DarwinPodConfig
+
+    orchestrator_image = getattr(args, "k8s_orchestrator_image", None) or (
+        "ghcr.io/quantium-rock/darwin-agent/darwin-platform:latest"
+    )
+    postgres_ns = getattr(args, "k8s_postgres_namespace", None) or ""
+    postgres_label = getattr(args, "k8s_postgres_pod_label", None) or "="
+    pg_key, _, pg_val = postgres_label.partition("=")
+    pod_config = DarwinPodConfig(
+        orchestrator_image=orchestrator_image,
+        runtime_class_name=getattr(args, "k8s_runtime_class", None) or "kata",
+        lancedb_image=getattr(args, "k8s_lancedb_image", None) or "lancedb/lancedb:latest",
+        lancedb_storage_size=getattr(args, "k8s_lancedb_storage_size", None) or "1Gi",
+        lancedb_storage_class=getattr(args, "k8s_lancedb_storage_class", None) or None,
+        platform_data_namespace=(
+            getattr(args, "k8s_egress_proxy_namespace", None) or "platform-data"
+        ),
+        postgres_namespace=postgres_ns,
+        postgres_pod_label_key=pg_key,
+        postgres_pod_label_value=pg_val,
+        postgres_port=int(getattr(args, "k8s_postgres_port", 5432) or 5432),
+    )
+    database_url_secret = getattr(args, "k8s_database_url_secret", None) or ""
+    secret_ref: tuple[str, str] | None = None
+    if database_url_secret:
+        sname, _, skey = database_url_secret.partition(":")
+        secret_ref = (sname, skey or "DATABASE_URL")
+    return make_default_k8s_driver(
+        pod_config=pod_config,
+        namespace_prefix=getattr(args, "k8s_namespace_prefix", None) or "darwin-",
+        database_url_secret_ref=secret_ref,
+    )
+
+
 def _serve(args: argparse.Namespace) -> int:
     """Run the FastAPI app via uvicorn. Optional persistence + auth wiring."""
     try:
@@ -363,13 +404,27 @@ def _serve(args: argparse.Namespace) -> int:
     notification_sink = _build_notification_sink(args)
     alert_sink = _build_alert_sink(args)
 
+    k8s_driver = _build_k8s_driver(args)
+    if k8s_driver is not None and real_factories:
+        # The K8s driver hosts every per-Darwin substrate inside the
+        # orchestrator pod, not in the supervisor process. Passing
+        # in-process factories alongside k8s mode would silently apply
+        # them to a code path that never spawns Darwins — refuse clearly.
+        print(
+            "real-adapter flags (--rpc-url etc.) are not supported with "
+            "--driver=k8s; pass those to the orchestrator image instead",
+            file=sys.stderr,
+        )
+        return 2
+
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
         sanctions_screener=sanctions,
         notification_sink=notification_sink,
         alert_sink=alert_sink,
-        **real_factories,
+        k8s_driver=k8s_driver,
+        **(real_factories if k8s_driver is None else {}),
     )
 
     token_store = None
@@ -603,6 +658,69 @@ def build_parser() -> argparse.ArgumentParser:
         "--pagerduty-routing-key", default=None, metavar="KEY",
         help="PagerDuty Events v2 routing key for critical monitor "
              "alerts. Env: DARWIN_PAGERDUTY_ROUTING_KEY",
+    )
+
+    k8s_group = serve.add_argument_group(
+        "K8s driver (doc 08 production posture)",
+        "Per-Darwin namespace + orchestrator microVM. Requires the "
+        "[k8s] extra. With --driver=in-process (default) every Darwin "
+        "is an asyncio.Task in this supervisor pod; with --driver=k8s "
+        "the supervisor provisions per-Darwin namespaces and drives "
+        "lifecycle over HTTP RPC to the orchestrator pods.",
+    )
+    k8s_group.add_argument(
+        "--driver", default="in-process", choices=["in-process", "k8s"],
+        help="Per-Darwin runtime location. Default: in-process.",
+    )
+    k8s_group.add_argument(
+        "--k8s-namespace-prefix", default="darwin-",
+        help="Per-Darwin namespace prefix (default: 'darwin-').",
+    )
+    k8s_group.add_argument(
+        "--k8s-runtime-class", default="kata",
+        help="RuntimeClass for the orchestrator pod (default: 'kata').",
+    )
+    k8s_group.add_argument(
+        "--k8s-orchestrator-image", default=None,
+        help="Image:tag for the orchestrator pod. Default reuses the "
+        "supervisor image (the entrypoint differs).",
+    )
+    k8s_group.add_argument(
+        "--k8s-egress-proxy-namespace", default="platform-data",
+        help="Namespace hosting the egress proxy "
+             "(NetworkPolicy peer for per-Darwin orchestrator pods).",
+    )
+    k8s_group.add_argument(
+        "--k8s-lancedb-image", default="lancedb/lancedb:latest",
+        help="Image for the per-Darwin LanceDB sidecar.",
+    )
+    k8s_group.add_argument(
+        "--k8s-lancedb-storage-size", default="1Gi",
+        help="PVC size for the LanceDB sidecar (default: 1Gi).",
+    )
+    k8s_group.add_argument(
+        "--k8s-lancedb-storage-class", default=None,
+        help="StorageClass for the LanceDB PVC. Empty → cluster default.",
+    )
+    k8s_group.add_argument(
+        "--k8s-postgres-namespace", default=None,
+        help="Postgres namespace, for NetworkPolicy egress from "
+             "orchestrator pods. Empty omits the rule (SQLite mode).",
+    )
+    k8s_group.add_argument(
+        "--k8s-postgres-pod-label", default=None, metavar="KEY=VAL",
+        help="Postgres pod-label selector (e.g. "
+             "'app.kubernetes.io/name=postgres').",
+    )
+    k8s_group.add_argument(
+        "--k8s-postgres-port", default=5432, type=int,
+        help="Postgres port (default: 5432).",
+    )
+    k8s_group.add_argument(
+        "--k8s-database-url-secret", default=None, metavar="NAME[:KEY]",
+        help="Secret reference for the orchestrator's DATABASE_URL env. "
+             "Format: 'secret-name' or 'secret-name:key' "
+             "(default key: DATABASE_URL).",
     )
 
     serve.set_defaults(func=_serve)
