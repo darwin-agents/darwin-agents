@@ -2,7 +2,32 @@
 
 **Self-modifying AI organisms with programmable wallets, isolated compute, and evolutionary fitness.**
 
-A Darwin is an autonomous agent that earns money, manages its own treasury, rewrites its own code, and spawns better-adapted offspring — all under a signed, immutable constitution it cannot violate. This repository contains the entire stack: the genome (Layer 0), the platform control plane, real provider adapters, and deployment tooling.
+---
+
+## About Darwin
+
+Darwin is a platform for launching **economically autonomous digital organisms** — not one-shot agent scripts that wake up, run a task, and disappear, but persistent workers with real stakes. Each user spawns a *Darwin* with a starting budget; the organism earns revenue through online ventures its **neurons** operate, pays its own infrastructure and API costs from a programmable **treasury**, and either stays alive or dies when capital runs out. Profitable lineages **reproduce**, sealing what worked into the next generation's DNA; unprofitable ones die. That selection pressure is the point.
+
+The architecture splits cleanly into two layers:
+
+| Layer | Role |
+| --- | --- |
+| **DNA core** (immutable) | Signed genome: constitution, kill switch, audit logger, treasury policy, evolution machinery. The running Darwin can read it but never mutate it. |
+| **Soma** (mutable) | Sandboxed agent body: orchestrator, strategy, self-modification loop. All runtime code changes happen here. |
+| **Neurons** | Narrow worker sub-agents (content, browser, payments, …) — each scoped to exactly the capabilities it needs. |
+
+The biological metaphor is **load-bearing**, not decorative. Metabolism is spend; food is revenue; hunger is a falling balance; death is bankruptcy or an owner kill-switch; reproduction is how progress compounds across generations. Every design decision should be checkable against it. See [Vision and metaphor](docs/overview/01-vision-and-metaphor.md) for the full mapping and rationale.
+
+Darwin is a bet on two propositions:
+
+1. **Compounding code** — agents that improve their own scaffolding under economic selection pressure, not just benchmark scores (building on the Darwin Gödel Machine lineage).
+2. **Owned automation** — user-owned workers that earn on the user's behalf; the platform hosts and takes a cut, the user keeps the upside.
+
+It is explicitly **not** AGI, a get-rich-quick scheme, or fully unsupervised operation. The human owner stays in the loop for captchas, KYC, high-stakes spend, and instant kill-switch control. Most individual Darwins are expected to fail; the value is in **successful lineages** that compound. See [What Darwin is not](docs/overview/01-vision-and-metaphor.md#what-this-is-not) and [Design principles (P1–P10)](docs/overview/02-design-principles.md).
+
+**This repository** contains the full implementation stack: the Layer 0 genome (`darwin_dna`), the platform control plane (`darwin_platform`), real provider adapters, in-memory fakes for tests, simulation tooling, and deployment charts.
+
+**Documentation** is split into two folders — read [`docs/overview/`](docs/overview/) for the *why* and product context, then [`docs/engineering/`](docs/engineering/) for the *how*.
 
 ---
 
@@ -108,7 +133,8 @@ flowchart TB
 | `tools/sim/` | Simulated world — runs a Darwin for N days and asserts invariants |
 | `docker/` | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger |
 | `deploy/helm/` | Kubernetes Helm chart (see [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md)) |
-| `docs/engineering/` | Architecture and design docs (00–19) |
+| `docs/overview/` | Vision, design principles, prior art, market, legal, roadmap, infrastructure |
+| `docs/engineering/` | Technical architecture and build plans (see [`docs/engineering/00-README.md`](docs/engineering/00-README.md)) |
 
 ---
 
@@ -300,9 +326,23 @@ helm install darwin deploy/helm/darwin-platform \
 
 ---
 
-## Design docs
+## Documentation
 
-Full engineering documentation is in [`docs/engineering/`](docs/engineering/).
+Read [`docs/overview/`](docs/overview/) first for the idea; read [`docs/engineering/`](docs/engineering/) for implementation detail. Full indexes: [overview index](docs/overview/00-README.md) · [engineering index](docs/engineering/00-README.md).
+
+### Overview — the idea
+
+| Doc | Description |
+| --- | --- |
+| [01 — Vision and metaphor](docs/overview/01-vision-and-metaphor.md) | What Darwin is, the biological metaphor, why an organism rather than just an agent, the product experience, explicit non-goals |
+| [02 — Design principles](docs/overview/02-design-principles.md) | P1–P10: immutable DNA, skin in the game, neurons as capability units, escalate-don't-fail, empirical fitness, auditability, kill-switches |
+| [03 — Prior art](docs/overview/03-prior-art.md) | DGM, Voyager, agent frameworks, agentic payments, sandboxes — what's proven and what's new here |
+| [04 — Market landscape](docs/overview/04-market-landscape.md) | Realistic revenue archetypes a Darwin can pursue |
+| [05 — Legal and ToS](docs/overview/05-legal-and-tos.md) | Regulatory regimes, ToS checklist, liability surface |
+| [06 — Roadmap and phases](docs/overview/06-roadmap-and-phases.md) | Four-phase build plan with definitions of done and kill criteria |
+| [07 — Deployment and infrastructure](docs/overview/07-deployment-and-infrastructure.md) | Phase-by-phase infrastructure, Kubernetes shape, Terraform layout, DR |
+
+### Engineering — the implementation
 
 | Doc                                                                                              | Description                                                                                                             |
 | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
@@ -324,6 +364,8 @@ Full engineering documentation is in [`docs/engineering/`](docs/engineering/).
 | [16 — Secrets and vault](docs/engineering/16-secrets-and-vault.md)                               | HashiCorp Vault with per-Darwin namespaces: bidirectional user+Darwin access, KYC doc storage, and tiered read grants.  |
 | [17 — Payments providers](docs/engineering/17-payments-providers.md)                             | Concrete provider choices: Coinbase Agentic Wallets, x402 protocol, Stripe fiat ramps, and AgentCore Payments.          |
 | [18 — Layer 0 build plan](docs/engineering/18-layer-zero-build-plan.md)                          | Engineering build plan for the founding genome: file layout, module sketches, package decisions, and testing strategy.  |
+| [19 — System diagrams](docs/engineering/19-system-diagrams.md)                                   | ASCII reference renderings of the platform and the organism.                                                            |
+| [20–25 — Build plans & ops](docs/engineering/00-README.md#build-plan--diagrams)                 | Phase-zero through phase-two build plans, data model reference, threat model, operational runbook.                      |
 
 ---
 
@@ -368,7 +410,7 @@ uv run pytest -m slow -q  # includes simulation (~5 min)
 
 ## Roadmap
 
-What's planned beyond the current Layer 0 implementation. See [`docs/engineering/`](docs/engineering/) for the design detail behind each item.
+What's planned beyond the current Layer 0 implementation. See [Roadmap and phases](docs/overview/06-roadmap-and-phases.md) for the phased plan and [`docs/engineering/`](docs/engineering/) for technical design detail behind each item.
 
 **Near-term (platform hardening)**
 - [ ] `envFrom` as a first-class Helm chart value for cleaner secret injection

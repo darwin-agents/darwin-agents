@@ -11,6 +11,7 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Added
 
+- docs(engineering): add data model reference, security threat model, and operational runbook (docs 23–25)
 - feat(platform): CLI for multichain wallet, sanctions providers, and sinks
 - feat(platform): REST routes for signing rotation and Path-C proposals
 - feat(supervisor): cross-pollination, key rotation, and Path-C proposal ops
