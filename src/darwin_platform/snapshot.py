@@ -32,7 +32,7 @@ def snapshot(supervisor: Supervisor) -> dict[str, Any]:
     # public methods are coroutines; building a snapshot from a sync caller
     # would otherwise need an event loop. The fields read here are stable.
     handles = list(supervisor._darwins.values())  # noqa: SLF001
-    edges = list(supervisor._lineage)  # noqa: SLF001
+    edges = supervisor._lineage_registry.edges()  # noqa: SLF001
     return {
         "schema": "darwin-platform.snapshot/2",
         "captured_at": time.time(),

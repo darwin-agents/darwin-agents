@@ -32,6 +32,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from darwin_dna.evolution import DarwinRuntime, boot
@@ -108,6 +109,58 @@ class LineageEdge:
     budget_usdc: float
 
 
+class LineageRegistry:
+    """In-memory record of every parent→child edge the supervisor has
+    observed. Persistent variants in :mod:`darwin_platform.persistence`
+    subclass this and write-through to SQLite.
+
+    The registry is the source of truth for lineage queries — children,
+    parent, ancestry — so a Darwin that's no longer running (because it
+    died or because the supervisor restarted) still has a queryable
+    lineage view from doc-08's dashboard angle."""
+
+    def __init__(self) -> None:
+        self._edges: list[LineageEdge] = []
+        self._by_parent: dict[str, list[str]] = {}
+        self._by_child: dict[str, str] = {}
+
+    def add(self, edge: LineageEdge) -> None:
+        # De-dup on (parent, child); the spawner may surface the same edge
+        # twice in pathological reorders, and we never want to double-count.
+        if edge.child_id in self._by_child:
+            return
+        self._edges.append(edge)
+        self._by_child[edge.child_id] = edge.parent_id
+        self._by_parent.setdefault(edge.parent_id, []).append(edge.child_id)
+
+    def edges(self) -> list[LineageEdge]:
+        return list(self._edges)
+
+    def parent_of(self, child_id: str) -> str | None:
+        return self._by_child.get(child_id)
+
+    def children_of(self, parent_id: str) -> list[str]:
+        return list(self._by_parent.get(parent_id, []))
+
+    def ancestry_of(self, darwin_id: str) -> list[str]:
+        """Walks up the parent chain. Cycle-safe via a seen set, though a
+        legitimate lineage never cycles."""
+        out: list[str] = []
+        cur = self._by_child.get(darwin_id)
+        seen: set[str] = set()
+        while cur and cur not in seen:
+            out.append(cur)
+            seen.add(cur)
+            cur = self._by_child.get(cur)
+        return out
+
+    def edges_touching(self, darwin_id: str) -> list[LineageEdge]:
+        return [
+            e for e in self._edges
+            if e.parent_id == darwin_id or e.child_id == darwin_id
+        ]
+
+
 # -- per-Darwin handle -----------------------------------------------------
 @dataclass
 class _Handle:
@@ -172,6 +225,7 @@ class Supervisor:
         monitor_every_n_ticks: int = 5,
         billing_policy: BillingPolicy | None = None,
         llm_transport_factory: Callable[..., Any] | None = None,
+        persistence_path: str | Path | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -179,19 +233,52 @@ class Supervisor:
         self._heartbeat = float(heartbeat_seconds)
         self._clock = clock
         self._darwins: dict[str, _Handle] = {}
-        self._lineage: list[LineageEdge] = []
         self._closed = False
+        # Persistent storage (doc 08: the audit log is "permanent"). When
+        # ``persistence_path`` is set, swap the in-memory collections for
+        # SQLite-backed ones; restart-survivable. Default unset keeps the
+        # in-memory variants for tests + ephemeral dev. Built FIRST so the
+        # collections below can branch on whether persistence is configured.
+        self._persistence = None
+        if persistence_path is not None:
+            from .persistence import PersistenceStore
+
+            self._persistence = PersistenceStore(persistence_path, clock=clock)
+            # Apply the configured billing policy to the persistent service
+            # (PersistenceStore's default is the 20%/10% policy).
+            if billing_policy is not None:
+                self._persistence._billing._policy = billing_policy  # noqa: SLF001
+        # Lineage registry — in-memory variant by default; SQLite-backed
+        # when persistence is configured (restores edges across restart so
+        # killed Darwins still have a queryable lineage view).
+        if self._persistence is not None:
+            self._lineage_registry = self._persistence.lineage_registry()
+        else:
+            self._lineage_registry = LineageRegistry()
         # The platform-side escalation router (doc 08). Tickets the genome
         # posts to its inbox get observed at the heartbeat boundary, routed
         # through this object, and notified via the (optional) sink.
-        self._router = EscalationRouter(sink=notification_sink, clock=clock)
+        if self._persistence is not None:
+            self._router = self._persistence.escalation_router(
+                sink=notification_sink, clock=clock,
+            )
+        else:
+            self._router = EscalationRouter(
+                sink=notification_sink, clock=clock,
+            )
         # The platform-side anomaly monitor (doc 08/09). Polls each Darwin
         # every N drive cycles, runs the detectors, dispatches alerts via the
         # (optional) sink. ``auto_pause_on_critical`` is opt-in: a tight
         # quota could otherwise auto-pause the fleet on a misconfiguration.
-        self._monitor = Monitor(
-            quotas=quotas, sink=alert_sink, clock=clock
-        )
+        # Persistent variant restores the alert history on restart.
+        if self._persistence is not None:
+            self._monitor = self._persistence.monitor(
+                quotas=quotas, sink=alert_sink, clock=clock,
+            )
+        else:
+            self._monitor = Monitor(
+                quotas=quotas, sink=alert_sink, clock=clock,
+            )
         self._auto_pause_on_critical = bool(auto_pause_on_critical)
         self._monitor_every_n = max(1, int(monitor_every_n_ticks))
         # Doc 09 level 2: rate-limit the offending resource on a sustained
@@ -209,7 +296,10 @@ class Supervisor:
         # debit (markup pass-through) and each harvest (fee on gross). The
         # genome doesn't know about billing — the supervisor sweeps the
         # wallet ledger at the heartbeat boundary to attribute revenue.
-        self._billing = BillingService(billing_policy, clock=clock)
+        if self._persistence is not None:
+            self._billing = self._persistence.billing_service
+        else:
+            self._billing = BillingService(billing_policy, clock=clock)
         # Optional real-LLM transport factory (doc 13). Signature:
         # ``factory(wallet, clock) -> LLMTransport``. When set, each spawned
         # Darwin gets a real adapter instead of the deterministic FakeLLM.
@@ -218,7 +308,10 @@ class Supervisor:
         # Hash-chained operator audit log (doc 08). Every mutating
         # supervisor call writes an entry tagged with the calling actor's
         # subject so a compliance reviewer can replay who-did-what.
-        self._audit = OperatorAuditLog(clock=clock)
+        if self._persistence is not None:
+            self._audit = self._persistence.audit_log
+        else:
+            self._audit = OperatorAuditLog(clock=clock)
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -477,6 +570,13 @@ class Supervisor:
     @property
     def billing_service(self) -> BillingService:
         return self._billing
+
+    @property
+    def persistent_token_store(self):
+        """The SQLite-backed token store, when persistence is configured.
+        Pass this to ``build_app(..., token_store=)`` so auth survives a
+        restart. ``None`` when persistence_path was not set."""
+        return self._persistence.token_store if self._persistence else None
 
     # -- operator audit log (doc 08) --------------------------------------
     @property
@@ -776,15 +876,33 @@ class Supervisor:
     # -- lineage (doc 08: GET /darwins/{id}/lineage) ----------------------
     async def lineage(self, darwin_id: str) -> dict[str, Any]:
         """Return the ancestry + descendants the supervisor has seen for this
-        Darwin. The tree spans Darwins booted by *this* supervisor — a Darwin
-        whose parent was hosted by a different supervisor only knows its
-        own ``parent_id`` metadata."""
-        h = self._get(darwin_id)
+        Darwin. The tree spans Darwins booted by *this* supervisor (or
+        loaded from persistence on restart) — a Darwin whose parent was
+        hosted by a different supervisor only knows its own ``parent_id``
+        metadata.
+
+        Works for inactive Darwins too: when no handle is present (the
+        Darwin died, or the supervisor was restarted after it ran),
+        children + parent_id are derived from the lineage registry, which
+        survives restarts when persistence is configured. Refuses only
+        when the id is unknown to both the active set and the registry."""
+        h = self._darwins.get(darwin_id)
+        if h is not None:
+            parent_id = h.parent_id
+            children = list(h.children)
+        else:
+            # Inactive: derive from the persistent registry. If the id is
+            # also unknown to the registry, surface as UnknownDarwin so the
+            # API returns 404.
+            parent_id = self._lineage_registry.parent_of(darwin_id)
+            children = self._lineage_registry.children_of(darwin_id)
+            if parent_id is None and not children:
+                raise UnknownDarwin(darwin_id)
         return {
             "darwin_id": darwin_id,
-            "parent_id": h.parent_id,
-            "children": list(h.children),
-            "ancestry": self._ancestry(darwin_id),
+            "parent_id": parent_id,
+            "children": children,
+            "ancestry": self._lineage_registry.ancestry_of(darwin_id),
             "edges": [
                 {
                     "parent_id": e.parent_id,
@@ -792,8 +910,7 @@ class Supervisor:
                     "spawned_at": e.spawned_at,
                     "budget_usdc": e.budget_usdc,
                 }
-                for e in self._lineage
-                if e.parent_id == darwin_id or e.child_id == darwin_id
+                for e in self._lineage_registry.edges_touching(darwin_id)
             ],
         }
 
@@ -882,6 +999,9 @@ class Supervisor:
                 t.cancel()
             except Exception:
                 pass
+        # Close the SQLite connection cleanly if persistence is wired.
+        if self._persistence is not None:
+            self._persistence.close()
 
     # -- introspection ----------------------------------------------------
     def list_ids(self) -> list[str]:
@@ -956,14 +1076,9 @@ class Supervisor:
         )
 
     def _ancestry(self, darwin_id: str) -> list[str]:
-        out: list[str] = []
-        cur = self._darwins.get(darwin_id)
-        seen: set[str] = set()
-        while cur and cur.parent_id and cur.parent_id not in seen:
-            out.append(cur.parent_id)
-            seen.add(cur.parent_id)
-            cur = self._darwins.get(cur.parent_id)
-        return out
+        # Kept for compatibility; the registry's ancestry walk is the
+        # authoritative one and handles the inactive case + persistence.
+        return self._lineage_registry.ancestry_of(darwin_id)
 
     async def _drive(self, handle: _Handle) -> None:
         """Drive one Darwin: one heartbeat per loop iteration, with an
@@ -1026,7 +1141,7 @@ class Supervisor:
                 # rather than die and take its siblings with it.
                 continue
             parent.children.append(child_id)
-            self._lineage.append(
+            self._lineage_registry.add(
                 LineageEdge(
                     parent_id=parent.darwin_id,
                     child_id=child_id,
