@@ -16,6 +16,7 @@ service trusts every caller. Do not expose this surface publicly as-is.
 
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any
@@ -75,6 +76,25 @@ class WalletPolicyRequest(BaseModel):
     per_action_cap_usdc: float | None = Field(default=None, ge=0)
     per_day_cap_usdc: float | None = Field(default=None, ge=0)
     per_lifetime_cap_usdc: float | None = Field(default=None, ge=0)
+
+
+class ThrottleRequest(BaseModel):
+    tier: str = Field(pattern=r"^(fast|reasoning|coding|image_gen|embedding)$")
+    max_daily_calls: int = Field(ge=0)
+
+
+class AmendmentRequest(BaseModel):
+    """A platform amendment layer to ship via forced reproduction (doc 02).
+
+    ``amendment_blob_b64`` is the layer bytes base64-encoded so the JSON
+    body is text-clean. ``amendment_name`` is the layer's filename inside
+    the manifest (e.g. ``layer_5_amendment_kyc_required``). ``kill_parent_reason``
+    annotates the kill audit entry that follows successful reproduction.
+    """
+
+    amendment_blob_b64: str
+    amendment_name: str = Field(min_length=1)
+    kill_parent_reason: str = "amendment reproduction"
 
 
 # -- app factory ------------------------------------------------------------
@@ -487,6 +507,77 @@ def build_app(
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
+
+    # -- internal: throttle (doc 09 level 2) ------------------------------
+    @app.post("/platform/darwins/{darwin_id}/throttle")
+    async def install_throttle(
+        darwin_id: str,
+        request: Request,
+        req: ThrottleRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).throttle_llm_tier(
+                darwin_id, tier=req.tier, max_daily_calls=req.max_daily_calls
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.delete("/platform/darwins/{darwin_id}/throttle")
+    async def clear_throttle(
+        darwin_id: str,
+        request: Request,
+        tier: str | None = Query(None),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).clear_llm_throttle(darwin_id, tier=tier)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/platform/darwins/{darwin_id}/throttle")
+    async def get_throttles(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return {"throttles": await _sup(request).get_llm_throttles(darwin_id)}
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+
+    # -- internal: forced reproduction with amendment (doc 02 + doc 09) ---
+    @app.post("/platform/darwins/{darwin_id}/reproduce_with_amendment")
+    async def reproduce_with_amendment(
+        darwin_id: str,
+        request: Request,
+        req: AmendmentRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, str]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            blob = base64.b64decode(req.amendment_blob_b64, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise HTTPException(400, f"amendment_blob_b64 must be base64: {exc}")
+        try:
+            await _sup(request).force_reproduce_with_amendment(
+                darwin_id,
+                amendment_blob=blob,
+                amendment_name=req.amendment_name,
+                kill_parent_reason=req.kill_parent_reason,
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        return {"status": "amendment-reproduction-requested"}
 
     # -- internal: signing public key (doc 08; HSM-backed in production) --
     @app.get("/platform/signing/public_key")

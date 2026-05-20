@@ -132,9 +132,16 @@ class _Handle:
     # do not need sub-second resolution.
     drive_cycles: int = 0
     auto_paused_for: str | None = None  # alert kind, if we auto-paused
+    auto_throttled: set[str] = field(default_factory=set)  # alert kinds we
+    # already auto-throttled — idempotent per (darwin, kind), cleared on
+    # an explicit clear_throttle or resume.
     quarantine: QuarantineState = field(
         default_factory=lambda: QuarantineState(active=False)
     )
+    # Set when a forced reproduction with amendment is in flight. After the
+    # next child of this Darwin is observed, the supervisor kills the
+    # parent — doc 02's "the parent dies; the child carries the amendment".
+    kill_after_reproduction_reason: str | None = None
 
 
 # -- the supervisor --------------------------------------------------------
@@ -155,6 +162,7 @@ class Supervisor:
         alert_sink: AlertSink | None = None,
         quotas: Quotas | None = None,
         auto_pause_on_critical: bool = False,
+        auto_throttle_on_warn: bool = False,
         monitor_every_n_ticks: int = 5,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
@@ -178,6 +186,11 @@ class Supervisor:
         )
         self._auto_pause_on_critical = bool(auto_pause_on_critical)
         self._monitor_every_n = max(1, int(monitor_every_n_ticks))
+        # Doc 09 level 2: rate-limit the offending resource on a sustained
+        # WARN. Off by default so a misconfigured detector cannot throttle
+        # the fleet. When on, a WARN spend_velocity halves the reasoning
+        # tier cap; a WARN failure_rate halves the coding tier cap.
+        self._auto_throttle_on_warn = bool(auto_throttle_on_warn)
         # Single platform-side signing identity (doc 02, doc 18 §"Signing and
         # release"). One HSM key in reality; one SigningService here, shared
         # across every Darwin spawned by this Supervisor instance so all
@@ -316,6 +329,68 @@ class Supervisor:
             annotate_span_with_runtime(s, h.runtime)
             h.quarantine = QuarantineState(active=False)
 
+    # -- platform-side throttle (doc 08, doc 09 level 2) ------------------
+    async def throttle_llm_tier(
+        self,
+        darwin_id: str,
+        *,
+        tier: str,
+        max_daily_calls: int,
+    ) -> dict[str, Any]:
+        """Install a tighter per-day cap on one LLM tier. The genome's
+        :class:`LLMRouter` takes ``min(hp cap, throttle)``, so a throttle
+        can only TIGHTEN; the constitution-level cap remains the ceiling."""
+        from darwin_dna.machinery.llm_router import Tier
+
+        try:
+            t = Tier(tier)
+        except ValueError as exc:
+            raise SupervisorError(f"unknown tier: {tier!r}") from exc
+        with span(
+            "supervisor.throttle_llm_tier",
+            darwin_id=darwin_id,
+            attributes={"tier": tier, "max_daily_calls": max_daily_calls},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            h.runtime.llm.set_throttle(t, max_daily_calls)
+        return {"tier": tier, "max_daily_calls": int(max_daily_calls),
+                "throttles": h.runtime.llm.throttles()}
+
+    async def clear_llm_throttle(
+        self,
+        darwin_id: str,
+        *,
+        tier: str | None = None,
+    ) -> dict[str, Any]:
+        """Clear the platform throttle for ``tier`` (or all tiers when
+        ``tier is None``)."""
+        from darwin_dna.machinery.llm_router import Tier
+
+        t: Tier | None = None
+        if tier is not None:
+            try:
+                t = Tier(tier)
+            except ValueError as exc:
+                raise SupervisorError(f"unknown tier: {tier!r}") from exc
+        with span(
+            "supervisor.clear_llm_throttle",
+            darwin_id=darwin_id,
+            attributes={"tier": tier},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            h.runtime.llm.clear_throttle(t)
+            # An explicit clear also clears the auto-throttle latches so a
+            # follow-up WARN can throttle again.
+            if tier is None:
+                h.auto_throttled.clear()
+        return {"throttles": h.runtime.llm.throttles()}
+
+    async def get_llm_throttles(self, darwin_id: str) -> dict[str, int]:
+        h = self._get(darwin_id)
+        return h.runtime.llm.throttles()
+
     # -- platform-side wallet policy (doc 08 POST /platform/wallets/...) --
     async def set_wallet_policy(
         self,
@@ -393,6 +468,51 @@ class Supervisor:
                 raise SupervisorError(f"darwin {darwin_id} is not alive")
             annotate_span_with_runtime(s, h.runtime)
             h.reproduce_requested = True
+
+    # -- forced reproduction with amendment (doc 02 + doc 09) -------------
+    async def force_reproduce_with_amendment(
+        self,
+        darwin_id: str,
+        *,
+        amendment_blob: bytes,
+        amendment_name: str,
+        kill_parent_reason: str = "amendment reproduction",
+    ) -> None:
+        """The platform-supervisor pathway for shipping a constitutional
+        update (doc 02 §amendment). Stages the amendment on the runtime,
+        requests reproduction at the next heartbeat, and marks the parent
+        for kill after the child is observed. Doc 02: "the child inherits
+        the amendment; the parent dies"."""
+        with span(
+            "supervisor.force_reproduce_with_amendment",
+            darwin_id=darwin_id,
+            attributes={"amendment_name": amendment_name},
+        ) as s:
+            h = self._get(darwin_id)
+            if not h.runtime.state.alive:
+                raise SupervisorError(f"darwin {darwin_id} is not alive")
+            if h.killed:
+                raise SupervisorError(
+                    f"darwin {darwin_id} is killed; cannot reproduce"
+                )
+            annotate_span_with_runtime(s, h.runtime)
+            # The trust-root layer-count cap (doc 02 / manifest.py) excludes
+            # platform amendments by their name prefix. Refuse mis-named
+            # amendments at the API edge with a clear error rather than
+            # letting them blow up in ``reproduce.verify_manifest``.
+            from darwin_dna.manifest import AMENDMENT_LAYER_PREFIX
+
+            if not amendment_name.startswith(AMENDMENT_LAYER_PREFIX):
+                raise SupervisorError(
+                    f"amendment_name must start with "
+                    f"{AMENDMENT_LAYER_PREFIX!r}, got {amendment_name!r}"
+                )
+            try:
+                h.runtime.install_amendment(amendment_blob, amendment_name)
+            except (TypeError, ValueError) as exc:
+                raise SupervisorError(str(exc)) from exc
+            h.reproduce_requested = True
+            h.kill_after_reproduction_reason = kill_parent_reason
 
     # -- escalations (doc 08: POST .../escalations/{eid}/respond) ---------
     async def respond_escalation(
@@ -620,7 +740,12 @@ class Supervisor:
         try:
             while runtime.state.alive:
                 if handle.reproduce_requested:
-                    runtime.state.reproduce = True
+                    # Set the genome's force-bypass flag rather than
+                    # ``reproduce`` directly — ``check_reproduction`` is
+                    # the gate and would otherwise overwrite the flag in
+                    # the same heartbeat (and a forced amendment update
+                    # has to actually fire, not get gated by fitness).
+                    runtime.state.force_reproduce = True
                     handle.reproduce_requested = False
                 await runtime.run(max_heartbeats=1)
                 # A new child may have been spawned during this tick. Auto-
@@ -678,6 +803,22 @@ class Supervisor:
             if child_id not in self._darwins:
                 self._boot_child(parent, record, child_id)
         parent.children_observed = len(spawner.children)
+        # doc 02: after a forced amendment reproduction, the parent dies.
+        # We flip the kill flag here so the genome's next node-boundary
+        # poll runs the clean halt sequence with audit + final anchor.
+        if parent.kill_after_reproduction_reason and not parent.killed:
+            with span(
+                "supervisor.kill_after_amendment",
+                darwin_id=parent.darwin_id,
+                attributes={"reason": parent.kill_after_reproduction_reason},
+            ) as s:
+                annotate_span_with_runtime(s, parent.runtime)
+                parent.killed = True
+                try:
+                    parent.stack.kill.flip(parent.kill_after_reproduction_reason)
+                except Exception:
+                    parent.killed = False
+                parent.kill_after_reproduction_reason = None
 
     def _signals_for(self, handle: _Handle) -> DarwinSignals:
         rt = handle.runtime
@@ -729,14 +870,19 @@ class Supervisor:
                     if fired
                     else "",
                 )
-        if not self._auto_pause_on_critical:
-            return
         if handle.killed or not handle.runtime.state.alive:
             return
-        # Pause once per detected CRITICAL kind so a sustained breach doesn't
-        # re-pause an already-paused Darwin forever. The Monitor's dedup
-        # already throttles sink emission; the auto-action gate here is
+        # Auto-throttle on WARN (doc 09 level 2). Idempotent per (darwin,
+        # kind) — once a throttle is in place the breach stops firing or
+        # the operator clears the throttle explicitly.
+        if self._auto_throttle_on_warn:
+            self._maybe_auto_throttle(handle, fired)
+        # Auto-pause on CRITICAL (doc 09 level 3). Pause once per kind so a
+        # sustained breach doesn't re-pause an already-paused Darwin forever.
+        # The Monitor's dedup already throttles sink emission; this gate is
         # idempotent per (darwin, kind) and clears on resume.
+        if not self._auto_pause_on_critical:
+            return
         for alert in fired:
             if alert.severity is not Severity.CRITICAL:
                 continue
@@ -754,6 +900,55 @@ class Supervisor:
                 except Exception:
                     handle.auto_paused_for = None
             break
+
+    # Mapping of alert kind → the LLM tier we throttle on a WARN of that
+    # kind. The matching tier is the most common driver of that signal:
+    # high LLM-tier cost shows up first as spend_velocity; high coding-tier
+    # use shows up as failure_rate (the soma is over-mutating). Other
+    # kinds (heartbeat, escalation_rate) have no obvious tier mapping so
+    # they don't auto-throttle — they just alert.
+    _WARN_TIER_MAP = {
+        "spend_velocity": "reasoning",
+        "failure_rate": "coding",
+    }
+
+    def _maybe_auto_throttle(self, handle: _Handle, fired: list[Alert]) -> None:
+        from darwin_dna.machinery.llm_router import Tier, hp_cap_for_tier
+
+        for alert in fired:
+            if alert.severity is not Severity.WARN:
+                continue
+            tier_name = self._WARN_TIER_MAP.get(alert.kind)
+            if tier_name is None:
+                continue
+            if alert.kind in handle.auto_throttled:
+                continue
+            try:
+                tier = Tier(tier_name)
+            except ValueError:
+                continue
+            hp_cap = hp_cap_for_tier(handle.runtime._hp, tier)  # noqa: SLF001
+            if hp_cap is None:
+                continue
+            # Halve the hp cap as the throttle. Already-spent calls stay
+            # spent; ``remaining`` will take the min of (hp - spent,
+            # throttle - spent).
+            new_cap = max(1, hp_cap // 2)
+            with span(
+                "supervisor.auto_throttle",
+                darwin_id=handle.darwin_id,
+                attributes={
+                    "kind": alert.kind,
+                    "tier": tier_name,
+                    "max_daily_calls": new_cap,
+                },
+            ) as s:
+                annotate_span_with_runtime(s, handle.runtime)
+                try:
+                    handle.runtime.llm.set_throttle(tier, new_cap)
+                    handle.auto_throttled.add(alert.kind)
+                except Exception:
+                    pass
 
     def _observe_escalations(self, handle: _Handle) -> None:
         """Sweep new tickets the genome posted to its inbox since last
