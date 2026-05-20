@@ -56,6 +56,14 @@ _TIER_DAILY_CAP_ATTR = {
 }
 
 
+def hp_cap_for_tier(hp: Hyperparameters, tier: Tier) -> int | None:
+    """Hyperparameter daily-call cap for ``tier``, or ``None`` if uncapped.
+    Public so the platform layer can read the same mapping the router uses
+    without importing a module-private symbol."""
+    attr = _TIER_DAILY_CAP_ATTR.get(tier)
+    return int(getattr(hp, attr)) if attr is not None else None
+
+
 class LLMRouter:
     """Genome-owned router. Per-day, per-tier call accounting; refuses when a
     tier's daily budget is spent. Counters roll at UTC midnight."""
@@ -74,6 +82,11 @@ class LLMRouter:
         self._clock = clock
         self._day = self._utc_day()
         self._calls: dict[Tier, int] = {t: 0 for t in Tier}
+        # Platform-installed throttles (docs/engineering/09 level 2). A tier
+        # entry here further tightens that tier's per-day cap; the effective
+        # cap is ``min(hp cap, throttle)``. Cleared by the platform when the
+        # underlying anomaly clears. The genome enforces; the platform sets.
+        self._throttle: dict[Tier, int] = {}
 
     def _utc_day(self) -> str:
         return time.strftime("%Y-%m-%d", time.gmtime(self._clock()))
@@ -85,12 +98,37 @@ class LLMRouter:
             self._calls = {t: 0 for t in Tier}
 
     def remaining(self, tier: Tier) -> int | None:
-        """Calls left for ``tier`` today, or ``None`` if uncapped."""
+        """Calls left for ``tier`` today, or ``None`` if uncapped. The
+        effective cap is the lower of the hyperparameter cap and any
+        platform-installed throttle (doc 09 level 2)."""
         self._roll_if_new_day()
         attr = _TIER_DAILY_CAP_ATTR.get(tier)
-        if attr is None:
+        if attr is None and tier not in self._throttle:
             return None
-        return max(0, getattr(self._hp, attr) - self._calls[tier])
+        hp_cap = getattr(self._hp, attr) if attr is not None else float("inf")
+        cap = min(hp_cap, self._throttle.get(tier, hp_cap))
+        return max(0, int(cap) - self._calls[tier])
+
+    def set_throttle(self, tier: Tier, max_daily_calls: int) -> None:
+        """Install a tighter per-day cap on ``tier``. Cannot loosen the
+        hyperparameter cap (``remaining`` takes the min). Cleared with
+        :meth:`clear_throttle`."""
+        if max_daily_calls < 0:
+            raise ValueError("max_daily_calls must be non-negative")
+        self._throttle[tier] = int(max_daily_calls)
+
+    def clear_throttle(self, tier: Tier | None = None) -> None:
+        """Remove the platform-installed throttle for ``tier`` (or all
+        tiers when ``tier is None``). Does not affect the hyperparameter
+        cap or the day's already-spent calls."""
+        if tier is None:
+            self._throttle.clear()
+        else:
+            self._throttle.pop(tier, None)
+
+    def throttles(self) -> dict[str, int]:
+        """Snapshot of installed throttles for ops/dashboards."""
+        return {t.value: cap for t, cap in self._throttle.items()}
 
     def complete(self, tier: Tier, request: dict[str, Any]) -> dict[str, Any]:
         """Route one request at ``tier``. Enforces the cap, then delegates."""
