@@ -5,15 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Nothing has been tagged or released on GitHub yet. The first release will be **0.0.1**.
-
 ## [Unreleased]
+
+## [0.0.1] - 2026-05-21
+
+First public pre-release: Layer 0 genome (`darwin_dna`), platform control plane
+(`darwin_platform`), provider adapters, Helm chart, tiered test suite, and CI/CD.
 
 ### Changed
 
 - tests: reorganize 84 test files into industry-standard tiered layout (`tests/{unit,property,redteam,integration,simulation,fixtures}/`) with `unit/` mirroring `src/`; per-tier `conftest.py` auto-applies `unit`/`property`/`redteam`/`integration`/`simulation` markers (sim tier also gets `slow`); switch pytest to `--import-mode=importlib`
 - tests(redteam): split monolithic `test_redteam.py` into nine per-threat-class files (`test_audit_tamper.py`, `test_vault_cross_read.py`, `test_sanctions_evasion.py`, `test_fence_escape.py`, `test_spread_spend_evasion.py`, `test_watermark_forgery.py`, `test_cross_pollination_poison.py`, `test_pathc_escalation.py`, `test_manifest_forgery.py`) — one file per row of doc 24's threat-model table
 - docs(engineering): refresh doc 26 testing strategy with new paths, tier markers, and per-tier conftest behavior; refresh README testing section; add `tests/README.md` as the one-page map
+- refactor(adapters): defer browser and e2b import checks to factory
+- style: remove unused imports flagged by ruff
 
 ### Added
 
@@ -146,13 +151,6 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 - feat(fakes): add in-memory test doubles
 - feat(darwin_dna): implement Layer 0 genome package
 
-### Changed
-
-- refactor(test): reorganize suite into unit, integration, property, redteam, and simulation tiers
-- refactor(test): split red-team suite into per-threat modules under `tests/redteam`
-- refactor(adapters): defer browser and e2b import checks to factory
-- style: remove unused imports flagged by ruff
-
 ### Fixed
 
 - fix(orchestrator): LangGraph state propagation and engine parity
@@ -161,7 +159,6 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Documentation
 
-- docs(test): add `tests/README` tier layout and run commands
 - docs: refresh README intro, layout, and links to new reference docs
 - docs(deploy): add operator runbook for provider enablement and incidents
 - docs(engineering): add phase-two multi-tenant build plan
@@ -180,7 +177,6 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Tests
 
-- test(redteam): split adversarial scenarios into per-threat modules (audit, fence, Path-C, sanctions, vault, watermark)
 - test(k8s): cover K8sDarwinDriver, manifests, and supervisor k8s spawn mode
 - test(adapters): extend chain SDK and fiat ramp coverage for new extras
 - test(orchestrator): cover Path-C proposal flow through propose and apply nodes
