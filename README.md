@@ -2,19 +2,24 @@
 
 **Self-modifying AI organisms with programmable wallets, isolated compute, and evolutionary fitness.**
 
+A Darwin is an autonomous agent that earns money, manages its own treasury, rewrites its own code, and
+spawns better-adapted offspring — all under a signed, immutable constitution it cannot violate. This
+repository contains the entire stack: the genome (Layer 0), the platform control plane, real provider
+adapters, and deployment tooling.
+
 ---
 
 ## About Darwin
 
-Darwin is a platform for launching **economically autonomous digital organisms** — not one-shot agent scripts that wake up, run a task, and disappear, but persistent workers with real stakes. Each user spawns a *Darwin* with a starting budget; the organism earns revenue through online ventures its **neurons** operate, pays its own infrastructure and API costs from a programmable **treasury**, and either stays alive or dies when capital runs out. Profitable lineages **reproduce**, sealing what worked into the next generation's DNA; unprofitable ones die. That selection pressure is the point.
+Darwin is a platform for launching **economically autonomous digital organisms** — not one-shot agent scripts that wake up, run a task, and disappear, but persistent workers with real stakes. Each user spawns a _Darwin_ with a starting budget; the organism earns revenue through online ventures its **neurons** operate, pays its own infrastructure and API costs from a programmable **treasury**, and either stays alive or dies when capital runs out. Profitable lineages **reproduce**, sealing what worked into the next generation's DNA; unprofitable ones die. That selection pressure is the point.
 
 The architecture splits cleanly into two layers:
 
-| Layer | Role |
-| --- | --- |
+| Layer                    | Role                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **DNA core** (immutable) | Signed genome: constitution, kill switch, audit logger, treasury policy, evolution machinery. The running Darwin can read it but never mutate it. |
-| **Soma** (mutable) | Sandboxed agent body: orchestrator, strategy, self-modification loop. All runtime code changes happen here. |
-| **Neurons** | Narrow worker sub-agents (content, browser, payments, …) — each scoped to exactly the capabilities it needs. |
+| **Soma** (mutable)       | Sandboxed agent body: orchestrator, strategy, self-modification loop. All runtime code changes happen here.                                       |
+| **Neurons**              | Narrow worker sub-agents (content, browser, payments, …) — each scoped to exactly the capabilities it needs.                                      |
 
 The biological metaphor is **load-bearing**, not decorative. Metabolism is spend; food is revenue; hunger is a falling balance; death is bankruptcy or an owner kill-switch; reproduction is how progress compounds across generations. Every design decision should be checkable against it. See [Vision and metaphor](docs/overview/01-vision-and-metaphor.md) for the full mapping and rationale.
 
@@ -27,12 +32,11 @@ It is explicitly **not** AGI, a get-rich-quick scheme, or fully unsupervised ope
 
 **This repository** contains the full implementation stack: the Layer 0 genome (`darwin_dna`), the platform control plane (`darwin_platform`), real provider adapters, in-memory fakes for tests, simulation tooling, and deployment charts.
 
-**Documentation** is split into two folders — read [`docs/overview/`](docs/overview/) for the *why* and product context, then [`docs/engineering/`](docs/engineering/) for the *how*.
+**Documentation** is split into two folders — read [`docs/overview/`](docs/overview/) for the _why_ and product context, then [`docs/engineering/`](docs/engineering/) for the _how_.
 
 ---
 
 ## How it works
-
 
 ```mermaid
 flowchart TB
@@ -95,8 +99,8 @@ flowchart TB
 1. **Platform (blue)** — the boring multi-tenant SaaS layer. The Web app, Auth, Billing, and Notification services all funnel lifecycle commands through the **Darwin Supervisor**, which is the only component with the right to spawn, kill, pause, or resume a Darwin. It also enforces quotas and anomaly detection.
 
 2. **Darwin Organism (teal)** — one isolated instance per user. Nothing leaks between organisms at the network or auth layer.
-   - **DNA Core (green)** — the immutable, Ed25519-signed genome. Contains the constitution, the kill switch, the write-before-act audit logger, the treasury spend policy, and the cumulative layer stack (Layer 0 = founding genome, Layer N = lessons sealed after generation N). The organism can *read* it but never mutate it.
-   - **Soma (amber)** — the mutable agent body, running inside E2B MicroVMs. The LangGraph orchestrator branches into three engines: *Strategy* (what to do next), *Self-modification* (proposes and tests soma rewrites), and *Escalation* (routes owner-approval requests back through the platform).
+   - **DNA Core (green)** — the immutable, Ed25519-signed genome. Contains the constitution, the kill switch, the write-before-act audit logger, the treasury spend policy, and the cumulative layer stack (Layer 0 = founding genome, Layer N = lessons sealed after generation N). The organism can _read_ it but never mutate it.
+   - **Soma (amber)** — the mutable agent body, running inside E2B MicroVMs. The LangGraph orchestrator branches into three engines: _Strategy_ (what to do next), _Self-modification_ (proposes and tests soma rewrites), and _Escalation_ (routes owner-approval requests back through the platform).
    - **Neurons (red)** — specialised worker sub-agents dispatched by the orchestrator. Each gets a scoped `NeuronContext` — only the capabilities it needs, nothing else.
    - **Per-Darwin State (purple)** — the organism's durable layer: USDC treasury with x402 programmable spend rules, a HashiCorp Vault namespace for secrets and KYC documents, the append-only hash-chained audit log, and the LangGraph checkpoint database for mid-task resumption.
 
@@ -108,33 +112,34 @@ flowchart TB
 
 ## Repository layout
 
-| Path | Description |
-| --- | --- |
-| `src/darwin_dna/` | **Layer 0 genome** — signed, immutable Python package (≤ 5 k lines, curated-allowlist deps) |
-| `  constitution/` | Immutable rule set encoded as pydantic models, signed at build time |
-| `  evolution/` | Main loop, lesson distillation, reproduction event |
-| `  neurons/` | Neuron contract + built-in specialised workers |
-| `  machinery/` | Kill switch, audit logger, treasury policy |
-| `  manifest.py` | SHA-256 + Ed25519 trust root |
-| `  signature.py` | Layer signing and verification |
-| `src/darwin_platform/` | **Platform control plane** — FastAPI supervisor |
-| `  supervisor.py` | Spawn / monitor / kill Darwin instances, wires real adapters at spawn |
-| `  api.py` | REST surface: `/darwins`, `/healthz`, `/readyz`, `/metrics` |
-| `  leadership.py` | HA leader election via Postgres advisory locks — failover ≈ 5 s |
-| `  persistence.py` | Dual-backend: SQLite file path or `postgres://` DSN |
-| `  billing.py` | Per-Darwin USDC billing integrated with treasury policy |
-| `  auth.py` | Bearer-token auth with `owner` and `platform_operator` scopes |
-| `  escalation.py` | Owner-approval tickets for sensitive-tier vault reads |
-| `  monitoring.py` | Prometheus metrics and alert counters |
-| `  tracing.py` | OpenTelemetry / OTLP tracing (no-op shim when OTel is absent) |
-| `  adapters/` | Real provider adapters: `Web3ChainClient`, `HvacVaultClient`, `BrowserUseClient`, `X402PaymentClient`, `E2BSandbox`, `LiteLLMTransport` |
-| `src/darwin_fakes/` | **In-memory fakes** — deterministic, no network, no API keys required |
-| `tests/` | Unit · property · integration · 90-day simulation suites |
-| `tools/sim/` | Simulated world — runs a Darwin for N days and asserts invariants |
-| `docker/` | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger |
-| `deploy/helm/` | Kubernetes Helm chart (see [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md)) |
-| `docs/overview/` | Vision, design principles, prior art, market, legal, roadmap, infrastructure |
-| `docs/engineering/` | Technical architecture and build plans (see [`docs/engineering/00-README.md`](docs/engineering/00-README.md)) |
+| Path                   | Description                                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/darwin_dna/`      | **Layer 0 genome** — signed, immutable Python package (≤ 5 k lines, curated-allowlist deps)                                             |
+| `  constitution/`      | Immutable rule set encoded as pydantic models, signed at build time                                                                     |
+| `  evolution/`         | Main loop, lesson distillation, reproduction event                                                                                      |
+| `  neurons/`           | Neuron contract + built-in specialised workers                                                                                          |
+| `  machinery/`         | Kill switch, audit logger, treasury policy                                                                                              |
+| `  manifest.py`        | SHA-256 + Ed25519 trust root                                                                                                            |
+| `  signature.py`       | Layer signing and verification                                                                                                          |
+| `src/darwin_platform/` | **Platform control plane** — FastAPI supervisor                                                                                         |
+| `  supervisor.py`      | Spawn / monitor / kill Darwin instances, wires real adapters at spawn                                                                   |
+| `  api.py`             | REST surface: `/darwins`, `/healthz`, `/readyz`, `/metrics`                                                                             |
+| `  leadership.py`      | HA leader election via Postgres advisory locks — failover ≈ 5 s                                                                         |
+| `  persistence.py`     | Dual-backend: SQLite file path or `postgres://` DSN                                                                                     |
+| `  billing.py`         | Per-Darwin USDC billing integrated with treasury policy                                                                                 |
+| `  auth.py`            | Bearer-token auth with `owner` and `platform_operator` scopes                                                                           |
+| `  escalation.py`      | Owner-approval tickets for sensitive-tier vault reads                                                                                   |
+| `  monitoring.py`      | Prometheus metrics and alert counters                                                                                                   |
+| `  tracing.py`         | OpenTelemetry / OTLP tracing (no-op shim when OTel is absent)                                                                           |
+| `  adapters/`          | Real provider adapters: `Web3ChainClient`, `HvacVaultClient`, `BrowserUseClient`, `X402PaymentClient`, `E2BSandbox`, `LiteLLMTransport` |
+| `src/darwin_fakes/`    | **In-memory fakes** — deterministic, no network, no API keys required                                                                   |
+| `tests/`               | Unit · property · integration · 90-day simulation suites                                                                                |
+| `tools/sim/`           | Simulated world — runs a Darwin for N days and asserts invariants                                                                       |
+| `docker/`              | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger                                                                    |
+| `deploy/helm/`         | Kubernetes Helm chart (see [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md))                            |
+| `deploy/OPERATOR_RUNBOOK.md` | Provider enablement matrix, env vars, and failure-response checklist for production deploys                                         |
+| `docs/overview/`       | Vision, design principles, prior art, market, legal, roadmap, infrastructure                                                            |
+| `docs/engineering/`    | Technical architecture and build plans (see [`docs/engineering/00-README.md`](docs/engineering/00-README.md))                           |
 
 ---
 
@@ -332,15 +337,15 @@ Read [`docs/overview/`](docs/overview/) first for the idea; read [`docs/engineer
 
 ### Overview — the idea
 
-| Doc | Description |
-| --- | --- |
-| [01 — Vision and metaphor](docs/overview/01-vision-and-metaphor.md) | What Darwin is, the biological metaphor, why an organism rather than just an agent, the product experience, explicit non-goals |
-| [02 — Design principles](docs/overview/02-design-principles.md) | P1–P10: immutable DNA, skin in the game, neurons as capability units, escalate-don't-fail, empirical fitness, auditability, kill-switches |
-| [03 — Prior art](docs/overview/03-prior-art.md) | DGM, Voyager, agent frameworks, agentic payments, sandboxes — what's proven and what's new here |
-| [04 — Market landscape](docs/overview/04-market-landscape.md) | Realistic revenue archetypes a Darwin can pursue |
-| [05 — Legal and ToS](docs/overview/05-legal-and-tos.md) | Regulatory regimes, ToS checklist, liability surface |
-| [06 — Roadmap and phases](docs/overview/06-roadmap-and-phases.md) | Four-phase build plan with definitions of done and kill criteria |
-| [07 — Deployment and infrastructure](docs/overview/07-deployment-and-infrastructure.md) | Phase-by-phase infrastructure, Kubernetes shape, Terraform layout, DR |
+| Doc                                                                                     | Description                                                                                                                               |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| [01 — Vision and metaphor](docs/overview/01-vision-and-metaphor.md)                     | What Darwin is, the biological metaphor, why an organism rather than just an agent, the product experience, explicit non-goals            |
+| [02 — Design principles](docs/overview/02-design-principles.md)                         | P1–P10: immutable DNA, skin in the game, neurons as capability units, escalate-don't-fail, empirical fitness, auditability, kill-switches |
+| [03 — Prior art](docs/overview/03-prior-art.md)                                         | DGM, Voyager, agent frameworks, agentic payments, sandboxes — what's proven and what's new here                                           |
+| [04 — Market landscape](docs/overview/04-market-landscape.md)                           | Realistic revenue archetypes a Darwin can pursue                                                                                          |
+| [05 — Legal and ToS](docs/overview/05-legal-and-tos.md)                                 | Regulatory regimes, ToS checklist, liability surface                                                                                      |
+| [06 — Roadmap and phases](docs/overview/06-roadmap-and-phases.md)                       | Four-phase build plan with definitions of done and kill criteria                                                                          |
+| [07 — Deployment and infrastructure](docs/overview/07-deployment-and-infrastructure.md) | Phase-by-phase infrastructure, Kubernetes shape, Terraform layout, DR                                                                     |
 
 ### Engineering — the implementation
 
@@ -365,7 +370,7 @@ Read [`docs/overview/`](docs/overview/) first for the idea; read [`docs/engineer
 | [17 — Payments providers](docs/engineering/17-payments-providers.md)                             | Concrete provider choices: Coinbase Agentic Wallets, x402 protocol, Stripe fiat ramps, and AgentCore Payments.          |
 | [18 — Layer 0 build plan](docs/engineering/18-layer-zero-build-plan.md)                          | Engineering build plan for the founding genome: file layout, module sketches, package decisions, and testing strategy.  |
 | [19 — System diagrams](docs/engineering/19-system-diagrams.md)                                   | ASCII reference renderings of the platform and the organism.                                                            |
-| [20–25 — Build plans & ops](docs/engineering/00-README.md#build-plan--diagrams)                 | Phase-zero through phase-two build plans, data model reference, threat model, operational runbook.                      |
+| [20–27 — Build plans & reference](docs/engineering/00-README.md)                                  | Phase build plans, data model, threat model, runbooks, testing strategy, and configuration reference.                   |
 
 ---
 
@@ -373,19 +378,19 @@ Read [`docs/overview/`](docs/overview/) first for the idea; read [`docs/engineer
 
 Key technology choices at a glance. Full rationale in [`docs/engineering/11-tech-stack-at-a-glance.md`](docs/engineering/11-tech-stack-at-a-glance.md).
 
-| Concern | Choice | Why |
-| --- | --- | --- |
-| Language | Python 3.12 | Largest agent/AI ecosystem; LangGraph, Browser-Use, E2B SDKs are all Python-native |
-| Orchestration | LangGraph | Stateful, durable execution, HITL primitives, model-agnostic, most-deployed for stateful agents in 2026 |
-| LLM gateway | LiteLLM Proxy (self-hosted) | 100+ providers behind one OpenAI-compatible interface, per-request cost attribution, virtual keys per Darwin |
-| Sandboxing | E2B (Firecracker MicroVMs) | Strongest isolation, purpose-built for untrusted agent code, fast cold starts |
-| Browser | Browser-Use + Browserbase | Python-native, autonomous DOM exploration, anti-bot infra and session recording handled by Browserbase |
-| Database | Postgres 16 + pgvector | RLS for tenant isolation, pgvector for embeddings, no extra vector DB needed |
-| Vault | HashiCorp Vault | Namespace per Darwin, agent-aware identity model, dynamic secrets, multi-tenant battle-tested |
-| Wallet | Coinbase Agentic Wallets | TEE-secured keys, native x402 support, programmable spend limits, gasless on Base |
-| Payments | x402 (USDC on Base) | HTTP-native, machine-to-machine, >50 M txns in production by early 2026 |
-| Containers | Kubernetes (EKS / GKE) | Required for E2B at scale, ample multi-tenant patterns |
-| Observability | OpenTelemetry + Honeycomb | Vendor-neutral instrumentation, high-cardinality querying |
+| Concern       | Choice                      | Why                                                                                                          |
+| ------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Language      | Python 3.12                 | Largest agent/AI ecosystem; LangGraph, Browser-Use, E2B SDKs are all Python-native                           |
+| Orchestration | LangGraph                   | Stateful, durable execution, HITL primitives, model-agnostic, most-deployed for stateful agents in 2026      |
+| LLM gateway   | LiteLLM Proxy (self-hosted) | 100+ providers behind one OpenAI-compatible interface, per-request cost attribution, virtual keys per Darwin |
+| Sandboxing    | E2B (Firecracker MicroVMs)  | Strongest isolation, purpose-built for untrusted agent code, fast cold starts                                |
+| Browser       | Browser-Use + Browserbase   | Python-native, autonomous DOM exploration, anti-bot infra and session recording handled by Browserbase       |
+| Database      | Postgres 16 + pgvector      | RLS for tenant isolation, pgvector for embeddings, no extra vector DB needed                                 |
+| Vault         | HashiCorp Vault             | Namespace per Darwin, agent-aware identity model, dynamic secrets, multi-tenant battle-tested                |
+| Wallet        | Coinbase Agentic Wallets    | TEE-secured keys, native x402 support, programmable spend limits, gasless on Base                            |
+| Payments      | x402 (USDC on Base)         | HTTP-native, machine-to-machine, >50 M txns in production by early 2026                                      |
+| Containers    | Kubernetes (EKS / GKE)      | Required for E2B at scale, ample multi-tenant patterns                                                       |
+| Observability | OpenTelemetry + Honeycomb   | Vendor-neutral instrumentation, high-cardinality querying                                                    |
 
 ---
 
@@ -393,11 +398,11 @@ Key technology choices at a glance. Full rationale in [`docs/engineering/11-tech
 
 Tests live in `tests/` and are split into three tiers:
 
-| Tier | Marker | Run command | What it covers |
-| --- | --- | --- | --- |
-| **Unit + property** | *(default)* | `uv run pytest -q` | Individual subsystems in isolation. The four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) are tested with a malicious soma assumed — adversarial inputs, tampered layers, over-limit spends. Hypothesis generates thousands of random cases for each property. |
-| **Integration** | *(default)* | `uv run pytest -q` | Full boot cycle with `FakeStack`. Verifies that the orchestrator, neurons, wallet, vault, and platform API compose correctly end-to-end without any real network calls. |
-| **Simulation** | `slow` | `uv run pytest -m slow -q` | 90 simulated days. A Darwin is spawned, evolves, and optionally reproduces while the test suite asserts financial invariants, audit-chain integrity, and kill-switch latency under load. Takes several minutes; marked `slow` so it's excluded from the fast commit loop. |
+| Tier                | Marker      | Run command                | What it covers                                                                                                                                                                                                                                                                                          |
+| ------------------- | ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unit + property** | _(default)_ | `uv run pytest -q`         | Individual subsystems in isolation. The four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) are tested with a malicious soma assumed — adversarial inputs, tampered layers, over-limit spends. Hypothesis generates thousands of random cases for each property. |
+| **Integration**     | _(default)_ | `uv run pytest -q`         | Full boot cycle with `FakeStack`. Verifies that the orchestrator, neurons, wallet, vault, and platform API compose correctly end-to-end without any real network calls.                                                                                                                                 |
+| **Simulation**      | `slow`      | `uv run pytest -m slow -q` | 90 simulated days. A Darwin is spawned, evolves, and optionally reproduces while the test suite asserts financial invariants, audit-chain integrity, and kill-switch latency under load. Takes several minutes; marked `slow` so it's excluded from the fast commit loop.                               |
 
 Run the full suite:
 
@@ -413,18 +418,21 @@ uv run pytest -m slow -q  # includes simulation (~5 min)
 What's planned beyond the current Layer 0 implementation. See [Roadmap and phases](docs/overview/06-roadmap-and-phases.md) for the phased plan and [`docs/engineering/`](docs/engineering/) for technical design detail behind each item.
 
 **Near-term (platform hardening)**
+
 - [ ] `envFrom` as a first-class Helm chart value for cleaner secret injection
 - [ ] Webhook ingestion for Stripe and Coinbase events
 - [ ] Harvest scheduler: automatic profit extraction on configurable rules
 - [ ] OIDC layer at the Ingress for human-facing auth (Clerk / WorkOS)
 
 **Medium-term (organism capabilities)**
+
 - [ ] LanceDB per-Darwin vector store for long-horizon episodic memory
 - [ ] Stagehand cached-replay integration for repetitive browser flows
 - [ ] Ads and trading neurons beyond the current content + browser + payments set
 - [ ] Temporal Cloud for durable billing, harvest, and reproduction job orchestration
 
 **Long-term (evolutionary system)**
+
 - [ ] Fitness-weighted automated reproduction triggering (no `force` required)
 - [ ] Cross-lineage lesson distillation — sealed lessons surfaced as platform-level priors
 - [ ] On-chain Merkle anchoring for the audit log (daily root, tamper-evident)
@@ -439,6 +447,7 @@ What's planned beyond the current Layer 0 implementation. See [Roadmap and phase
 Contact: **security@darwinagents.com** (PGP key available on request).
 
 **Scope of highest concern:**
+
 - Bypass of the kill switch or pause mechanism
 - Forgery or replay of a signed DNA layer
 - Unauthorized spend exceeding treasury policy hard caps
@@ -455,10 +464,12 @@ We aim to acknowledge reports within 48 hours and provide a fix timeline within 
 This is a private repository. If you have access, please follow these conventions:
 
 **Branching**
+
 - `main` is always deployable. Feature work goes on `feat/*`, fixes on `fix/*`.
 - Open a PR against `main`; at least one review is required before merge.
 
 **Commit style** — [Conventional Commits](https://www.conventionalcommits.org/):
+
 ```
 feat(neurons): add analytics.reader neuron
 fix(treasury): clamp daily spend before soft-cap comparison
@@ -466,10 +477,12 @@ docs(helm): document envFrom injection pattern
 ```
 
 **Code style**
+
 ```bash
 uv run ruff check .    # lint (F, E9, PLE rule set)
 uv run ruff format .   # format
 ```
+
 Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [project.dependencies]`) is intentionally minimal — new deps in `darwin_dna` require explicit justification.
 
 **Tests** — new behaviour must ship with tests. Hot-path changes (`kill_switch`, `treasury_policy`, `signature`, `audit_logger`, `manifest`) require property-based tests (Hypothesis) in addition to unit tests.
