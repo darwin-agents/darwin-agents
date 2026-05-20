@@ -82,6 +82,21 @@ class ResourceThrottleRequest(BaseModel):
     max_daily_calls: int = Field(ge=0)
 
 
+class FiatDepositQuoteRequest(BaseModel):
+    amount_usd: float = Field(gt=0)
+    payment_method: str = Field(min_length=1)
+
+
+class FiatConfirmDepositRequest(BaseModel):
+    quote_id: str = Field(min_length=1)
+    destination_darwin_id: str | None = None
+
+
+class FiatWithdrawRequest(BaseModel):
+    amount_usdc: float = Field(gt=0)
+    destination: str = Field(min_length=1)
+
+
 class RotateSigningKeyRequest(BaseModel):
     drain_window_seconds: float | None = Field(default=None, gt=0)
 
@@ -539,6 +554,62 @@ def build_app(
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         return {"throttles": [r.to_json() for r in rows]}
+
+    # -- fiat ramp (doc 17) -------------------------------------------------
+    @app.post("/platform/fiat/deposit_quote")
+    async def fiat_deposit_quote(
+        request: Request,
+        req: FiatDepositQuoteRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        try:
+            quote = _sup(request).fiat_deposit_quote(
+                amount_usd=req.amount_usd,
+                payment_method=req.payment_method,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        return quote.to_json()
+
+    @app.post("/platform/fiat/confirm_deposit")
+    async def fiat_confirm_deposit(
+        request: Request,
+        req: FiatConfirmDepositRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        if req.destination_darwin_id is not None:
+            _require_owns(ctx, req.destination_darwin_id)
+        try:
+            receipt = _sup(request).fiat_confirm_deposit(
+                quote_id=req.quote_id,
+                destination_darwin_id=req.destination_darwin_id,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        return receipt.to_json()
+
+    @app.post("/platform/fiat/withdraw")
+    async def fiat_withdraw(
+        request: Request,
+        req: FiatWithdrawRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            receipt = _sup(request).fiat_withdraw(
+                amount_usdc=req.amount_usdc,
+                destination=req.destination,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        return receipt.to_json()
 
     # -- platform signing key rotation (doc 02) ----------------------------
     @app.post("/platform/signing/rotate")
