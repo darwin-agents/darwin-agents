@@ -83,6 +83,11 @@ class ThrottleRequest(BaseModel):
     max_daily_calls: int = Field(ge=0)
 
 
+class HarvestRequest(BaseModel):
+    amount_usdc: float = Field(gt=0)
+    destination: str = Field(min_length=1)
+
+
 class AmendmentRequest(BaseModel):
     """A platform amendment layer to ship via forced reproduction (doc 02).
 
@@ -391,6 +396,47 @@ def build_app(
             return await _sup(request).events(darwin_id, limit=limit, offset=offset)
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
+
+    # -- billing (doc 08 §"Billing model") --------------------------------
+    @app.post("/darwins/{darwin_id}/harvest")
+    async def harvest(
+        darwin_id: str,
+        request: Request,
+        req: HarvestRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).harvest(
+                darwin_id,
+                amount_usdc=req.amount_usdc,
+                destination=req.destination,
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/darwins/{darwin_id}/billing")
+    async def darwin_billing(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).billing(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.get("/platform/billing")
+    async def fleet_billing(
+        request: Request, ctx: AuthContext = Depends(get_auth)
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return await _sup(request).fleet_billing()
 
     # -- alerts (doc 08: quotas + anomaly detection) ----------------------
     def _parse_severity(value: str | None) -> Severity | None:

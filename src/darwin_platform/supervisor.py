@@ -38,6 +38,7 @@ from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_fakes import FakeStack, make_child_platform
 from darwin_fakes.fake_platform import SigningService
 
+from .billing import BillingPolicy, BillingService
 from .escalation import EscalationRouter, NotificationSink, RoutedTicket
 from .monitoring import (
     Alert,
@@ -142,6 +143,10 @@ class _Handle:
     # next child of this Darwin is observed, the supervisor kills the
     # parent — doc 02's "the parent dies; the child carries the amendment".
     kill_after_reproduction_reason: str | None = None
+    # Cursor into wallet.movements for billing's metered sweep — index of
+    # the next ledger entry to attribute. Idempotent: a re-sweep starting
+    # from here only sees new entries.
+    billing_observed: int = 0
 
 
 # -- the supervisor --------------------------------------------------------
@@ -164,6 +169,7 @@ class Supervisor:
         auto_pause_on_critical: bool = False,
         auto_throttle_on_warn: bool = False,
         monitor_every_n_ticks: int = 5,
+        billing_policy: BillingPolicy | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -197,6 +203,11 @@ class Supervisor:
         # manifests verify against the same public key. The signing private
         # key never leaves this object — the genome only ever sees PEM.
         self._signer = SigningService()
+        # Doc 08 §"Billing model". Revenue accrues from each metered wallet
+        # debit (markup pass-through) and each harvest (fee on gross). The
+        # genome doesn't know about billing — the supervisor sweeps the
+        # wallet ledger at the heartbeat boundary to attribute revenue.
+        self._billing = BillingService(billing_policy, clock=clock)
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -328,6 +339,73 @@ class Supervisor:
                 return
             annotate_span_with_runtime(s, h.runtime)
             h.quarantine = QuarantineState(active=False)
+
+    # -- billing (doc 08 §"Billing model") --------------------------------
+    async def harvest(
+        self,
+        darwin_id: str,
+        *,
+        amount_usdc: float,
+        destination: str,
+    ) -> dict[str, Any]:
+        """Owner-initiated profit harvest. Splits ``amount_usdc`` into a
+        net payout to ``destination`` and a platform fee per
+        :class:`BillingPolicy`. Wallet enforces solvency. The fee is
+        recorded on the platform-side billing ledger AND on the wallet's
+        own movement log (so the genome's audit reconciles too)."""
+        if amount_usdc <= 0:
+            raise SupervisorError("harvest amount must be positive")
+        if not destination:
+            raise SupervisorError("harvest destination is required")
+        with span(
+            "supervisor.harvest",
+            darwin_id=darwin_id,
+            attributes={"amount_usdc": float(amount_usdc),
+                        "destination": destination},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            policy = self._billing.policy
+            fee = policy.harvest_fee(float(amount_usdc))
+            net = float(amount_usdc) - fee
+            try:
+                wallet_row = h.stack.wallet.harvest_to_owner(
+                    destination=destination, net_usdc=net, fee_usdc=fee
+                )
+            except Exception as exc:
+                raise SupervisorError(f"wallet refused harvest: {exc}") from exc
+            ledger_row = self._billing.record_harvest(
+                darwin_id,
+                gross_usdc=float(amount_usdc),
+                fee_usdc=fee,
+                destination=destination,
+            )
+            # Re-baseline ``profit_baseline_usdc`` so a withdrawn profit is
+            # not re-counted as the next generation's profit. (Reproduction
+            # also rebaselines on its own path; harvest takes the same care
+            # so the two stories agree.)
+            try:
+                h.runtime.state.profit_baseline_usdc = float(
+                    h.stack.wallet.balance_usdc()
+                )
+            except Exception:
+                pass
+            # The metered sweep would also see the harvest rows if we let it;
+            # bump the cursor so the harvest fee is not double-counted as
+            # infrastructure revenue.
+            h.billing_observed = len(h.stack.wallet.movements())
+            return {**wallet_row, "ledger": ledger_row}
+
+    async def billing(self, darwin_id: str) -> dict[str, Any]:
+        self._get(darwin_id)  # validate
+        return self._billing.summary(darwin_id)
+
+    async def fleet_billing(self) -> dict[str, Any]:
+        return self._billing.fleet_summary()
+
+    @property
+    def billing_service(self) -> BillingService:
+        return self._billing
 
     # -- platform-side throttle (doc 08, doc 09 level 2) ------------------
     async def throttle_llm_tier(
@@ -756,6 +834,9 @@ class Supervisor:
                 # And any new tickets the genome posted during this tick get
                 # classified + notified by the platform router.
                 self._observe_escalations(handle)
+                # Metered debits the genome made during this tick get
+                # attributed to platform revenue (doc 08 §billing).
+                self._observe_billing(handle)
                 # The monitor records tick freshness on every cycle but only
                 # runs the detectors every N cycles to keep the heartbeat
                 # boundary cheap. Auto-actions are opt-in.
@@ -984,6 +1065,39 @@ class Supervisor:
                     # ticket; skip it and let the others through.
                     continue
         handle.escalation_observed = len(tickets)
+
+    def _observe_billing(self, handle: _Handle) -> None:
+        """Sweep new wallet movements since last cursor, attributing each
+        metered debit to platform revenue. Idempotent; cheap; cursor-based
+        so the same entry never counts twice."""
+        movements = handle.stack.wallet.movements()
+        new = movements[handle.billing_observed :]
+        if not new:
+            return
+        revenue_added = 0.0
+        for mv in new:
+            debit = mv.get("debit") if isinstance(mv, dict) else None
+            # Only "metered" debits attribute to infrastructure revenue.
+            # Payment debits are the Darwin paying a counterparty; those
+            # are the Darwin's expense, not the platform's pass-through.
+            if not debit or debit.get("kind") != "metered":
+                continue
+            _, revenue = self._billing.record_metered(
+                handle.darwin_id,
+                float(debit.get("amount_usdc", 0.0)),
+                memo=debit.get("memo"),
+            )
+            revenue_added += revenue
+        handle.billing_observed = len(movements)
+        # Emit a span only if revenue was actually accrued — otherwise the
+        # heartbeat noise drowns the signal.
+        if revenue_added > 0:
+            with span(
+                "supervisor.billing.metered",
+                darwin_id=handle.darwin_id,
+                attributes={"revenue_usdc": revenue_added},
+            ) as s:
+                annotate_span_with_runtime(s, handle.runtime)
 
     def _boot_child(self, parent: _Handle, record: dict, child_id: str) -> None:
         with span(
