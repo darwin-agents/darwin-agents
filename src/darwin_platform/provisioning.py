@@ -67,6 +67,104 @@ class ProvisioningBackend(Protocol):
         not raise."""
 
 
+class SubprocessProvisioningBackend:
+    """Production-shaped backend: shells out to a configured executable
+    (terraform wrapper, kubectl apply script, Crossplane CLI, etc.) per
+    operation. Stays out of process so a misbehaving provider can't take
+    the supervisor down with it.
+
+    The executable is invoked with::
+
+        <command> provision --kind <kind> --spec <json>
+
+        <command> deprovision --kind <kind> --id <resource_id>
+
+    The provision call must print a single line of JSON on stdout:
+    ``{"id": "...", "creds": "..."}``. Non-zero exit codes or unparseable
+    output surface as :class:`ProvisioningError`. The platform stores the
+    creds via the existing vault flow; the executable itself should
+    write to the right vault path or hand back a vault-resolvable
+    identifier.
+
+    Safety: the command is run with ``shell=False`` and no environment
+    inheritance beyond an explicit allowlist. Output is read with a
+    timeout so a hung backend can be killed cleanly."""
+
+    def __init__(
+        self,
+        *,
+        command: tuple[str, ...] | list[str],
+        env: dict[str, str] | None = None,
+        timeout_seconds: float = 60.0,
+    ) -> None:
+        if not command:
+            raise ValueError("SubprocessProvisioningBackend needs a non-empty command")
+        self._command = tuple(command)
+        self._env = dict(env or {})
+        self._timeout = float(timeout_seconds)
+
+    def _run(self, args: list[str]) -> dict:
+        import json as _json
+        import subprocess
+        cmd = list(self._command) + args
+        try:
+            proc = subprocess.run(
+                cmd,
+                env=self._env or None,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ProvisioningError(
+                f"provisioning command timed out after {self._timeout}s: {cmd[0]}"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise ProvisioningError(
+                f"provisioning command not found: {cmd[0]}"
+            ) from exc
+        if proc.returncode != 0:
+            raise ProvisioningError(
+                f"provisioning command failed (exit={proc.returncode}): "
+                f"{proc.stderr.strip()[:200]}"
+            )
+        out = (proc.stdout or "").strip()
+        if not out:
+            return {}
+        try:
+            payload = _json.loads(out)
+        except Exception as exc:
+            raise ProvisioningError(
+                f"provisioning command returned non-JSON output: {out[:200]!r}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ProvisioningError(
+                "provisioning command must return a JSON object"
+            )
+        return payload
+
+    def provision(self, *, kind: str, spec: dict) -> dict:
+        import json as _json
+        result = self._run([
+            "provision",
+            "--kind", kind,
+            "--spec", _json.dumps(spec, sort_keys=True),
+        ])
+        if "id" not in result:
+            raise ProvisioningError(
+                "provisioning command returned no 'id' field"
+            )
+        return result
+
+    def deprovision(self, *, kind: str, resource_id: str) -> None:
+        self._run([
+            "deprovision",
+            "--kind", kind,
+            "--id", resource_id,
+        ])
+
+
 class InMemoryProvisioningBackend:
     """The default backend — equivalent to :class:`darwin_fakes.fake_platform
     .FakeProvisioner` but with named ids per kind so a test can assert on
