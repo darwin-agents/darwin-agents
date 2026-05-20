@@ -158,6 +158,15 @@ class DarwinRuntime:
         self.catalog = build_catalog(
             wallet=platform.wallet, provision=platform.provision
         )
+        # Path-C admission gate (doc 04 phase 3). The orchestrator's
+        # ``propose_mutation`` can emit a NeuronProposal; the
+        # ``apply_mutation`` node calls ``gate.submit + gate.admit``
+        # after the eval harness scored it favourably; admitted
+        # neurons are merged into the catalog so the next dispatch
+        # can route to them. Bounded by ``NeuronAdmissionGate.max_admitted``
+        # so a Darwin can't flood its catalog.
+        from ..machinery.neuron_proposal import NeuronAdmissionGate
+        self.neuron_admission = NeuronAdmissionGate()
         self.strategy = founding_strategy()
         self._anchored_day: str | None = None
 
@@ -356,6 +365,51 @@ class DarwinRuntime:
         if day != self._anchored_day:
             self.audit.anchor(self._p.anchor_store, day)
             self._anchored_day = day
+
+    def admit_neuron_proposal(self, name: str) -> None:
+        """Admit a pending Path-C proposal into the live catalog
+        (docs/engineering/04 phase 3). Called by ``apply_mutation`` after
+        the eval harness scored the proposal as a net win. Refuses on:
+
+        - unknown proposal name (the gate raises NeuronProposalError)
+        - admitted-count cap reached (likewise)
+        - the resulting InterpretedNeuron fails the loader's contract
+          check (we surface that as a refusal + leave the catalog as is)
+
+        On success, the catalog gains the new neuron AND the audit
+        chain records the admission so an operator can replay which
+        Darwin learned what."""
+        from ..machinery.neuron_loader import load_catalog
+        from ..machinery.neuron_proposal import NeuronProposalError
+
+        try:
+            neuron = self.neuron_admission.admit(name)
+        except NeuronProposalError as exc:
+            self.audit.log_event(
+                "neuron_proposal.admission_refused",
+                {"name": name, "reason": str(exc)},
+            )
+            raise
+        # Re-run the catalog loader's contract check on the combined set
+        # so an admitted Path-C neuron can't accidentally collide with
+        # the founding catalog or violate the one-money-door rule.
+        try:
+            new_catalog = load_catalog(
+                list(self.catalog.values()) + [neuron],
+            )
+        except Exception as exc:
+            # Revoke + audit: contract check is the trust gate.
+            self.neuron_admission.revoke(name)
+            self.audit.log_event(
+                "neuron_proposal.contract_check_failed",
+                {"name": name, "reason": str(exc)},
+            )
+            raise
+        self.catalog = new_catalog
+        self.audit.log_event(
+            "neuron_proposal.admitted",
+            {"name": name, "tags": sorted(neuron.capability_tags)},
+        )
 
     def install_amendment(self, blob: bytes, name: str) -> None:
         """Stage a platform-supplied amendment layer for the NEXT reproduction
