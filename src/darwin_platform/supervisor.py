@@ -60,6 +60,18 @@ from .provisioning import (
     ResourceRecord,
 )
 from .sanctions import SanctionsScreener
+from .throttle import (
+    THROTTLE_KIND_BROWSER,
+    THROTTLE_KIND_EGRESS,
+    THROTTLE_KIND_SANDBOX,
+    THROTTLE_KINDS,
+    ResourceThrottle,
+    ThrottleError,
+    ThrottleService,
+    ThrottledBrowserSubstrate,
+    ThrottledEgressClient,
+    ThrottledSandboxSubstrate,
+)
 from .tracing import annotate_span_with_runtime, span
 from .vault_admin import (
     DEFAULT_SENSITIVE_TTL_SECONDS,
@@ -68,6 +80,7 @@ from .vault_admin import (
     VaultEntryRef,
     VaultRetentionService,
 )
+from .watermark import HmacWatermarker, NoOpWatermarker, Watermarker
 
 
 # -- errors ----------------------------------------------------------------
@@ -261,9 +274,12 @@ class Supervisor:
         provisioning_quotas: ProvisioningQuotas | None = None,
         vault_sensitive_ttl_seconds: float = DEFAULT_SENSITIVE_TTL_SECONDS,
         vault_sweep_every_n_ticks: int = 60,
+        vault_watermark_key: bytes | None = None,
+        vault_watermarker: Watermarker | None = None,
         sanctions_screener: SanctionsScreener | None = None,
         browser_cache_enabled: bool = True,
         browser_cache_service: BrowserCacheService | None = None,
+        resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
     ) -> None:
@@ -302,6 +318,20 @@ class Supervisor:
             self._persistence.lifecycle_store()
             if self._persistence is not None else None
         )
+        # Per-Darwin manifest + platform-wide checkpoint stores. When
+        # persistence is configured, the supervisor uses these so a
+        # resumed Darwin re-mints the same identity (manifest) and
+        # picks up at the last saved heartbeat (checkpoint). Without
+        # persistence, each spawn is genesis-fresh and the in-memory
+        # MemoryCheckpointStore lives only for the process.
+        self._manifest_store = (
+            self._persistence.manifest_store()
+            if self._persistence is not None else None
+        )
+        self._checkpoint_store = (
+            self._persistence.checkpoint_store()
+            if self._persistence is not None else None
+        )
         # The platform-side escalation router (doc 08). Tickets the genome
         # posts to its inbox get observed at the heartbeat boundary, routed
         # through this object, and notified via the (optional) sink.
@@ -338,7 +368,20 @@ class Supervisor:
         # across every Darwin spawned by this Supervisor instance so all
         # manifests verify against the same public key. The signing private
         # key never leaves this object — the genome only ever sees PEM.
-        self._signer = SigningService()
+        #
+        # When persistence is configured, the signing key is loaded from
+        # (or seeded into) the platform_signing_key row so manifests
+        # signed before a process restart still verify after the restart.
+        # This is the platform's HSM stand-in for HA failover.
+        if self._persistence is not None:
+            existing_key = self._persistence.load_signing_key()
+            if existing_key is not None:
+                self._signer = SigningService.from_private_bytes(existing_key)
+            else:
+                self._signer = SigningService()
+                self._persistence.save_signing_key(self._signer.private_bytes())
+        else:
+            self._signer = SigningService()
         # Doc 08 §"Billing model". Revenue accrues from each metered wallet
         # debit (markup pass-through) and each harvest (fee on gross). The
         # genome doesn't know about billing — the supervisor sweeps the
@@ -382,6 +425,16 @@ class Supervisor:
         # The resolver walks the handle map at query time so the admin
         # service stays one-instance-per-supervisor while still pointing at
         # the right per-Darwin namespace.
+        if vault_watermarker is not None:
+            watermarker: Watermarker = vault_watermarker
+        elif vault_watermark_key is not None:
+            watermarker = HmacWatermarker(signing_key=vault_watermark_key)
+        else:
+            # Default no-op preserves backwards compatibility — sensitive
+            # uploads still get the audit sidecar (sha256 + uploader),
+            # just no embedded HMAC. Production should set
+            # vault_watermark_key for forensic traceability of leaks.
+            watermarker = NoOpWatermarker()
         self._vault_admin = VaultAdminService(
             vault_resolver=self._resolve_vault_for,
             retention=VaultRetentionService(
@@ -389,6 +442,7 @@ class Supervisor:
                 sensitive_ttl_seconds=vault_sensitive_ttl_seconds,
             ),
             clock=clock,
+            watermarker=watermarker,
         )
         # Sweep cadence: every Nth drive cycle the supervisor purges any
         # sensitive vault entries whose TTL has run out (default 90 days
@@ -417,6 +471,14 @@ class Supervisor:
         # is cheap and matches doc-05's "schedule Y".
         self._harvest_scheduler = HarvestScheduler(clock=clock)
         self._harvest_eval_every_n = 10
+        # Non-LLM resource throttles (doc 09 level 2). The LLM tier
+        # throttle lives on the genome's LLMRouter; sandbox / browser /
+        # egress live here because their substrates are platform-side.
+        self._throttle_service = ThrottleService(clock=clock)
+        # When disabled, the throttle wrappers are not installed at
+        # spawn time — useful for tests that assert identity equality
+        # against the raw substrate they injected.
+        self._resource_throttle_enabled = bool(resource_throttle_enabled)
         # Hash-chained operator audit log (doc 08). Every mutating
         # supervisor call writes an entry tagged with the calling actor's
         # subject so a compliance reviewer can replay who-did-what.
@@ -502,33 +564,34 @@ class Supervisor:
                         h.task.cancel()
 
     async def _resume_from_persistence(self) -> int:
-        """Re-spawn every persisted Darwin marked alive. Returns the
-        count of resumed Darwins. Each resumed Darwin gets a FRESH
-        runtime + manifest (the audit chain captures the prior life;
-        in-life caches were not durable to begin with). The opening
-        balance comes from the last persisted snapshot, falling back to
-        the original opening_usdc when no snapshot was taken yet.
+        """Re-spawn every persisted Darwin marked alive. Lossless when a
+        manifest + audit chain were persisted for the id (the new Darwin
+        keeps its original id + continues the same audit chain via
+        :class:`PersistentDarwinAuditSink`); falls back to a fresh-id
+        spawn when the manifest store is unavailable for that row.
 
-        This is best-effort. Doc 08 §HA: "drive-loop resume across leader
-        failover is NOT supported until a separate slice"; this is that
-        slice — limited to the lifecycle-table view, not the audit-chain
-        replay. Re-spawned Darwins start fresh from genesis with the
-        same id + budget; the previous life lives in the audit log."""
+        Returns the count of resumed Darwins."""
         assert self._lifecycle is not None
         resumed = 0
         for rec in self._lifecycle.list_alive():
             if rec.darwin_id in self._darwins:
-                continue  # already running in-process
+                continue
             opening = (
                 rec.last_balance if rec.last_balance is not None
                 else rec.opening_usdc
             )
+            opening = float(max(opening, 0.0))
+            has_manifest = (
+                self._manifest_store is not None
+                and self._manifest_store.get(rec.darwin_id) is not None
+            )
             try:
                 status = await self.spawn(
-                    opening_usdc=float(max(opening, 0.0)),
+                    opening_usdc=opening,
                     escalation_auto=rec.escalation_auto or "approve",
                     parent_id=rec.parent_id,
                     actor="platform.resume",
+                    _resume_id=rec.darwin_id if has_manifest else None,
                 )
                 self._audit.record(
                     actor="platform.resume",
@@ -536,8 +599,9 @@ class Supervisor:
                     darwin_id=status.darwin_id,
                     metadata={
                         "from_id": rec.darwin_id,
-                        "opening_usdc": float(opening),
+                        "opening_usdc": opening,
                         "original_spawned_at": rec.spawned_at,
+                        "lossless": bool(has_manifest),
                     },
                 )
                 resumed += 1
@@ -569,11 +633,17 @@ class Supervisor:
         escalation_auto: str | None = "approve",
         parent_id: str | None = None,
         actor: str = "anonymous",
+        _resume_id: str | None = None,
     ) -> DarwinStatus:
         """Mint genesis, boot, start the drive task. Returns the new Darwin's
         status. ``parent_id`` is metadata only for genesis spawns — children
         born from a reproduction event are picked up automatically via the
-        spawner observer."""
+        spawner observer.
+
+        ``_resume_id`` is an internal-only handle used by
+        :meth:`_resume_from_persistence` to re-spawn a Darwin against its
+        persisted manifest + audit chain. Callers should not pass this
+        directly; use the resume entry point."""
         if self._closed:
             raise SupervisorError("supervisor is closed")
         await self.ensure_leader_started()
@@ -593,6 +663,34 @@ class Supervisor:
                 escalation_auto=escalation_auto,
                 signer=self._signer,
             )
+            # Lossless resume (doc 08 §HA): swap the throwaway genesis the
+            # FakeStack just minted for the persisted manifest + layer
+            # blobs, so the resumed Darwin keeps its original identity.
+            # The audit chain + checkpoint will then continue the same
+            # life rather than starting a fresh one.
+            if _resume_id is not None and self._manifest_store is not None:
+                stored = self._manifest_store.get(_resume_id)
+                if stored is not None:
+                    from darwin_dna.manifest import Manifest
+                    manifest_json, layer_blobs, layer_names = stored
+                    stack.manifest = Manifest.model_validate_json(manifest_json)
+                    stack.layer_blobs = layer_blobs
+                    stack.layer_names = layer_names
+                    # boot() will reconstruct identity from the verified manifest.
+                    stack.identity = None
+            # Persistent audit + checkpoint plumbing (lossless resume).
+            # The Darwin id at this point is either the freshly-minted
+            # genesis id OR the persisted resume id (when manifest was
+            # restored above). Either way we point the sink + checkpoint
+            # store at it so subsequent records are durable.
+            darwin_id_now = (
+                _resume_id
+                if _resume_id is not None and stack.identity is None
+                else stack.identity.darwin_id
+            )
+            if self._persistence is not None:
+                stack.audit_sink = self._persistence.audit_sink_for(darwin_id_now)
+                stack.checkpoint = self._checkpoint_store
             if self._llm_factory is not None:
                 # Replace the default FakeLLM with the real adapter. The
                 # wallet is already bound; the factory only needs a clock
@@ -653,6 +751,33 @@ class Supervisor:
                 )
                 stack.browser = wrapped
                 runtime._p.browser = wrapped  # noqa: SLF001
+            # Level-2 throttle wrappers (doc 09). Nested OUTSIDE the
+            # cache so cached replays still count against the
+            # operator-installed daily cap. Sandbox + egress get the
+            # same treatment so a sustained WARN can actually rate-limit
+            # the offending resource.
+            if self._resource_throttle_enabled:
+                if stack.browser is not None:
+                    stack.browser = ThrottledBrowserSubstrate(
+                        inner=stack.browser,
+                        throttle=self._throttle_service,
+                        darwin_id=runtime.identity.darwin_id,
+                    )
+                    runtime._p.browser = stack.browser  # noqa: SLF001
+                if stack.sandbox is not None:
+                    stack.sandbox = ThrottledSandboxSubstrate(
+                        inner=stack.sandbox,
+                        throttle=self._throttle_service,
+                        darwin_id=runtime.identity.darwin_id,
+                    )
+                    runtime._p.sandbox = stack.sandbox  # noqa: SLF001
+                if stack.x402_client is not None:
+                    stack.x402_client = ThrottledEgressClient(
+                        inner=stack.x402_client,
+                        throttle=self._throttle_service,
+                        darwin_id=runtime.identity.darwin_id,
+                    )
+                    runtime._p.x402_client = stack.x402_client  # noqa: SLF001
             # Swap the fake provisioner for the per-Darwin scoped view of the
             # platform-side ProvisioningService (doc 04, 07). Done AFTER boot
             # so the genome's catalog already type-checks against the
@@ -703,6 +828,23 @@ class Supervisor:
                         parent_id=parent_id,
                         spawned_at=handle.spawned_at,
                         escalation_auto=escalation_auto,
+                    )
+                except Exception:
+                    pass
+            # Persist the sealed manifest + layer blobs so a future
+            # resume can re-mint the same DNA (lossless resume; doc 08).
+            # Skipped when we just resumed an existing Darwin (the row
+            # is already present and unchanged).
+            if (
+                self._manifest_store is not None
+                and _resume_id is None
+            ):
+                try:
+                    self._manifest_store.put(
+                        darwin_id=handle.darwin_id,
+                        manifest_json=handle.runtime._p.manifest.model_dump_json(),  # noqa: SLF001
+                        layer_blobs=stack.layer_blobs,
+                        layer_names=stack.layer_names,
                     )
                 except Exception:
                     pass
@@ -882,6 +1024,76 @@ class Supervisor:
         ):
             raise UnknownDarwin(darwin_id)
         return self._harvest_scheduler.list(darwin_id)
+
+    # -- non-LLM resource throttles (doc 09 level 2) ---------------------
+    def set_resource_throttle(
+        self,
+        darwin_id: str,
+        *,
+        kind: str,
+        max_daily_calls: int,
+        actor: str = "anonymous",
+    ) -> ResourceThrottle:
+        """Install a per-Darwin daily call cap on a non-LLM resource.
+        ``kind`` ∈ ``{"sandbox", "browser", "egress"}``. The LLM tier
+        throttle remains the genome's :meth:`throttle_llm_tier` lever."""
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        with span(
+            "supervisor.set_resource_throttle",
+            darwin_id=darwin_id,
+            attributes={"kind": kind, "max_daily_calls": max_daily_calls},
+        ):
+            try:
+                t = self._throttle_service.set(
+                    darwin_id=darwin_id, kind=kind,
+                    max_daily_calls=max_daily_calls,
+                )
+            except ThrottleError as exc:
+                raise SupervisorError(str(exc)) from exc
+            self._audit.record(
+                actor=actor,
+                action="set_resource_throttle",
+                darwin_id=darwin_id,
+                metadata={"kind": kind, "max_daily_calls": max_daily_calls},
+            )
+            return t
+
+    def clear_resource_throttle(
+        self,
+        darwin_id: str,
+        *,
+        kind: str | None = None,
+        actor: str = "anonymous",
+    ) -> list[ResourceThrottle]:
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        with span(
+            "supervisor.clear_resource_throttle",
+            darwin_id=darwin_id,
+            attributes={"kind": kind or "*"},
+        ):
+            try:
+                removed = self._throttle_service.clear(
+                    darwin_id=darwin_id, kind=kind,
+                )
+            except ThrottleError as exc:
+                raise SupervisorError(str(exc)) from exc
+            self._audit.record(
+                actor=actor,
+                action="clear_resource_throttle",
+                darwin_id=darwin_id,
+                metadata={"kind": kind, "removed": [r.kind for r in removed]},
+            )
+            return removed
+
+    def list_resource_throttles(self, darwin_id: str) -> list[ResourceThrottle]:
+        if (
+            darwin_id not in self._darwins
+            and not self._lineage_registry.has(darwin_id)
+        ):
+            raise UnknownDarwin(darwin_id)
+        return self._throttle_service.list_for(darwin_id)
 
     async def _evaluate_harvest_rules(self, handle: _Handle) -> None:
         """Check the per-Darwin rules and fire any that are due. Errors
@@ -1994,12 +2206,67 @@ class Supervisor:
         "failure_rate": "coding",
     }
 
+    # Non-LLM resource throttle map. A sustained WARN of these alert
+    # kinds halves the corresponding resource's daily cap (or installs
+    # a conservative default cap if none was set). Heartbeat / spend_velocity
+    # / failure_rate stay on the LLM tier map above; spread_spend points
+    # at egress because the smear attack typically targets x402 / search.
+    _WARN_RESOURCE_MAP = {
+        "spread_spend": THROTTLE_KIND_EGRESS,
+        "escalation_rate": THROTTLE_KIND_BROWSER,
+    }
+    # Default cap installed by the auto-throttle when no operator cap
+    # exists yet. Conservative — operators tighten further via the API.
+    _AUTO_THROTTLE_DEFAULT_CAP = 50
+
+    def _maybe_auto_throttle_resource(
+        self, handle: _Handle, kind: str, alert_kind: str,
+    ) -> None:
+        """Halve (or install a default) per-Darwin daily cap on
+        ``kind`` ∈ {sandbox, browser, egress}. Latched per (darwin,
+        alert_kind) via handle.auto_throttled so a sustained WARN doesn't
+        repeatedly halve until the cap is one call/day."""
+        existing = self._throttle_service.get(
+            darwin_id=handle.darwin_id, kind=kind,
+        )
+        if existing is None:
+            new_cap = self._AUTO_THROTTLE_DEFAULT_CAP
+        else:
+            new_cap = max(1, existing.max_daily_calls // 2)
+        try:
+            self._throttle_service.set(
+                darwin_id=handle.darwin_id, kind=kind,
+                max_daily_calls=new_cap,
+            )
+        except ThrottleError:
+            return
+        handle.auto_throttled.add(alert_kind)
+        self._audit.record(
+            actor="platform.auto_throttle",
+            action="set_resource_throttle",
+            darwin_id=handle.darwin_id,
+            metadata={
+                "kind": kind, "max_daily_calls": new_cap,
+                "trigger_alert": alert_kind,
+            },
+        )
+
     def _maybe_auto_throttle(self, handle: _Handle, fired: list[Alert]) -> None:
         from darwin_dna.machinery.llm_router import Tier, hp_cap_for_tier
 
         for alert in fired:
             if alert.severity is not Severity.WARN:
                 continue
+            # Non-LLM resource path first — handled by ThrottleService.
+            resource_kind = self._WARN_RESOURCE_MAP.get(alert.kind)
+            if resource_kind is not None:
+                if alert.kind in handle.auto_throttled:
+                    continue
+                self._maybe_auto_throttle_resource(
+                    handle, resource_kind, alert.kind,
+                )
+                continue
+            # LLM tier path — handled by the genome's LLMRouter.
             tier_name = self._WARN_TIER_MAP.get(alert.kind)
             if tier_name is None:
                 continue
