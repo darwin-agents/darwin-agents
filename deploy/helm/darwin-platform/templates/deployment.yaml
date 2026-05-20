@@ -1,3 +1,11 @@
+{{- $usePostgres := or .Values.database.url .Values.database.existingSecret -}}
+{{- $haEnabled := .Values.leaderElection.enabled -}}
+{{- if and $haEnabled (not $usePostgres) -}}
+{{- fail "leaderElection.enabled requires database.url or database.existingSecret (Postgres-backed persistence is the prerequisite)" -}}
+{{- end -}}
+{{- if and (gt (int .Values.replicaCount) 1) (not $haEnabled) -}}
+{{- fail "replicaCount > 1 requires leaderElection.enabled — multiple writers without leader election corrupt the audit chain" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,10 +15,16 @@ metadata:
     {{- include "darwin-platform.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # Single-writer per process (SQLite + drive loops). Recreate prevents
-  # a brief overlap of writers during a rolling update.
+  # With HA on, followers serve /readyz=503 while a rolling restart
+  # cycles pods — the Service routes only to the leader. Without HA,
+  # Recreate prevents two writers from overlapping during an update.
   strategy:
-    type: Recreate
+    type: {{ if $haEnabled }}RollingUpdate{{ else }}Recreate{{ end }}
+    {{- if $haEnabled }}
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
   selector:
     matchLabels:
       {{- include "darwin-platform.selectorLabels" . | nindent 6 }}
@@ -30,7 +44,6 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- $usePostgres := or .Values.database.url .Values.database.existingSecret }}
       containers:
         - name: supervisor
           image: "{{ .Values.image.repository }}:{{ include "darwin-platform.imageTag" . }}"
@@ -54,6 +67,12 @@ spec:
             {{- end }}
             {{- if .Values.auth.enabled }}
             - --auth-tokens=/run/secrets/tokens.json
+            {{- end }}
+            {{- if $haEnabled }}
+            - --leader-election
+            {{- if .Values.leaderElection.lockKey }}
+            - --leader-lock-key={{ .Values.leaderElection.lockKey }}
+            {{- end }}
             {{- end }}
           ports:
             - name: http
