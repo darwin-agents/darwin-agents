@@ -1,0 +1,38 @@
+apiVersion: v2
+name: darwin-platform
+description: |
+  The Darwin platform control plane (docs/engineering/08). One Deployment
+  per chart release hosting the FastAPI supervisor with SQLite-backed
+  persistence on a PVC, optional bearer-token auth via a mounted Secret,
+  optional Ingress for external exposure, optional ServiceMonitor for
+  kube-prometheus-stack discovery, and a NetworkPolicy that defaults to
+  deny-egress with explicit allow rules for DNS + observability + the
+  optional LiteLLM proxy.
+
+  This chart deploys the supervisor only. LiteLLM, Postgres, Prometheus,
+  and Jaeger are typically deployed by other charts in the same cluster
+  (see ./README.md for canonical references).
+type: application
+
+# Chart-side semver. Bump when chart templates change in a breaking way.
+version: 0.1.0
+
+# The supervisor image tag this chart's manifests are validated against.
+# Helm's standard `image.tag` value can override this per-release.
+appVersion: "0.1.0"
+
+keywords:
+  - darwin
+  - supervisor
+  - platform
+  - control-plane
+
+home: https://github.com/quantium-rock/darwin-agent
+
+sources:
+  - https://github.com/quantium-rock/darwin-agent
+
+# The chart is intentionally not packaged with a dependencies block — the
+# supervisor is the only workload. Cluster-platform charts (Postgres,
+# LiteLLM, Prometheus, Jaeger) are managed separately so their lifecycles
+# don't entangle with the supervisor's.

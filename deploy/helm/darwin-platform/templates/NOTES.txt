@@ -1,0 +1,30 @@
+Darwin platform — release "{{ .Release.Name }}" deployed.
+
+  Image:       {{ .Values.image.repository }}:{{ include "darwin-platform.imageTag" . }}
+  Namespace:   {{ .Release.Namespace }}
+  Replicas:    {{ .Values.replicaCount }}
+  Persistence: {{ if .Values.persistence.enabled }}{{ .Values.persistence.size }} on storageClass {{ default "<cluster-default>" .Values.persistence.storageClass }}{{ else }}DISABLED — audit chain will not survive pod restarts{{ end }}
+  Auth:        {{ if .Values.auth.enabled }}bearer (Secret: {{ if .Values.auth.existingSecret }}{{ .Values.auth.existingSecret }}{{ else }}{{ include "darwin-platform.fullname" . }}-tokens{{ end }}){{ else }}DISABLED — DO NOT expose publicly{{ end }}
+
+Probe the supervisor inside the cluster:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "darwin-platform.fullname" . }} 8000:{{ .Values.service.port }}
+  curl -fsS http://localhost:8000/healthz
+
+Read the platform's signing public key (for verifying Darwin manifests):
+
+  kubectl -n {{ .Release.Namespace }} exec -ti deploy/{{ include "darwin-platform.fullname" . }} -- \
+    python -m darwin_platform signing-key --db /data/state.db
+
+{{ if not .Values.auth.enabled -}}
+WARNING: auth is disabled. The supervisor trusts every caller. Do not
+expose this Service via an Ingress without first setting
+`auth.enabled=true` and providing tokens (inline via `auth.tokens` or
+out-of-band via `auth.existingSecret`).
+{{ end -}}
+{{ if not .Values.persistence.enabled -}}
+WARNING: persistence is disabled. Audit log + tokens + billing + lineage
++ tickets + alerts will RESET on every pod restart. Doc 08 §"Billing
+model" + the audit-log promise are incompatible with this mode in
+production.
+{{ end -}}

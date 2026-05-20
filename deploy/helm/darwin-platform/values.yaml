@@ -1,0 +1,207 @@
+# Default values for darwin-platform.
+#
+# Override per-environment via -f values-prod.yaml or --set.
+# Every section's first line documents the design intent; pick values
+# in context, not in isolation.
+
+# -- Container image --------------------------------------------------------
+image:
+  # Default pulls from GHCR; the build.yml workflow pushes here on every
+  # commit to main + every tag. Pin a sha-XXXXXX tag for production
+  # rollouts — `latest` is for dev only.
+  repository: ghcr.io/quantium-rock/darwin-agent/darwin-platform
+  tag: ""  # Empty falls back to Chart.appVersion; set to sha-XXXXXX in prod.
+  pullPolicy: IfNotPresent
+  # imagePullSecrets if the image is private. Skip for public images.
+  pullSecrets: []
+
+# -- Replicas ---------------------------------------------------------------
+# Supervisor is single-writer per process (SQLite + in-memory drive
+# loops). Keep at 1 until the Postgres-backed persistence port lands and
+# we add a leader-election layer. Doc 08's lifecycle endpoints assume
+# one writer per Darwin id, so this is a correctness invariant, not just
+# a resource choice.
+replicaCount: 1
+
+# -- Resources --------------------------------------------------------------
+# Generous defaults for a small fleet; tune for actual load. The
+# supervisor is CPU-light (just async coordination + SQLite writes) and
+# memory grows with the number of running Darwins.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# -- Security context -------------------------------------------------------
+# The image's Dockerfile already creates a non-root `darwin` user (UID 1000);
+# we double-down here in case the image is overridden. Read-only root FS is
+# off by default — uvicorn writes to a few cache dirs at startup.
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# -- Persistence ------------------------------------------------------------
+# The supervisor writes a SQLite database under /data/state.db. Audit log,
+# tokens, billing, lineage, escalation tickets, monitor alerts all live
+# here — losing this volume LOSES doc-08's permanent audit chain.
+persistence:
+  enabled: true
+  # Provide your storageClassName explicitly in production; the empty
+  # string falls back to the cluster default which may or may not be
+  # what you want.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  # existingClaim takes precedence — point at a PVC you already created
+  # with a snapshot/restore policy in place.
+  existingClaim: ""
+
+# -- Service ----------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8000
+  # The metrics + healthz endpoints share the main port (no separate
+  # admin port). Ingress should rate-limit / firewall accordingly.
+
+# -- Ingress (optional) -----------------------------------------------------
+# Enable to expose the API outside the cluster. ALWAYS layer TLS + auth
+# in front (the supervisor's bearer-token auth is opt-in; do not expose
+# auth-disabled mode publicly).
+ingress:
+  enabled: false
+  className: ""  # e.g. "nginx" or "traefik"
+  annotations: {}
+  hosts:
+    - host: darwin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: darwin-tls
+  #   hosts:
+  #     - darwin.example.com
+
+# -- Auth (bearer tokens) --------------------------------------------------
+# Three modes:
+#   1. enabled=false (default)  → trust-everyone; for local-dev only.
+#   2. enabled=true + tokens   → chart renders a Secret from the literal
+#                                tokens list below. Convenient for
+#                                bootstrapping, but the values file ends
+#                                up holding the secrets — protect it.
+#   3. enabled=true + existingSecret → reference a Secret you manage
+#                                      out-of-band (ExternalSecrets,
+#                                      SealedSecrets, etc.). Preferred
+#                                      for production.
+#
+# The mounted secret is one JSON file at /run/secrets/tokens.json
+# matching the shape in docker/tokens.example.json.
+auth:
+  enabled: false
+  # In-line tokens (mode 2) — DO NOT commit a populated values.yaml.
+  # Each entry: {token, scopes, subject?, owned_darwins?}.
+  tokens: []
+  # - token: "owner-prod-abc123"
+  #   scopes: ["owner"]
+  #   subject: "alice@example.com"
+  # - token: "ops-prod-xyz789"
+  #   scopes: ["platform_operator"]
+  #   subject: "ops@darwin.local"
+  existingSecret: ""  # mode 3: name of a pre-created Secret
+  existingSecretKey: "tokens.json"  # key within the existing secret
+
+# -- Tracing / OTel --------------------------------------------------------
+# OTLP endpoint for the genome's tracing module (see
+# darwin_platform.tracing). Empty disables tracing in dev.
+tracing:
+  endpoint: ""  # e.g. http://jaeger-collector.observability:4318
+  protocol: "http/protobuf"
+  serviceName: "darwin-supervisor"
+
+# -- ServiceMonitor (kube-prometheus-stack discovery) ----------------------
+# Off by default — set true if you have prometheus-operator installed
+# and want auto-discovery of the /metrics endpoint. The chart's plain
+# /metrics endpoint also works fine with manual scrape configs.
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+  # Labels to add so a prometheus-operator's Prometheus resource selects
+  # this monitor. Typically `release: prometheus` for kube-prometheus-stack.
+  labels: {}
+  namespace: ""  # defaults to Release.Namespace
+
+# -- NetworkPolicy ---------------------------------------------------------
+# Default-deny egress + targeted allow rules. Doc 08 §"Outbound network
+# filter" wants the egress proxy to refuse unsanctioned destinations; at
+# the K8s layer, NetworkPolicy is the same idea — deny everything except
+# explicitly-allowed targets (DNS, the LiteLLM proxy, the OTLP collector,
+# Postgres when we get there).
+networkPolicy:
+  enabled: true
+  ingress:
+    # Allow incoming HTTP from any pod with this label set. Tighten in
+    # production to specific namespaces / service-meshes.
+    from:
+      - podSelector:
+          matchLabels:
+            darwin.io/api-client: "true"
+    extraRules: []
+  egress:
+    # DNS is always required.
+    dns: true
+    # LiteLLM endpoint: matched by namespace + label. Empty disables.
+    litellm:
+      namespace: ""  # e.g. "ml-gateway"
+      podLabels: {}  # e.g. {app: litellm}
+      port: 4000
+    # OTLP collector (Jaeger / Tempo / Honeycomb agent).
+    otlp:
+      namespace: ""  # e.g. "observability"
+      podLabels: {}
+      ports: [4317, 4318]
+    # Postgres (reserved for the future Postgres persistence port).
+    postgres:
+      namespace: ""
+      podLabels: {}
+      port: 5432
+    # Arbitrary CIDRs (e.g. Coinbase APIs when the real wallet adapter
+    # lands). One entry per public destination.
+    extraCIDRs: []
+    # - cidr: 0.0.0.0/0
+    #   ports: [443]
+
+# -- Pod-level extras ------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+extraEnv: []
+# - name: SOMETHING_EXTRA
+#   value: "x"
+
+# -- Service account -------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # automountServiceAccountToken: false  # tighten for least-privilege
+
+# -- Pod disruption budget -------------------------------------------------
+# Single-replica deployment doesn't benefit from a PDB (a PDB with
+# minAvailable=1 + replicas=1 would block voluntary disruptions
+# entirely). Re-enable when the supervisor goes HA via Postgres
+# persistence + leader election.
+podDisruptionBudget:
+  enabled: false

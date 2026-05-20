@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Single-writer per process (SQLite + drive loops). Recreate prevents
+  # a brief overlap of writers during a rolling update.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "darwin-platform.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "darwin-platform.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "darwin-platform.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: supervisor
+          image: "{{ .Values.image.repository }}:{{ include "darwin-platform.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - python
+            - -m
+            - darwin_platform
+            - serve
+            - --host=0.0.0.0
+            - --port=8000
+            {{- if .Values.persistence.enabled }}
+            - --db=/data/state.db
+            {{- end }}
+            {{- if .Values.auth.enabled }}
+            - --auth-tokens=/run/secrets/tokens.json
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            {{- if .Values.tracing.endpoint }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.tracing.serviceName | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.tracing.protocol | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            # Liveness is more forgiving than readiness — bouncing the
+            # process needlessly costs an audit-anchor write and the
+            # drive-task restart cost.
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: /data
+            {{- end }}
+            {{- if .Values.auth.enabled }}
+            - name: tokens
+              mountPath: /run/secrets
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (include "darwin-platform.fullname" .)) .Values.persistence.existingClaim }}
+        {{- end }}
+        {{- if .Values.auth.enabled }}
+        - name: tokens
+          secret:
+            secretName: {{ default (printf "%s-tokens" (include "darwin-platform.fullname" .)) .Values.auth.existingSecret }}
+            items:
+              - key: {{ .Values.auth.existingSecretKey | default "tokens.json" }}
+                path: tokens.json
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
