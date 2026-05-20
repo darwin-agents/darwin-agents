@@ -95,6 +95,19 @@ class FakeLLM:
                 "cost_usdc": cost,
             }
 
+        if task == "support_reply":
+            incoming = str(request.get("incoming_message", ""))
+            channel = str(request.get("channel", ""))
+            return {
+                "text": (
+                    f"Thanks for reaching out on {channel}. "
+                    f"We have received your message and will address it "
+                    f"shortly. (Re: {incoming[:80]})"
+                ),
+                "confidence": 0.75,
+                "cost_usdc": cost,
+            }
+
         if task == "analytics_synthesis":
             scope = str(request.get("scope", ""))
             metrics = dict(request.get("raw_metrics", {}))
