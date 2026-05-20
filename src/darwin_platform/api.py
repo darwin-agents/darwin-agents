@@ -77,6 +77,11 @@ class QuarantineRequest(BaseModel):
     operator: str = "platform"
 
 
+class ResourceThrottleRequest(BaseModel):
+    kind: str = Field(pattern=r"^(sandbox|browser|egress)$")
+    max_daily_calls: int = Field(ge=0)
+
+
 class HarvestRuleRequest(BaseModel):
     destination: str = Field(min_length=1)
     trigger_balance_usdc: float = Field(gt=0)
@@ -476,6 +481,56 @@ def build_app(
     ) -> dict[str, Any]:
         _require_scope(ctx, PLATFORM_OPERATOR)
         return await _sup(request).fleet_billing()
+
+    # -- non-LLM resource throttles (doc 09 level 2) -----------------------
+    @app.post("/platform/darwins/{darwin_id}/resource_throttle")
+    async def set_resource_throttle(
+        darwin_id: str,
+        request: Request,
+        req: ResourceThrottleRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            t = _sup(request).set_resource_throttle(
+                darwin_id, kind=req.kind,
+                max_daily_calls=req.max_daily_calls,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(422, str(exc))
+        return t.to_json()
+
+    @app.delete("/platform/darwins/{darwin_id}/resource_throttle")
+    async def clear_resource_throttle(
+        darwin_id: str,
+        request: Request,
+        kind: str | None = Query(None, pattern=r"^(sandbox|browser|egress)$"),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            removed = _sup(request).clear_resource_throttle(
+                darwin_id, kind=kind, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {"removed": [r.to_json() for r in removed]}
+
+    @app.get("/platform/darwins/{darwin_id}/resource_throttle")
+    async def get_resource_throttle(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            rows = _sup(request).list_resource_throttles(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {"throttles": [r.to_json() for r in rows]}
 
     # -- harvest rules (doc 05: scheduled profit withdrawal) ---------------
     @app.post("/darwins/{darwin_id}/harvest_rules", status_code=201)
@@ -945,13 +1000,36 @@ def build_app(
         # Start the election on first call so single-replica callers
         # don't need to know the lifecycle.
         await sup.ensure_leader_started()
+        # Persistence health (doc 08 HA): a leader pod with a corrupt or
+        # disconnected DB must NOT pass readiness, otherwise k8s would
+        # route mutating traffic to a pod that crashes every spawn. A
+        # cheap SELECT 1 catches connection drops and obvious corruption.
+        persistence_ok = True
+        persistence_error = None
+        if sup._persistence is not None:  # noqa: SLF001
+            try:
+                sup._persistence._backend.execute("SELECT 1").fetchone()  # noqa: SLF001
+            except Exception as exc:
+                persistence_ok = False
+                persistence_error = str(exc)[:200]
+        import json as _json
+        if not persistence_ok:
+            return Response(
+                content=_json.dumps({
+                    "status": "persistence_down",
+                    "leader": sup.is_leader,
+                    "error": persistence_error,
+                }),
+                media_type="application/json",
+                status_code=503,
+            )
         if sup.is_leader:
             return Response(
-                content='{"status":"ok","leader":true}',
+                content=_json.dumps({"status": "ok", "leader": True}),
                 media_type="application/json",
             )
         return Response(
-            content='{"status":"follower","leader":false}',
+            content=_json.dumps({"status": "follower", "leader": False}),
             media_type="application/json",
             status_code=503,
         )
@@ -1081,6 +1159,137 @@ def _render_metrics(sup: Supervisor, started_ts: float) -> str:
         "counter",
         "Parent->child lineage edges observed (across all reproductions).",
         [({}, float(len(edges)))],
+    )
+
+    # -- vault: watermarks issued + retention sweeps ---------------------
+    vault_entries = sum(
+        1 for _ in sup.vault_admin._index.values() for _ in _  # noqa: SLF001
+    )
+    metric(
+        "darwin_platform_vault_entries_total",
+        "gauge",
+        "Vault entries currently tracked across the fleet.",
+        [({}, float(vault_entries))],
+    )
+    watermarked = 0
+    for darwin_id, by_path in sup.vault_admin._index.items():  # noqa: SLF001
+        for ref in by_path.values():
+            if ref.watermarked:
+                watermarked += 1
+    metric(
+        "darwin_platform_vault_watermarked_total",
+        "gauge",
+        "Vault entries currently carrying an embedded HMAC watermark.",
+        [({}, float(watermarked))],
+    )
+
+    # -- sanctions refusals (recorded in operator audit) -----------------
+    sanctions_refusals = 0
+    for entry in sup.audit_log.entries(action="wallet_error"):
+        if "sanctions" in (entry.metadata.get("reason") or ""):
+            sanctions_refusals += 1
+    metric(
+        "darwin_platform_sanctions_refusals_total",
+        "counter",
+        "Wallet outbound transfers refused by the sanctions screener.",
+        [({}, float(sanctions_refusals))],
+    )
+
+    # -- resource throttles ----------------------------------------------
+    throttles = sup._throttle_service  # noqa: SLF001
+    for kind in ("sandbox", "browser", "egress"):
+        used_total = 0
+        installed_total = 0
+        for h in sup._darwins.values():  # noqa: SLF001
+            t = throttles.get(darwin_id=h.darwin_id, kind=kind)
+            if t is not None:
+                installed_total += 1
+                used_total += throttles.used_today(
+                    darwin_id=h.darwin_id, kind=kind,
+                )
+        metric(
+            "darwin_platform_throttle_installed",
+            "gauge",
+            "Number of Darwins with an installed throttle for this resource.",
+            [({"kind": kind}, float(installed_total))],
+        )
+        metric(
+            "darwin_platform_throttle_used_today",
+            "gauge",
+            "Aggregate count of throttled calls consumed today by resource.",
+            [({"kind": kind}, float(used_total))],
+        )
+
+    # -- browser cache ----------------------------------------------------
+    bc_stats = sup.browser_stats()
+    metric(
+        "darwin_platform_browser_sessions_total",
+        "counter",
+        "Browser sessions recorded across the fleet.",
+        [({}, float(bc_stats.get("total_sessions", 0)))],
+    )
+    metric(
+        "darwin_platform_browser_cost_usdc",
+        "gauge",
+        "Total browser-session cost (USDC) attributed across the fleet.",
+        [({}, float(bc_stats.get("total_cost_usdc", 0.0)))],
+    )
+    promoted = sum(
+        1 for s in bc_stats.get("signatures", [])
+        if s.get("promoted")
+    )
+    metric(
+        "darwin_platform_browser_cache_promoted",
+        "gauge",
+        "Browser signatures currently promoted to the cached replay path.",
+        [({}, float(promoted))],
+    )
+
+    # -- LLM circuit breaker state (only when LiteLLM transport is wired) -
+    breaker_states: dict[str, int] = {"closed": 0, "open": 0, "half_open": 0}
+    for h in sup._darwins.values():  # noqa: SLF001
+        transport = h.runtime.llm._t  # noqa: SLF001
+        cb = getattr(transport, "circuit_breaker", None)
+        if cb is None:
+            continue
+        for _model, st in cb.snapshot().items():
+            state = st.get("state", "closed")
+            breaker_states[state] = breaker_states.get(state, 0) + 1
+    metric(
+        "darwin_platform_llm_circuit_breaker_models",
+        "gauge",
+        "Per-model LLM circuit-breaker state counts across the fleet.",
+        [
+            ({"state": s}, float(c))
+            for s, c in breaker_states.items()
+        ],
+    )
+
+    # -- resume events ----------------------------------------------------
+    resume_entries = len(sup.audit_log.entries(action="resume"))
+    metric(
+        "darwin_platform_resume_events_total",
+        "counter",
+        "Number of Darwin resumes since process start (or restored from audit log).",
+        [({}, float(resume_entries))],
+    )
+
+    # -- harvest rule fires + scheduler rules ----------------------------
+    harvest_rule_fires = len(
+        sup.audit_log.entries(action="harvest_rule_fired")
+    )
+    metric(
+        "darwin_platform_harvest_rule_fires_total",
+        "counter",
+        "Recurring-harvest rule fires recorded by the scheduler.",
+        [({}, float(harvest_rule_fires))],
+    )
+    installed_rules = len(sup._harvest_scheduler.list())  # noqa: SLF001
+    metric(
+        "darwin_platform_harvest_rules_installed",
+        "gauge",
+        "Currently-installed recurring harvest rules.",
+        [({}, float(installed_rules))],
     )
 
     # -- process uptime --------------------------------------------------
