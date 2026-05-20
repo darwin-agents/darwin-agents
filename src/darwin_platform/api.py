@@ -42,7 +42,9 @@ from .auth import (
 )
 from .monitoring import Severity
 from .snapshot import snapshot as build_snapshot
+from .provisioning import ProvisioningError
 from .supervisor import Supervisor, SupervisorError, UnknownDarwin
+from .vault_admin import VaultAdminError
 
 
 # -- request/response models ------------------------------------------------
@@ -73,6 +75,22 @@ class EscalationResponseRequest(BaseModel):
 class QuarantineRequest(BaseModel):
     reason: str
     operator: str = "platform"
+
+
+class HarvestRuleRequest(BaseModel):
+    destination: str = Field(min_length=1)
+    trigger_balance_usdc: float = Field(gt=0)
+    amount_usdc: float | None = Field(default=None, gt=0)
+    interval_seconds: float | None = Field(default=None, ge=60)
+
+
+class VaultPutRequest(BaseModel):
+    tier: str = Field(pattern=r"^(public|scoped|sensitive)$")
+    key: str = Field(min_length=1)
+    value: str
+    scope: str | None = None
+    ttl_seconds: float | None = Field(default=None, gt=0)
+    original_filename: str | None = None
 
 
 class WalletPolicyRequest(BaseModel):
@@ -458,6 +476,212 @@ def build_app(
     ) -> dict[str, Any]:
         _require_scope(ctx, PLATFORM_OPERATOR)
         return await _sup(request).fleet_billing()
+
+    # -- harvest rules (doc 05: scheduled profit withdrawal) ---------------
+    @app.post("/darwins/{darwin_id}/harvest_rules", status_code=201)
+    async def add_harvest_rule(
+        darwin_id: str,
+        request: Request,
+        req: HarvestRuleRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            rule = _sup(request).add_harvest_rule(
+                darwin_id,
+                destination=req.destination,
+                trigger_balance_usdc=req.trigger_balance_usdc,
+                amount_usdc=req.amount_usdc,
+                interval_seconds=req.interval_seconds,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(422, str(exc))
+        return rule.to_json()
+
+    @app.get("/darwins/{darwin_id}/harvest_rules")
+    async def list_harvest_rules(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            rules = _sup(request).list_harvest_rules(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {
+            "darwin_id": darwin_id,
+            "rules": [r.to_json() for r in rules],
+        }
+
+    @app.delete("/darwins/{darwin_id}/harvest_rules/{rule_id}")
+    async def delete_harvest_rule(
+        darwin_id: str,
+        rule_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            rule = _sup(request).remove_harvest_rule(
+                darwin_id, rule_id, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(404, str(exc))
+        return rule.to_json()
+
+    # -- browser sessions (doc 15: cache + cost attribution) ---------------
+    @app.get("/darwins/{darwin_id}/browser/sessions")
+    async def browser_sessions(
+        darwin_id: str,
+        request: Request,
+        limit: int | None = Query(None, ge=1, le=1024),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            rows = _sup(request).browser_sessions(darwin_id, limit=limit)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {"darwin_id": darwin_id, "sessions": rows}
+
+    @app.get("/platform/browser/stats")
+    async def browser_stats(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return _sup(request).browser_stats()
+
+    # -- vault admin (doc 16: bidirectional shared vault + KYC retention) --
+    @app.post("/darwins/{darwin_id}/vault")
+    async def vault_put(
+        darwin_id: str,
+        request: Request,
+        req: VaultPutRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            ref = _sup(request).vault_put(
+                darwin_id, tier=req.tier, key=req.key, value=req.value,
+                scope=req.scope, ttl_seconds=req.ttl_seconds,
+                original_filename=req.original_filename,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        # Value is never echoed back.
+        return ref.to_json()
+
+    @app.delete("/darwins/{darwin_id}/vault")
+    async def vault_delete(
+        darwin_id: str,
+        request: Request,
+        tier: str = Query(..., pattern=r"^(public|scoped|sensitive)$"),
+        key: str = Query(..., min_length=1),
+        scope: str | None = Query(None),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            ref = _sup(request).vault_delete(
+                darwin_id, tier=tier, key=key, scope=scope, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(404, str(exc))
+        return ref.to_json()
+
+    @app.get("/darwins/{darwin_id}/vault")
+    async def vault_list(
+        darwin_id: str,
+        request: Request,
+        tier: str | None = Query(None, pattern=r"^(public|scoped|sensitive)$"),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            rows = _sup(request).list_vault_entries(darwin_id, tier=tier)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        # Values never returned.
+        return {
+            "darwin_id": darwin_id,
+            "entries": [r.to_json() for r in rows],
+        }
+
+    @app.post("/platform/vault/sweep")
+    async def vault_sweep(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        purged = _sup(request).sweep_vault_retention()
+        return {"purged": [r.to_json() for r in purged], "count": len(purged)}
+
+    # -- provisioning (doc 04, 07: infrastructure.provisioner backend) -----
+    @app.get("/darwins/{darwin_id}/resources")
+    async def list_darwin_resources(
+        darwin_id: str,
+        request: Request,
+        include_deprovisioned: bool = Query(False),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            rows = _sup(request).list_resources(
+                darwin_id, include_deprovisioned=include_deprovisioned,
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return {
+            "darwin_id": darwin_id,
+            "resources": [r.to_json() for r in rows],
+        }
+
+    @app.delete("/darwins/{darwin_id}/resources/{resource_id}")
+    async def deprovision_resource(
+        darwin_id: str,
+        resource_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            record = await _sup(request).deprovision_resource(
+                darwin_id, resource_id, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except ProvisioningError as exc:
+            raise HTTPException(409, str(exc))
+        return record.to_json()
+
+    @app.get("/platform/resources")
+    async def fleet_resources(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return {"by_kind": _sup(request).provisioning_summary()}
 
     # -- alerts (doc 08: quotas + anomaly detection) ----------------------
     def _parse_severity(value: str | None) -> Severity | None:
