@@ -35,7 +35,8 @@ system prompts that callers can override via ``system_prompts``.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from darwin_dna.machinery.llm_router import LLMError, Tier
@@ -58,6 +59,95 @@ _PATCH_SYSTEM_FALLBACK = (
     '[{"path": <string>, "diff": <string>}]} — no other keys, no prose '
     "around the JSON."
 )
+
+
+# -- circuit breaker -------------------------------------------------------
+@dataclass
+class _CircuitState:
+    """Per-model circuit state. ``state`` ∈ {closed, open, half_open}.
+    closed = healthy; open = skip; half_open = one trial call allowed."""
+
+    state: str = "closed"
+    consecutive_failures: int = 0
+    opened_at: float = 0.0
+
+
+class CircuitBreaker:
+    """Per-model circuit breaker for the LLM fallback chain (doc 13).
+
+    Logic:
+    - Each model starts ``closed``. ``record_failure`` increments the
+      counter; after ``failure_threshold`` it goes ``open``.
+    - ``open`` lasts ``open_seconds``. After the cooldown the next
+      ``can_call`` returns True (and flips the state to ``half_open``).
+      The trial call's result determines whether the circuit re-opens
+      (on failure) or closes (on success).
+    - ``record_success`` always closes the circuit and resets the counter.
+
+    This sits in front of the existing fallback chain: a model with an
+    open circuit is *skipped* rather than tried-and-caught. That's the
+    win — we stop hammering a known-down provider that LiteLLM would
+    otherwise eat 30s of timeout on for every call.
+    """
+
+    def __init__(
+        self,
+        *,
+        failure_threshold: int = 3,
+        open_seconds: float = 30.0,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        if failure_threshold < 1:
+            raise ValueError("failure_threshold must be >= 1")
+        if open_seconds <= 0:
+            raise ValueError("open_seconds must be > 0")
+        self._failure_threshold = int(failure_threshold)
+        self._open_seconds = float(open_seconds)
+        self._clock = clock
+        self._states: dict[str, _CircuitState] = {}
+
+    def can_call(self, model: str) -> bool:
+        st = self._states.get(model)
+        if st is None or st.state == "closed":
+            return True
+        if st.state == "half_open":
+            return True
+        # state == "open" — check cooldown
+        if (self._clock() - st.opened_at) >= self._open_seconds:
+            st.state = "half_open"
+            return True
+        return False
+
+    def record_success(self, model: str) -> None:
+        st = self._states.setdefault(model, _CircuitState())
+        st.state = "closed"
+        st.consecutive_failures = 0
+        st.opened_at = 0.0
+
+    def record_failure(self, model: str) -> None:
+        st = self._states.setdefault(model, _CircuitState())
+        st.consecutive_failures += 1
+        if (
+            st.state == "half_open"
+            or st.consecutive_failures >= self._failure_threshold
+        ):
+            st.state = "open"
+            st.opened_at = self._clock()
+
+    def state_of(self, model: str) -> str:
+        st = self._states.get(model)
+        return "closed" if st is None else st.state
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        """For tests + ops dashboards."""
+        return {
+            model: {
+                "state": st.state,
+                "consecutive_failures": st.consecutive_failures,
+                "opened_at": st.opened_at,
+            }
+            for model, st in self._states.items()
+        }
 
 
 @dataclass(frozen=True)
@@ -112,10 +202,12 @@ class LiteLLMTransport:
         litellm_completion: Callable[..., Any] | None = None,
         litellm_completion_cost: Callable[..., float] | None = None,
         request_timeout: float = 60.0,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         if not isinstance(tier_mappings, dict) or not tier_mappings:
             raise ValueError("tier_mappings must be a non-empty dict")
         self._wallet = wallet
+        self._breaker = circuit_breaker or CircuitBreaker()
         self._tiers: dict[str, TierMapping] = dict(tier_mappings)
         self._markup = float(markup_rate)
         if self._markup < 0:
@@ -191,7 +283,11 @@ class LiteLLMTransport:
         the wallet for the SUCCESSFUL call only; failed attempts incur no
         Darwin-side cost (the platform absorbs them, like a real gateway)."""
         last_exc: Exception | None = None
+        skipped: list[str] = []
         for model in self._models_for(tier):
+            if not self._breaker.can_call(model):
+                skipped.append(model)
+                continue
             try:
                 kwargs: dict[str, Any] = {
                     "model": model,
@@ -205,17 +301,29 @@ class LiteLLMTransport:
                 response = self._completion(**kwargs)
             except Exception as exc:
                 last_exc = exc
+                self._breaker.record_failure(model)
                 continue
             text = _extract_text(response)
             cost = _extract_cost(response, self._completion_cost)
             self._bill_wallet(tier, cost)
+            self._breaker.record_success(model)
             return _CompletionResult(
                 text=text, provider_cost_usdc=cost, model=model, raw=response
+            )
+        if skipped and last_exc is None:
+            raise LLMError(
+                f"every model in tier {tier.value} is circuit-open "
+                f"(skipped {len(skipped)})"
             )
         raise LLMError(
             f"every model in tier {tier.value} failed; "
             f"last error: {last_exc!r}"
         )
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        """For ops inspection + tests; the breaker holds per-model state."""
+        return self._breaker
 
     def _bill_wallet(self, tier: Tier, provider_cost_usdc: float) -> float:
         """Charge the Darwin's wallet at the marked-up rate. Returns the
