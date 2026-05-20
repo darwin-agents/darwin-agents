@@ -93,12 +93,26 @@ class PaymentsFacilitator(BaseNeuron):
     def _state(self, payload: dict) -> TreasuryState:
         env = payload.get("envelope")
         envelope = StrategyEnvelope(**env) if env else None
+        # Owner soft caps (doc 08 POST /platform/wallets/{id}/policy) flow
+        # from the platform into the wallet, and from the wallet into the
+        # policy engine. Optional capability — wallets that do not expose
+        # ``owner_soft_caps`` (older fakes / minimal real adapters) simply
+        # don't get the layer-2 check, and the wallet's own ceiling still
+        # refuses the spend. Either way the constitution's HARD_CAPS hold.
+        soft_caps = None
+        getter = getattr(self._wallet, "owner_soft_caps", None)
+        if callable(getter):
+            try:
+                soft_caps = getter()
+            except Exception:
+                soft_caps = None
         return TreasuryState(
             balance_usdc=self._wallet.balance_usdc(),
             spent_today_usdc=self._wallet.spent_today_usdc(),
             spent_lifetime_usdc=self._wallet.spent_lifetime_usdc(),
             recent_spend_usdc=tuple(self._wallet.recent_spend_usdc()),
             envelope=envelope,
+            soft_caps=soft_caps,
         )
 
     async def execute(self, plan: Plan, context: NeuronContext) -> NeuronResult:
