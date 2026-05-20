@@ -323,6 +323,9 @@ def _make_args(**kwargs):
     """Build a minimal argparse.Namespace mirroring serve args."""
     defaults = dict(
         rpc_url=None, wallet_key=None, usdc_contract=None,
+        chain_networks="base",
+        solana_rpc_url=None, solana_wallet_key=None,
+        stellar_horizon_url=None, stellar_secret=None,
         vault_url=None, vault_token=None, vault_mount="secret",
         browserbase_url=None, browserbase_api_key=None,
         e2b_api_key=None,

@@ -66,24 +66,93 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     factories: dict = {}
 
     # -- wallet (doc 17: Web3ChainClient → RealWallet) ----------------------
+    # Multi-chain mode: --chain-networks lists the chains to enable.
+    # When more than one is configured, the wallet uses MultiChainRouter
+    # so an outbound transfer routes to the chain that matches the
+    # recipient (or falls through the preferred order on failure).
+    chain_networks = (args.chain_networks or "base").split(",")
+    chain_networks = [n.strip().lower() for n in chain_networks if n.strip()]
     rpc_url = args.rpc_url or os.environ.get("DARWIN_RPC_URL")
     wallet_key = args.wallet_key or os.environ.get("DARWIN_WALLET_KEY")
-    if rpc_url and wallet_key:
-        usdc = args.usdc_contract  # None → Web3ChainClient uses its default
-        def _wallet_factory(clock, *, _rpc=rpc_url, _key=wallet_key, _usdc=usdc):
-            from .adapters.web3_chain import Web3ChainClient
+    solana_rpc = args.solana_rpc_url or os.environ.get("DARWIN_SOLANA_RPC_URL")
+    solana_key = args.solana_wallet_key or os.environ.get(
+        "DARWIN_SOLANA_WALLET_KEY"
+    )
+    stellar_horizon = args.stellar_horizon_url or os.environ.get(
+        "DARWIN_STELLAR_HORIZON_URL"
+    )
+    stellar_secret = args.stellar_secret or os.environ.get(
+        "DARWIN_STELLAR_SECRET"
+    )
+    have_base = bool(rpc_url and wallet_key) and "base" in chain_networks
+    have_solana = bool(solana_rpc and solana_key) and "solana" in chain_networks
+    have_stellar = bool(stellar_horizon and stellar_secret) and "stellar" in chain_networks
+    enabled_count = sum([have_base, have_solana, have_stellar])
+    if enabled_count > 0:
+        def _wallet_factory(
+            clock, *,
+            _have_base=have_base, _rpc=rpc_url, _key=wallet_key,
+            _usdc=args.usdc_contract,
+            _have_solana=have_solana, _solana_rpc=solana_rpc,
+            _solana_key=solana_key,
+            _have_stellar=have_stellar, _horizon=stellar_horizon,
+            _stellar_secret=stellar_secret,
+            _preferred=tuple(chain_networks),
+        ):
             from .adapters.wallet import RealWallet
-            try:
-                from web3 import Web3  # noqa: F401
-            except ImportError as exc:
+            clients: dict = {}
+            if _have_base:
+                from .adapters.web3_chain import Web3ChainClient
+                try:
+                    from web3 import Web3  # noqa: F401
+                except ImportError as exc:
+                    raise ImportError(
+                        "Base chain requires the [web3] extra: "
+                        "pip install 'darwin-dna[web3]'"
+                    ) from exc
+                kwargs = dict(rpc_url=_rpc, private_key=_key)
+                if _usdc:
+                    kwargs["usdc_contract"] = _usdc
+                from .adapters.multichain import ChainNetwork
+                clients[ChainNetwork.BASE] = Web3ChainClient(**kwargs)
+            if _have_solana:
+                try:
+                    import solana  # noqa: F401
+                except ImportError as exc:
+                    raise ImportError(
+                        "Solana chain requires the 'solana' SDK: "
+                        "pip install solana"
+                    ) from exc
+                # User wires the rpc_client + keypair from the SDK.
+                # The CLI's role is to expose the URL + secret; the
+                # operator provides a factory hook for environment-
+                # specific construction. For now, raise a clear hint.
                 raise ImportError(
-                    "Real wallet requires the [web3] extra: "
-                    "pip install 'darwin-dna[web3]'"
-                ) from exc
-            kwargs = dict(rpc_url=_rpc, private_key=_key)
-            if _usdc:
-                kwargs["usdc_contract"] = _usdc
-            chain = Web3ChainClient(**kwargs)
+                    "Solana wiring needs an operator-supplied keypair "
+                    "+ RPC client; pass solana_chain_factory directly "
+                    "via Supervisor(...) instead of CLI flags."
+                )
+            if _have_stellar:
+                raise ImportError(
+                    "Stellar wiring needs an operator-supplied keypair "
+                    "+ Horizon server; pass stellar_chain_factory "
+                    "directly via Supervisor(...) instead of CLI flags."
+                )
+            if len(clients) > 1:
+                from .adapters.multichain import (
+                    ChainNetwork,
+                    MultiChainRouter,
+                )
+                preferred = [
+                    ChainNetwork(n) for n in _preferred
+                    if n in ("base", "solana", "stellar")
+                    and ChainNetwork(n) in clients
+                ]
+                chain = MultiChainRouter(
+                    clients=clients, preferred=preferred,
+                )
+            else:
+                chain = next(iter(clients.values()))
             return RealWallet(chain=chain, clock=clock)
         factories["wallet_factory"] = _wallet_factory
 
@@ -165,6 +234,100 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     return factories
 
 
+def _build_sanctions(args: argparse.Namespace):
+    """Construct the SanctionsScreener from CLI flags.
+
+    Priority order: --sanctions-provider {chainalysis,trm} requires
+    --sanctions-api-key; otherwise --sanctions-denylist falls back to
+    LocalDenylistScreener; otherwise None (no screening)."""
+    provider = getattr(args, "sanctions_provider", None) or "local"
+    api_key = getattr(args, "sanctions_api_key", None) or os.environ.get(
+        "DARWIN_SANCTIONS_API_KEY"
+    )
+    if provider == "chainalysis":
+        if not api_key:
+            print(
+                "--sanctions-provider chainalysis requires --sanctions-api-key",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from .sanctions import CachedScreener, ChainalysisScreener
+        return CachedScreener(ChainalysisScreener(api_key=api_key))
+    if provider == "trm":
+        if not api_key:
+            print(
+                "--sanctions-provider trm requires --sanctions-api-key",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from .sanctions import CachedScreener, TRMScreener
+        return CachedScreener(TRMScreener(api_key=api_key))
+    # provider == "local" (default)
+    denylist_path = getattr(args, "sanctions_denylist", None)
+    if not denylist_path:
+        return None
+    from .sanctions import LocalDenylistScreener
+    try:
+        data = json.loads(Path(denylist_path).expanduser().read_text())
+    except Exception as exc:  # pragma: no cover
+        print(
+            f"failed to read sanctions denylist {denylist_path}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return LocalDenylistScreener(
+        denylist=set(data.get("denylist", [])),
+        denied_prefixes=tuple(data.get("denied_prefixes", [])),
+    )
+
+
+def _build_notification_sink(args: argparse.Namespace):
+    """Build a notification sink from CLI flags. Multiple flags fan
+    out — Slack + webhook + email are all sent if all three are set."""
+    slack_url = getattr(args, "slack_webhook_url", None) or os.environ.get(
+        "DARWIN_SLACK_WEBHOOK_URL"
+    )
+    webhook_url = getattr(args, "escalation_webhook_url", None) or os.environ.get(
+        "DARWIN_ESCALATION_WEBHOOK_URL"
+    )
+    sinks: list = []
+    if slack_url:
+        from .sinks import SlackWebhookNotificationSink
+        sinks.append(SlackWebhookNotificationSink(webhook_url=slack_url))
+    if webhook_url:
+        from .sinks import GenericWebhookNotificationSink
+        sinks.append(GenericWebhookNotificationSink(url=webhook_url))
+    if not sinks:
+        return None
+    if len(sinks) == 1:
+        return sinks[0]
+    from .sinks import FanOutNotificationSink
+    return FanOutNotificationSink(sinks)
+
+
+def _build_alert_sink(args: argparse.Namespace):
+    """Build an alert sink. Same fan-out semantics as notifications."""
+    webhook_url = getattr(args, "alert_webhook_url", None) or os.environ.get(
+        "DARWIN_ALERT_WEBHOOK_URL"
+    )
+    pd_routing = getattr(args, "pagerduty_routing_key", None) or os.environ.get(
+        "DARWIN_PAGERDUTY_ROUTING_KEY"
+    )
+    sinks: list = []
+    if webhook_url:
+        from .sinks import GenericWebhookAlertSink
+        sinks.append(GenericWebhookAlertSink(url=webhook_url))
+    if pd_routing:
+        from .sinks import PagerDutyAlertSink
+        sinks.append(PagerDutyAlertSink(routing_key=pd_routing))
+    if not sinks:
+        return None
+    if len(sinks) == 1:
+        return sinks[0]
+    from .sinks import FanOutAlertSink
+    return FanOutAlertSink(sinks)
+
+
 def _serve(args: argparse.Namespace) -> int:
     """Run the FastAPI app via uvicorn. Optional persistence + auth wiring."""
     try:
@@ -197,27 +360,16 @@ def _serve(args: argparse.Namespace) -> int:
 
     real_factories = _build_real_factories(args)
 
-    sanctions = None
-    denylist_path = getattr(args, "sanctions_denylist", None)
-    if denylist_path:
-        from .sanctions import LocalDenylistScreener
-        try:
-            data = json.loads(Path(denylist_path).expanduser().read_text())
-        except Exception as exc:  # pragma: no cover - input validation
-            print(
-                f"failed to read sanctions denylist {denylist_path}: {exc}",
-                file=sys.stderr,
-            )
-            return 2
-        sanctions = LocalDenylistScreener(
-            denylist=set(data.get("denylist", [])),
-            denied_prefixes=tuple(data.get("denied_prefixes", [])),
-        )
+    sanctions = _build_sanctions(args)
+    notification_sink = _build_notification_sink(args)
+    alert_sink = _build_alert_sink(args)
 
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
         sanctions_screener=sanctions,
+        notification_sink=notification_sink,
+        alert_sink=alert_sink,
         **real_factories,
     )
 
@@ -329,6 +481,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="USDC ERC-20 contract address. Defaults to Base Sepolia or "
              "mainnet constant based on the RPC URL.",
     )
+    wallet_group.add_argument(
+        "--chain-networks", default="base", metavar="LIST",
+        help=(
+            "Comma-separated list of chains to enable, in preferred "
+            "order: base, solana, stellar. Default: base only. With "
+            "multiple chains, transfers route via MultiChainRouter."
+        ),
+    )
+    wallet_group.add_argument(
+        "--solana-rpc-url", default=None, metavar="URL",
+        help="Solana HTTP RPC endpoint. Env: DARWIN_SOLANA_RPC_URL",
+    )
+    wallet_group.add_argument(
+        "--solana-wallet-key", default=None, metavar="HEX",
+        help="Solana wallet private key. Env: DARWIN_SOLANA_WALLET_KEY",
+    )
+    wallet_group.add_argument(
+        "--stellar-horizon-url", default=None, metavar="URL",
+        help="Stellar Horizon RPC endpoint. Env: DARWIN_STELLAR_HORIZON_URL",
+    )
+    wallet_group.add_argument(
+        "--stellar-secret", default=None, metavar="SECRET",
+        help="Stellar account secret. Env: DARWIN_STELLAR_SECRET",
+    )
 
     vault_group = serve.add_argument_group(
         "real vault (doc 16)",
@@ -388,6 +564,46 @@ def build_parser() -> argparse.ArgumentParser:
             '{"denylist": ["0xdead..."], "denied_prefixes": ["0xff"]}. '
             "Loaded into a LocalDenylistScreener at startup."
         ),
+    )
+    compliance_group.add_argument(
+        "--sanctions-provider", default="local",
+        choices=["local", "chainalysis", "trm"],
+        help=(
+            "Sanctions screening provider. 'local' uses --sanctions-denylist; "
+            "'chainalysis' / 'trm' use the real provider's HTTP API "
+            "(requires --sanctions-api-key)."
+        ),
+    )
+    compliance_group.add_argument(
+        "--sanctions-api-key", default=None, metavar="KEY",
+        help="API key for the chosen sanctions provider. "
+             "Env: DARWIN_SANCTIONS_API_KEY",
+    )
+
+    notify_group = serve.add_argument_group(
+        "notification sinks (doc 08)",
+        "Where escalation tickets + monitor alerts are sent. Multiple "
+        "flags fan out — Slack + webhook + email are all delivered.",
+    )
+    notify_group.add_argument(
+        "--slack-webhook-url", default=None, metavar="URL",
+        help="Slack incoming-webhook URL for escalation notifications. "
+             "Env: DARWIN_SLACK_WEBHOOK_URL",
+    )
+    notify_group.add_argument(
+        "--escalation-webhook-url", default=None, metavar="URL",
+        help="Generic JSON-POST webhook for escalation tickets. "
+             "Env: DARWIN_ESCALATION_WEBHOOK_URL",
+    )
+    notify_group.add_argument(
+        "--alert-webhook-url", default=None, metavar="URL",
+        help="Generic JSON-POST webhook for monitor alerts. "
+             "Env: DARWIN_ALERT_WEBHOOK_URL",
+    )
+    notify_group.add_argument(
+        "--pagerduty-routing-key", default=None, metavar="KEY",
+        help="PagerDuty Events v2 routing key for critical monitor "
+             "alerts. Env: DARWIN_PAGERDUTY_ROUTING_KEY",
     )
 
     serve.set_defaults(func=_serve)
