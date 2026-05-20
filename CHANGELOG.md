@@ -9,8 +9,19 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ## [Unreleased]
 
+### Changed
+
+- tests: reorganize 84 test files into industry-standard tiered layout (`tests/{unit,property,redteam,integration,simulation,fixtures}/`) with `unit/` mirroring `src/`; per-tier `conftest.py` auto-applies `unit`/`property`/`redteam`/`integration`/`simulation` markers (sim tier also gets `slow`); switch pytest to `--import-mode=importlib`
+- tests(redteam): split monolithic `test_redteam.py` into nine per-threat-class files (`test_audit_tamper.py`, `test_vault_cross_read.py`, `test_sanctions_evasion.py`, `test_fence_escape.py`, `test_spread_spend_evasion.py`, `test_watermark_forgery.py`, `test_cross_pollination_poison.py`, `test_pathc_escalation.py`, `test_manifest_forgery.py`) — one file per row of doc 24's threat-model table
+- docs(engineering): refresh doc 26 testing strategy with new paths, tier markers, and per-tier conftest behavior; refresh README testing section; add `tests/README.md` as the one-page map
+
 ### Added
 
+- test(constitution): cover every refusal axis of `spend_limits.check_within_caps`, `effective_caps` (soft caps can tighten but never loosen), and `HardCaps` ordering validator
+- test(constitution): cover every `ForbiddenAction` enum value through `screen()` plus the CSAM-first ordering invariant
+- test(constitution): cover the full escalation-rule ordering (vault → risky content → counterparty → amount) and the ticket-class → timeout mapping
+- test(dna): cover `uuid7` (v7, RFC variant, time-ordered, unique) and `Identity.genesis`/`child` lineage extension
+- test(dna): cover `HardCaps` and `Hyperparameters` validators (ordered caps, heartbeat ordering, probability bounds, non-negative penalty, frozen models)
 - docs(engineering): add cross-cutting contracts, post-mortem template, and evolution tuning guide (docs 28–30)
 - feat(platform): embed PDF watermarks in /Info metadata via pypdf
 - feat(platform): add per-Darwin orchestrator entrypoint and control API
@@ -137,6 +148,8 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Changed
 
+- refactor(test): reorganize suite into unit, integration, property, redteam, and simulation tiers
+- refactor(test): split red-team suite into per-threat modules under `tests/redteam`
 - refactor(adapters): defer browser and e2b import checks to factory
 - style: remove unused imports flagged by ruff
 
@@ -148,6 +161,7 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Documentation
 
+- docs(test): add `tests/README` tier layout and run commands
 - docs: refresh README intro, layout, and links to new reference docs
 - docs(deploy): add operator runbook for provider enablement and incidents
 - docs(engineering): add phase-two multi-tenant build plan
@@ -166,6 +180,7 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Tests
 
+- test(redteam): split adversarial scenarios into per-threat modules (audit, fence, Path-C, sanctions, vault, watermark)
 - test(k8s): cover K8sDarwinDriver, manifests, and supervisor k8s spawn mode
 - test(adapters): extend chain SDK and fiat ramp coverage for new extras
 - test(orchestrator): cover Path-C proposal flow through propose and apply nodes
@@ -192,6 +207,8 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Build & deploy
 
+- ci: install dev extra in lint workflow so ruff and pytest resolve
+- build: add pytest tier markers and importlib collection mode
 - build(docker): bundle solana, stellar, stripe, and pdfwatermark in default image
 - build(deps): add k8s, solana, stellar, stripe, and pdfwatermark extras
 - deploy(grafana): add Darwin platform operations dashboard
