@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -148,21 +148,183 @@ class CachedScreener:
 
 
 class ChainalysisScreener:
-    """Stub for the Chainalysis Reactor API. The real client wires to
-    https://api.chainalysis.com and returns risk categories; here we keep
-    the Protocol shape ready and raise loudly if the platform tries to
-    use it without wiring."""
+    """Real Chainalysis Address Screening client. POSTs the address to
+    Chainalysis's Address Screening API; if the response classifies the
+    address as ``severe`` or carries a sanctions exposure, returns
+    ``allowed=False``.
 
-    def __init__(self, *, api_key: str, base_url: str | None = None) -> None:
+    The injected ``http_client`` defaults to httpx.Client; production
+    deployments inject one preconfigured with the API key header (or
+    pass it via ``api_key`` and let the screener add it).
+
+    Fail-closed: any HTTP error / parse error returns
+    ``allowed=False, reason="screening_unavailable"`` so a misbehaving
+    provider can't let a refused address through."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str | None = None,
+        http_client: Any | None = None,
+        timeout_seconds: float = 5.0,
+        risk_block_levels: tuple[str, ...] = ("severe", "high"),
+    ) -> None:
+        if not api_key:
+            raise ValueError("ChainalysisScreener requires an api_key")
         self._key = api_key
-        self._base = base_url or "https://api.chainalysis.com"
+        self._base = (base_url or "https://api.chainalysis.com").rstrip("/")
+        self._risk_block = tuple(s.lower() for s in risk_block_levels)
+        self._timeout = float(timeout_seconds)
+        if http_client is None:
+            try:
+                import httpx
+                http_client = httpx.Client(timeout=self._timeout)
+            except ImportError as exc:  # pragma: no cover
+                raise ImportError(
+                    "ChainalysisScreener requires httpx: "
+                    "`pip install darwin-dna[platform]`"
+                ) from exc
+        self._http = http_client
 
-    def check(self, address: str) -> ScreeningResult:  # pragma: no cover
-        raise NotImplementedError(
-            "ChainalysisScreener: wire to the real Chainalysis Reactor "
-            "client; this is a stub. Pass a custom SanctionsScreener "
-            "with the right API client in production."
-        )
+    def check(self, address: str) -> ScreeningResult:
+        import json as _json
+        try:
+            resp = self._http.request(
+                "POST",
+                f"{self._base}/api/risk/v2/entities",
+                content=_json.dumps({"address": address}),
+                headers={
+                    "Token": self._key,
+                    "Content-Type": "application/json",
+                },
+            )
+            status = int(getattr(resp, "status_code", 0))
+        except Exception:
+            return ScreeningResult(
+                allowed=False, reason="screening_unavailable",
+                source="chainalysis",
+            )
+        if status != 200:
+            return ScreeningResult(
+                allowed=False, reason=f"chainalysis http {status}",
+                source="chainalysis",
+            )
+        body = getattr(resp, "text", "") or "{}"
+        try:
+            data = _json.loads(body) if isinstance(body, str) else dict(body)
+        except Exception:
+            return ScreeningResult(
+                allowed=False, reason="chainalysis bad json",
+                source="chainalysis",
+            )
+        # Chainalysis Address Screening v2 surfaces a risk level + an
+        # optional sanctions exposure. Block on severe/high risk OR any
+        # sanctions exposure.
+        risk = str(data.get("risk", "")).lower()
+        sanctions = data.get("sanctions") or data.get("addressIdentifications") or []
+        if isinstance(sanctions, list) and sanctions:
+            return ScreeningResult(
+                allowed=False,
+                reason=f"chainalysis: {len(sanctions)} sanctions identifier(s)",
+                source="chainalysis",
+            )
+        if risk in self._risk_block:
+            return ScreeningResult(
+                allowed=False,
+                reason=f"chainalysis risk={risk}",
+                source="chainalysis",
+            )
+        return ScreeningResult(allowed=True, source="chainalysis")
+
+
+class TRMScreener:
+    """TRM Labs API screener. Same fail-closed posture as
+    :class:`ChainalysisScreener`."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str | None = None,
+        http_client: Any | None = None,
+        timeout_seconds: float = 5.0,
+        risk_block_levels: tuple[str, ...] = ("severe", "high"),
+    ) -> None:
+        if not api_key:
+            raise ValueError("TRMScreener requires an api_key")
+        self._key = api_key
+        self._base = (base_url or "https://api.trmlabs.com").rstrip("/")
+        self._risk_block = tuple(s.lower() for s in risk_block_levels)
+        self._timeout = float(timeout_seconds)
+        if http_client is None:
+            try:
+                import httpx
+                http_client = httpx.Client(timeout=self._timeout)
+            except ImportError as exc:  # pragma: no cover
+                raise ImportError(
+                    "TRMScreener requires httpx: "
+                    "`pip install darwin-dna[platform]`"
+                ) from exc
+        self._http = http_client
+
+    def check(self, address: str) -> ScreeningResult:
+        import json as _json
+        try:
+            resp = self._http.request(
+                "POST",
+                f"{self._base}/public/v2/screening/addresses",
+                content=_json.dumps([{"address": address}]),
+                headers={
+                    "Authorization": f"Basic {self._key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            status = int(getattr(resp, "status_code", 0))
+        except Exception:
+            return ScreeningResult(
+                allowed=False, reason="screening_unavailable",
+                source="trm",
+            )
+        if status != 200:
+            return ScreeningResult(
+                allowed=False, reason=f"trm http {status}", source="trm",
+            )
+        body = getattr(resp, "text", "") or "[]"
+        try:
+            data = _json.loads(body) if isinstance(body, str) else list(body)
+        except Exception:
+            return ScreeningResult(
+                allowed=False, reason="trm bad json", source="trm",
+            )
+        if not isinstance(data, list) or not data:
+            return ScreeningResult(
+                allowed=False, reason="trm empty response", source="trm",
+            )
+        first = data[0]
+        if not isinstance(first, dict):
+            return ScreeningResult(
+                allowed=False, reason="trm response shape", source="trm",
+            )
+        risk = str(first.get("addressRiskIndicators", [{}])[0].get(
+            "categoryRiskScoreLevel", ""
+        )).lower() if first.get("addressRiskIndicators") else ""
+        sanctions = first.get("entities", [])
+        if sanctions:
+            for ent in sanctions:
+                if isinstance(ent, dict) and (
+                    "sanction" in str(ent.get("category", "")).lower()
+                ):
+                    return ScreeningResult(
+                        allowed=False,
+                        reason=f"trm: entity {ent.get('entity')}",
+                        source="trm",
+                    )
+        if risk in self._risk_block:
+            return ScreeningResult(
+                allowed=False, reason=f"trm risk={risk}", source="trm",
+            )
+        return ScreeningResult(allowed=True, source="trm")
 
 
 @dataclass
