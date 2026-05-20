@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import deque
 
+from darwin_dna.constitution import OwnerSoftCaps
 from darwin_dna.hyperparameters import HARD_CAPS
 
 
@@ -31,8 +32,13 @@ class FakeWallet:
         # Platform-side policy can tighten these below HARD_CAPS (doc 08
         # POST /platform/wallets/{id}/policy). Default = the genome's hard
         # caps; the wallet refuses anything above whichever is lower.
+        # The same caps are also exposed to the genome's policy engine
+        # (payments_facilitator -> treasury_policy) via ``owner_soft_caps``
+        # so a refused spend is logged with rationale at the engine, not
+        # surfaced as a generic wallet_error.
         self._per_action_cap: float = HARD_CAPS.per_action_usdc
         self._per_day_cap: float = HARD_CAPS.per_day_usdc
+        self._per_lifetime_cap: float = HARD_CAPS.per_lifetime_usdc
 
     def _day(self) -> str:
         import time
@@ -100,6 +106,12 @@ class FakeWallet:
             raise WalletError(
                 f"wallet day cap: ${self._spent_today + amount:.2f} > ${day_cap:.2f}"
             )
+        # Lifetime cap.
+        life_cap = min(HARD_CAPS.per_lifetime_usdc, self._per_lifetime_cap)
+        if self._spent_lifetime + amount > life_cap + 1e-9:
+            raise WalletError(
+                f"wallet lifetime cap: ${self._spent_lifetime + amount:.2f} > ${life_cap:.2f}"
+            )
         if amount > self._balance + 1e-9:
             raise WalletError(
                 f"insufficient funds: ${amount:.2f} > ${self._balance:.2f}"
@@ -132,6 +144,7 @@ class FakeWallet:
         *,
         per_action_cap_usdc: float | None = None,
         per_day_cap_usdc: float | None = None,
+        per_lifetime_cap_usdc: float | None = None,
     ) -> dict:
         """Tighten this wallet's own ceilings below the genome's HARD_CAPS.
         One-way: the wallet refuses to *loosen* a cap above the genome's
@@ -149,6 +162,12 @@ class FakeWallet:
             self._per_day_cap = min(
                 float(per_day_cap_usdc), HARD_CAPS.per_day_usdc
             )
+        if per_lifetime_cap_usdc is not None:
+            if per_lifetime_cap_usdc < 0:
+                raise WalletError("per_lifetime_cap_usdc must be non-negative")
+            self._per_lifetime_cap = min(
+                float(per_lifetime_cap_usdc), HARD_CAPS.per_lifetime_usdc
+            )
         return self.policy()
 
     def policy(self) -> dict:
@@ -159,9 +178,44 @@ class FakeWallet:
             "per_day_cap_usdc": min(
                 HARD_CAPS.per_day_usdc, self._per_day_cap
             ),
+            "per_lifetime_cap_usdc": min(
+                HARD_CAPS.per_lifetime_usdc, self._per_lifetime_cap
+            ),
             "hard_per_action_usdc": HARD_CAPS.per_action_usdc,
             "hard_per_day_usdc": HARD_CAPS.per_day_usdc,
+            "hard_per_lifetime_usdc": HARD_CAPS.per_lifetime_usdc,
         }
+
+    def owner_soft_caps(self) -> OwnerSoftCaps | None:
+        """The platform-installed soft caps in the form the genome's
+        treasury_policy engine accepts. Returns None when no policy has
+        been installed (caps equal HARD_CAPS — would round-trip identically
+        but None makes ``state.soft_caps is None`` checks in the engine
+        precise). ``payments_facilitator._state`` reads this so a refused
+        spend is logged with policy rationale, not as a raw wallet_error."""
+        if (
+            self._per_action_cap >= HARD_CAPS.per_action_usdc
+            and self._per_day_cap >= HARD_CAPS.per_day_usdc
+            and self._per_lifetime_cap >= HARD_CAPS.per_lifetime_usdc
+        ):
+            return None
+        return OwnerSoftCaps(
+            per_action_usdc=(
+                self._per_action_cap
+                if self._per_action_cap < HARD_CAPS.per_action_usdc
+                else None
+            ),
+            per_day_usdc=(
+                self._per_day_cap
+                if self._per_day_cap < HARD_CAPS.per_day_usdc
+                else None
+            ),
+            per_lifetime_usdc=(
+                self._per_lifetime_cap
+                if self._per_lifetime_cap < HARD_CAPS.per_lifetime_usdc
+                else None
+            ),
+        )
 
     # -- platform reproduction transfer (omnibus move, not a neuron spend) --
     def transfer_out_for_child(self, amount_usdc: float) -> None:
