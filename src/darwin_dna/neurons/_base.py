@@ -105,6 +105,7 @@ class NeuronContext:
         lessons=None,  # read-only list[Lesson] relevant to this neuron
         now=time.time,
         http=None,  # X402PaymentClient | HTTPClient | None (doc 17)
+        sandbox=None,  # SandboxClient | None (doc 14)
     ):
         self.darwin_id = darwin_id
         self.llm = llm
@@ -118,6 +119,10 @@ class NeuronContext:
         # When present, callers issue ``context.http.request(method, url,
         # **kwargs)`` and 402 interception + wallet settlement is transparent.
         self.http = http
+        # Sandbox client (doc 14). Only neurons whose capability_tags include
+        # ``compute.run`` receive it; everyone else gets None and may not run
+        # arbitrary code. Future eval_harness and Path-C neurons consume this.
+        self.sandbox = sandbox
 
 
 @runtime_checkable

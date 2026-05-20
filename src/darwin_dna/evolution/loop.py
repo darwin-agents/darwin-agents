@@ -78,6 +78,7 @@ class Platform:
         vault_grants=None,
         pause_source=None,
         x402_client=None,
+        sandbox=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -106,6 +107,11 @@ class Platform:
         # it via NeuronContext.http so HTTP 402 responses are transparently
         # settled against this Darwin's wallet without per-neuron plumbing.
         self.x402_client = x402_client
+        # Sandbox substrate (doc 14). When provided, neurons whose
+        # capability_tags include ``compute.run`` receive it via
+        # NeuronContext.sandbox. The eval_harness also picks it up to run
+        # candidate mutations in a clean substrate.
+        self.sandbox = sandbox
 
 
 class DarwinRuntime:
@@ -250,6 +256,14 @@ class DarwinRuntime:
             and tags & {"web.operate", "web.publish", "web.signup"}
         ):
             nctx.http = self._p.x402_client
+        # Sandbox (doc 14): granted to neurons that need to run code in
+        # isolation. Same gate as the http one — capability tag is the only
+        # path to the capability.
+        if (
+            getattr(self._p, "sandbox", None) is not None
+            and "compute.run" in tags
+        ):
+            nctx.sandbox = self._p.sandbox
         return nctx
 
     # -- the loop ----------------------------------------------------------
