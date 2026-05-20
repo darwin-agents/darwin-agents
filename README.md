@@ -8,175 +8,107 @@ A Darwin is an autonomous agent that earns money, manages its own treasury, rewr
 
 ## How it works
 
-```
-┌──────────────────────────── PLATFORM (multi-tenant SaaS) ─────────────────────────────┐
-│                                                                                       │
-│            Web app · Auth · Billing · Notifications                                   │
-│                                │                                                      │
-│          ┌─────────────────────▼───────────────────┐                                  │
-│          │  Darwin Supervisor (control plane)      │                                  │
-│          │  spawn · kill · pause · quota · anomaly │                                  │
-│          └─────────────────────┬───────────────────┘                                  │
-└────────────────────────────────┼──────────────────────────────────────────────────────┘
-                                 │ provisions / supervises N
-                                 ▼
-   ┌─────────────────── ONE DARWIN ORGANISM (per user, fully isolated) ─────────────────┐
-   │                                                                                    │
-   │  ┌────────────── DNA CORE — immutable, signed (this repo: darwin_dna) ───────────┐ │
-   │  │  constitution · ethics · evolution loop · kill-switch · treasury policy       │ │
-   │  │  Layer N   ← sealed lessons from generation N                                 │ │
-   │  │  Layer 0   ← founding genome                                                  │ │
-   │  └──────────────────────────────────┬────────────────────────────────────────────┘ │
-   │                                     │ read-only                                    │
-   │  ┌──────────────── SOMA (mutable, sandboxed) ────────────────────────────────────┐ │
-   │  │  Orchestrator (LangGraph) → Strategy → Self-modification → Escalation         │ │
-   │  └──────────────────────────────────┬────────────────────────────────────────────┘ │
-   │                                     │ dispatches                                   │
-   │  ┌──────────────── NEURONS (specialised workers) ───────────────────────────────┐  │
-   │  │  content · browser · payments · ads · trading · analytics · …                │  │
-   │  └──────────────────────────────────┬───────────────────────────────────────────┘  │
-   │                                     │                                              │
-   │  Treasury (USDC wallet · x402) · Vault (secrets · KYC) · Audit log                 │
-   └────────────────────────────────────────────────────────────────────────────────────┘
-                                         │ outbound via gateways
-                              LLM · Web (Browserbase) · Payment rails · APIs
-```
-
-**Two layers, one purpose:**
-
-- **Platform** — boring, multi-tenant SaaS. Provisions and supervises organisms. Enforces platform-wide rules. Never makes business decisions for the organisms it hosts.
-- **Organism** — each Darwin runs inside the platform on behalf of one user. Own treasury, own vault, own audit log, own compute. Organisms cannot talk to each other (network + auth isolation enforced at the infrastructure layer).
 
 ```mermaid
 flowchart TB
-    subgraph PLATFORM["🏗️ Darwin Platform  (multi-tenant SaaS)"]
-        direction TB
-        WEB["Web app\n(Next.js)"]
-        AUTH["Auth & KYC"]
-        BILLING["Billing &\nTreasury ledger"]
-        NOTIF["Notification bus\n(push / email)"]
-
-        WEB & AUTH & BILLING & NOTIF --> SUP
-
-        SUP["Darwin Supervisor\nspawn · kill · pause · resume\nquota · anomaly detection\nescalation router"]
+    subgraph PLATFORM["🏗️ Platform — multi-tenant SaaS"]
+        WEB["Web app"] & AUTH["Auth / KYC"] & BILLING["Billing"] & NOTIF["Notifications"]
+        WEB & AUTH & BILLING & NOTIF --> SUP["Darwin Supervisor\nspawn · kill · pause · quota · anomaly"]
     end
 
-    SUP -->|"provisions & supervises N isolated organisms"| DARWIN
+    SUP -->|"provisions N isolated organisms"| DARWIN
 
-    subgraph DARWIN["🧬 Darwin Organism  (one per user, fully isolated)"]
-        direction TB
-
+    subgraph DARWIN["🧬 Darwin Organism — one per user, fully isolated"]
         subgraph DNA["DNA Core — immutable, signed  (darwin_dna)"]
-            direction LR
-            CONST["Constitution\n& ethics"]
-            MANIFEST["Manifest +\nSignature\n(Ed25519)"]
-            KILL["Kill switch"]
-            AUDIT["Audit logger\n(write-before-act)"]
-            TREASURY_POL["Treasury\npolicy"]
-            LAYERS["Layer N ← gen N lessons\n…\nLayer 0 ← founding genome"]
+            CONST["Constitution"] & MANIFEST["Manifest\nEd25519"] & KILL["Kill\nswitch"] & AUDIT["Audit\nlogger"] & TPOL["Treasury\npolicy"] & LAYERS["Layer 0 → N\ngenome stack"]
         end
 
         DNA -->|"read-only"| SOMA
 
         subgraph SOMA["Soma — mutable, sandboxed  (E2B MicroVMs)"]
-            ORCH["Orchestrator\n(LangGraph)"]
-            STRATEGY["Strategy\nengine"]
-            SELFMOD["Self-modification\nengine"]
-            ESCMGR["Escalation\nmanager"]
-            ORCH --> STRATEGY & SELFMOD & ESCMGR
+            ORCH["Orchestrator\nLangGraph"] --> STRATEGY["Strategy"] & SELFMOD["Self-mod"] & ESCMGR["Escalation"]
         end
 
-        SOMA -->|"dispatches tasks"| NEURONS
+        SOMA -->|"dispatches"| NEURONS
 
         subgraph NEURONS["Neurons — specialised workers"]
-            direction LR
-            N1["content\n.writer"]
-            N2["browser\n.operator"]
-            N3["payments\n.facilitator"]
-            N4["accounts\n.manager"]
-            N5["analytics\n.reader"]
-            N6["…"]
+            N1["content"] & N2["browser"] & N3["payments"] & N4["accounts"] & N5["analytics"]
         end
 
         NEURONS --> INFRA
 
         subgraph INFRA["Per-Darwin State"]
-            WALLET["Treasury\n(USDC wallet · x402)"]
-            VAULT["Vault\n(secrets · KYC · creds)"]
-            AUDITLOG["Audit log\n(hash-chained)"]
-            CHECKPOINT["LangGraph\ncheckpoint (DB)"]
+            WALLET["Treasury\nUSCD · x402"] & VAULT["Vault\nsecrets · KYC"] & ALOG["Audit log\nhash-chained"] & CKPT["Checkpoint\nDB"]
         end
     end
 
     NEURONS -->|"outbound via gateways"| EXT
 
     subgraph EXT["External World"]
-        direction LR
-        LLM["LLM gateway\n(LiteLLM proxy)"]
-        BROWSER_EXT["Browser\n(Browserbase)"]
-        PAYMENTS_EXT["Payment rails\n(USDC · x402 · Stripe)"]
-        APIS["APIs\n(ads · blogs · …)"]
+        LLM["LLM\nLiteLLM proxy"] & BROW["Browser\nBrowserbase"] & PAY["Payments\nUSCD · Stripe"] & APIS["APIs\nads · blogs · …"]
     end
 
-    subgraph ADAPTERS["darwin_platform/adapters"]
-        direction LR
-        A1["Web3ChainClient\n+ RealWallet"]
-        A2["HvacVaultClient\n+ RealVaultBackend"]
-        A3["BrowserUseClient"]
-        A4["X402PaymentClient"]
-        A5["E2BSandbox"]
-        A6["LiteLLMTransport"]
+    subgraph ADAPTERS["darwin_platform / adapters"]
+        A1["Web3ChainClient\nRealWallet"] & A2["HvacVaultClient\nRealVaultBackend"] & A3["BrowserUseClient"] & A4["X402PaymentClient"] & A5["E2BSandbox"] & A6["LiteLLMTransport"]
     end
 
     SUP -.->|"wires at spawn time"| ADAPTERS
-    ADAPTERS -.-> WALLET & VAULT & BROWSER_EXT & PAYMENTS_EXT & LLM
+    ADAPTERS -.-> WALLET & VAULT & BROW & PAY & LLM
 
     style PLATFORM fill:#1a1a2e,stroke:#4a4a8a,color:#e0e0ff
-    style DARWIN fill:#0d2137,stroke:#1a6b8a,color:#e0f0ff
-    style DNA fill:#0a1f0a,stroke:#2a6b2a,color:#d0ffd0
-    style SOMA fill:#1f1a0a,stroke:#7a6b1a,color:#fff0d0
+    style DARWIN  fill:#0d2137,stroke:#1a6b8a,color:#e0f0ff
+    style DNA     fill:#0a1f0a,stroke:#2a6b2a,color:#d0ffd0
+    style SOMA    fill:#1f1a0a,stroke:#7a6b1a,color:#fff0d0
     style NEURONS fill:#1f0a0a,stroke:#8a2a2a,color:#ffd0d0
-    style INFRA fill:#0a0a2f,stroke:#2a2a8a,color:#d0d0ff
-    style EXT fill:#1a1a1a,stroke:#555,color:#ddd
+    style INFRA   fill:#0a0a2f,stroke:#2a2a8a,color:#d0d0ff
+    style EXT     fill:#1a1a1a,stroke:#555555,color:#dddddd
     style ADAPTERS fill:#1a0a1f,stroke:#6a2a8a,color:#f0d0ff
 ```
+
+**Reading the diagram top to bottom:**
+
+1. **Platform (blue)** — the boring multi-tenant SaaS layer. The Web app, Auth, Billing, and Notification services all funnel lifecycle commands through the **Darwin Supervisor**, which is the only component with the right to spawn, kill, pause, or resume a Darwin. It also enforces quotas and anomaly detection.
+
+2. **Darwin Organism (teal)** — one isolated instance per user. Nothing leaks between organisms at the network or auth layer.
+   - **DNA Core (green)** — the immutable, Ed25519-signed genome. Contains the constitution, the kill switch, the write-before-act audit logger, the treasury spend policy, and the cumulative layer stack (Layer 0 = founding genome, Layer N = lessons sealed after generation N). The organism can *read* it but never mutate it.
+   - **Soma (amber)** — the mutable agent body, running inside E2B MicroVMs. The LangGraph orchestrator branches into three engines: *Strategy* (what to do next), *Self-modification* (proposes and tests soma rewrites), and *Escalation* (routes owner-approval requests back through the platform).
+   - **Neurons (red)** — specialised worker sub-agents dispatched by the orchestrator. Each gets a scoped `NeuronContext` — only the capabilities it needs, nothing else.
+   - **Per-Darwin State (purple)** — the organism's durable layer: USDC treasury with x402 programmable spend rules, a HashiCorp Vault namespace for secrets and KYC documents, the append-only hash-chained audit log, and the LangGraph checkpoint database for mid-task resumption.
+
+3. **External World (grey)** — everything outside the organism boundary, reachable only outbound via the platform's gateways. LLM calls go through the LiteLLM proxy; browser sessions through Browserbase; payments over USDC/x402/Stripe.
+
+4. **Adapters (violet, dashed)** — `darwin_platform/adapters` contains the real provider implementations. The Supervisor wires them into each Darwin at spawn time. When absent (tests, local sim), in-memory fakes drop in transparently via the same Protocol interface.
 
 ---
 
 ## Repository layout
 
-```
-
-src/
-darwin_dna/ Layer 0 genome — signed, immutable Python package
-constitution/ Immutable rule set, signed at build time
-evolution/ Main loop, lesson distillation, reproduction
-neurons/ Neuron contract + built-in specialised workers
-machinery/ Kill switch, audit logger, treasury policy
-manifest.py SHA-256 + Ed25519 trust root
-signature.py Layer signing and verification
-
-darwin_platform/ Platform control plane — FastAPI supervisor
-supervisor.py Spawn / monitor / kill Darwin instances
-api.py REST surface: /darwins, /healthz, /readyz, /metrics
-leadership.py HA leader election (Postgres advisory locks)
-persistence.py Dual-backend: SQLite file path or postgres:// DSN
-billing.py Per-Darwin USDC billing
-auth.py Bearer-token auth (owner, platform_operator scopes)
-escalation.py Owner-approval tickets for sensitive vault reads
-monitoring.py Prometheus metrics + alert counters
-tracing.py OpenTelemetry / OTLP (no-op shim when absent)
-adapters/ Real provider implementations (see below)
-
-darwin_fakes/ In-memory fakes — deterministic, no network, no keys
-
-tests/ Unit · property · integration · simulation
-tools/sim/ 90-day simulated world — runs Darwin and asserts invariants
-docker/ Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger
-deploy/helm/ Kubernetes Helm chart
-docs/engineering/ Architecture and design docs (00–19)
-
-```
+| Path | Description |
+| --- | --- |
+| `src/darwin_dna/` | **Layer 0 genome** — signed, immutable Python package (≤ 5 k lines, curated-allowlist deps) |
+| `  constitution/` | Immutable rule set encoded as pydantic models, signed at build time |
+| `  evolution/` | Main loop, lesson distillation, reproduction event |
+| `  neurons/` | Neuron contract + built-in specialised workers |
+| `  machinery/` | Kill switch, audit logger, treasury policy |
+| `  manifest.py` | SHA-256 + Ed25519 trust root |
+| `  signature.py` | Layer signing and verification |
+| `src/darwin_platform/` | **Platform control plane** — FastAPI supervisor |
+| `  supervisor.py` | Spawn / monitor / kill Darwin instances, wires real adapters at spawn |
+| `  api.py` | REST surface: `/darwins`, `/healthz`, `/readyz`, `/metrics` |
+| `  leadership.py` | HA leader election via Postgres advisory locks — failover ≈ 5 s |
+| `  persistence.py` | Dual-backend: SQLite file path or `postgres://` DSN |
+| `  billing.py` | Per-Darwin USDC billing integrated with treasury policy |
+| `  auth.py` | Bearer-token auth with `owner` and `platform_operator` scopes |
+| `  escalation.py` | Owner-approval tickets for sensitive-tier vault reads |
+| `  monitoring.py` | Prometheus metrics and alert counters |
+| `  tracing.py` | OpenTelemetry / OTLP tracing (no-op shim when OTel is absent) |
+| `  adapters/` | Real provider adapters: `Web3ChainClient`, `HvacVaultClient`, `BrowserUseClient`, `X402PaymentClient`, `E2BSandbox`, `LiteLLMTransport` |
+| `src/darwin_fakes/` | **In-memory fakes** — deterministic, no network, no API keys required |
+| `tests/` | Unit · property · integration · 90-day simulation suites |
+| `tools/sim/` | Simulated world — runs a Darwin for N days and asserts invariants |
+| `docker/` | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger |
+| `deploy/helm/` | Kubernetes Helm chart (see [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md)) |
+| `docs/engineering/` | Architecture and design docs (00–19) |
 
 ---
 
@@ -392,6 +324,119 @@ Full engineering documentation is in [`docs/engineering/`](docs/engineering/).
 | [16 — Secrets and vault](docs/engineering/16-secrets-and-vault.md)                               | HashiCorp Vault with per-Darwin namespaces: bidirectional user+Darwin access, KYC doc storage, and tiered read grants.  |
 | [17 — Payments providers](docs/engineering/17-payments-providers.md)                             | Concrete provider choices: Coinbase Agentic Wallets, x402 protocol, Stripe fiat ramps, and AgentCore Payments.          |
 | [18 — Layer 0 build plan](docs/engineering/18-layer-zero-build-plan.md)                          | Engineering build plan for the founding genome: file layout, module sketches, package decisions, and testing strategy.  |
+
+---
+
+## Tech stack
+
+Key technology choices at a glance. Full rationale in [`docs/engineering/11-tech-stack-at-a-glance.md`](docs/engineering/11-tech-stack-at-a-glance.md).
+
+| Concern | Choice | Why |
+| --- | --- | --- |
+| Language | Python 3.12 | Largest agent/AI ecosystem; LangGraph, Browser-Use, E2B SDKs are all Python-native |
+| Orchestration | LangGraph | Stateful, durable execution, HITL primitives, model-agnostic, most-deployed for stateful agents in 2026 |
+| LLM gateway | LiteLLM Proxy (self-hosted) | 100+ providers behind one OpenAI-compatible interface, per-request cost attribution, virtual keys per Darwin |
+| Sandboxing | E2B (Firecracker MicroVMs) | Strongest isolation, purpose-built for untrusted agent code, fast cold starts |
+| Browser | Browser-Use + Browserbase | Python-native, autonomous DOM exploration, anti-bot infra and session recording handled by Browserbase |
+| Database | Postgres 16 + pgvector | RLS for tenant isolation, pgvector for embeddings, no extra vector DB needed |
+| Vault | HashiCorp Vault | Namespace per Darwin, agent-aware identity model, dynamic secrets, multi-tenant battle-tested |
+| Wallet | Coinbase Agentic Wallets | TEE-secured keys, native x402 support, programmable spend limits, gasless on Base |
+| Payments | x402 (USDC on Base) | HTTP-native, machine-to-machine, >50 M txns in production by early 2026 |
+| Containers | Kubernetes (EKS / GKE) | Required for E2B at scale, ample multi-tenant patterns |
+| Observability | OpenTelemetry + Honeycomb | Vendor-neutral instrumentation, high-cardinality querying |
+
+---
+
+## Testing strategy
+
+Tests live in `tests/` and are split into three tiers:
+
+| Tier | Marker | Run command | What it covers |
+| --- | --- | --- | --- |
+| **Unit + property** | *(default)* | `uv run pytest -q` | Individual subsystems in isolation. The four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) are tested with a malicious soma assumed — adversarial inputs, tampered layers, over-limit spends. Hypothesis generates thousands of random cases for each property. |
+| **Integration** | *(default)* | `uv run pytest -q` | Full boot cycle with `FakeStack`. Verifies that the orchestrator, neurons, wallet, vault, and platform API compose correctly end-to-end without any real network calls. |
+| **Simulation** | `slow` | `uv run pytest -m slow -q` | 90 simulated days. A Darwin is spawned, evolves, and optionally reproduces while the test suite asserts financial invariants, audit-chain integrity, and kill-switch latency under load. Takes several minutes; marked `slow` so it's excluded from the fast commit loop. |
+
+Run the full suite:
+
+```bash
+uv run pytest -q          # fast loop (unit + integration, ~60 s)
+uv run pytest -m slow -q  # includes simulation (~5 min)
+```
+
+---
+
+## Roadmap
+
+What's planned beyond the current Layer 0 implementation. See [`docs/engineering/`](docs/engineering/) for the design detail behind each item.
+
+**Near-term (platform hardening)**
+- [ ] `envFrom` as a first-class Helm chart value for cleaner secret injection
+- [ ] Webhook ingestion for Stripe and Coinbase events
+- [ ] Harvest scheduler: automatic profit extraction on configurable rules
+- [ ] OIDC layer at the Ingress for human-facing auth (Clerk / WorkOS)
+
+**Medium-term (organism capabilities)**
+- [ ] LanceDB per-Darwin vector store for long-horizon episodic memory
+- [ ] Stagehand cached-replay integration for repetitive browser flows
+- [ ] Ads and trading neurons beyond the current content + browser + payments set
+- [ ] Temporal Cloud for durable billing, harvest, and reproduction job orchestration
+
+**Long-term (evolutionary system)**
+- [ ] Fitness-weighted automated reproduction triggering (no `force` required)
+- [ ] Cross-lineage lesson distillation — sealed lessons surfaced as platform-level priors
+- [ ] On-chain Merkle anchoring for the audit log (daily root, tamper-evident)
+- [ ] Kubernetes CRD / operator for Darwin lifecycle (`kind: Darwin`)
+
+---
+
+## Security
+
+**Responsible disclosure:** if you discover a vulnerability — especially in the kill switch, audit logger, treasury policy, or any code that handles cryptographic signatures or private keys — please report it privately before opening a public issue.
+
+Contact: **security@darwinagents.com** (PGP key available on request).
+
+**Scope of highest concern:**
+- Bypass of the kill switch or pause mechanism
+- Forgery or replay of a signed DNA layer
+- Unauthorized spend exceeding treasury policy hard caps
+- Secret exfiltration from a Darwin's Vault namespace to another tenant
+
+**Out of scope:** UI bugs, documentation errors, issues with optional extras not installed in production.
+
+We aim to acknowledge reports within 48 hours and provide a fix timeline within 7 days for critical issues.
+
+---
+
+## Contributing
+
+This is a private repository. If you have access, please follow these conventions:
+
+**Branching**
+- `main` is always deployable. Feature work goes on `feat/*`, fixes on `fix/*`.
+- Open a PR against `main`; at least one review is required before merge.
+
+**Commit style** — [Conventional Commits](https://www.conventionalcommits.org/):
+```
+feat(neurons): add analytics.reader neuron
+fix(treasury): clamp daily spend before soft-cap comparison
+docs(helm): document envFrom injection pattern
+```
+
+**Code style**
+```bash
+uv run ruff check .    # lint (F, E9, PLE rule set)
+uv run ruff format .   # format
+```
+Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [project.dependencies]`) is intentionally minimal — new deps in `darwin_dna` require explicit justification.
+
+**Tests** — new behaviour must ship with tests. Hot-path changes (`kill_switch`, `treasury_policy`, `signature`, `audit_logger`, `manifest`) require property-based tests (Hypothesis) in addition to unit tests.
+
+---
+
+## License
+
+Proprietary — all rights reserved. See [LICENSE](LICENSE) for the full terms.
 
 ---
 
