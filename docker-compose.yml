@@ -42,7 +42,14 @@ services:
       - serve
       - --host=0.0.0.0
       - --port=8000
+      # SQLite (default): one file at /data/state.db on the persistent
+      # volume. Restart-survivable for one-process deploys.
       - --db=/data/state.db
+      # Postgres alternative: comment out --db above and uncomment this
+      # to point the supervisor at the bundled Postgres service. Pulls
+      # in the [postgres] extra at build time (already included in the
+      # default image; see docker/Dockerfile).
+      # - --db=postgresql://darwin:dev_only_password@postgres:5432/darwin
       # - --auth-tokens=/run/secrets/tokens.json
     environment:
       # OpenTelemetry pickup — the platform's `tracing` module uses the

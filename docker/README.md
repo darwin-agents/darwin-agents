@@ -74,15 +74,28 @@ curl -H 'Authorization: Bearer ops-dev-token' \
 
 ## Persistence
 
-The supervisor writes a SQLite database at `/data/state.db` inside the
-container, backed by the `supervisor-data` volume. Audit log + tokens +
-billing + lineage + escalation tickets + monitor alerts survive
-restarts.
+The supervisor supports two backends, both restart-survivable:
+
+- **SQLite (default):** `/data/state.db` inside the container, backed by
+  the `supervisor-data` Docker volume.
+- **Postgres:** uncomment the `--db=postgresql://...` line in
+  `docker-compose.yml` to point the supervisor at the bundled
+  `postgres` service. The default credentials are dev-only —
+  override via `docker/.env`.
+
+Audit log + tokens + billing + lineage + escalation tickets + monitor
+alerts persist in either mode.
 
 ```bash
-# Inspect the live DB.
+# SQLite: inspect the live DB.
 docker exec -it darwin-supervisor sqlite3 /data/state.db \
-  "SELECT seq, ts, actor, action, darwin_id FROM audit_entries ORDER BY seq DESC LIMIT 10;"
+  "SELECT seq, ts, actor, action, darwin_id FROM audit_entries \
+   ORDER BY seq DESC LIMIT 10;"
+
+# Postgres: query through the postgres container.
+docker exec -it darwin-postgres psql -U darwin -d darwin -c \
+  "SELECT seq, ts, actor, action, darwin_id FROM audit_entries \
+   ORDER BY seq DESC LIMIT 10;"
 ```
 
 ## Common operations

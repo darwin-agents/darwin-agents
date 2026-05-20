@@ -29,7 +29,7 @@ COPY src/ ./src/
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv venv /opt/venv && \
     uv pip install --python /opt/venv/bin/python --no-cache \
-        ".[platform,llm,graph]"
+        ".[platform,llm,graph,postgres]"
 
 # -- runtime ----------------------------------------------------------------
 FROM python:3.12-slim AS runtime
