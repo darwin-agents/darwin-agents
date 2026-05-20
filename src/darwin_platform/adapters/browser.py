@@ -89,13 +89,11 @@ class BrowserUseClient:
         cost_per_session: float = 0.01,
         captcha_detectors: tuple[str, ...] | None = None,
     ) -> None:
-        try:
-            import browser_use  # noqa: F401 — surface import error early
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "BrowserUseClient requires the [browser] extra: "
-                "`pip install darwin-dna[browser]`"
-            ) from exc
+        # The browser_use SDK is imported by the user's
+        # ``browser_factory`` when it constructs an Agent — no early
+        # import check here. That lets stub-based tests run without
+        # the [browser] extra installed; production users see a
+        # clean ImportError at first ``run()`` from their factory.
         self._wallet = wallet
         self._browser_factory = browser_factory
         self._cost = float(cost_per_session)

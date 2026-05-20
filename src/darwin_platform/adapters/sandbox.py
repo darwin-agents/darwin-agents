@@ -86,13 +86,11 @@ class E2BSandbox:
         sandbox_factory,
         cost_per_session: float = 0.05,
     ) -> None:
-        try:
-            import e2b  # noqa: F401 — surface import error early
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "E2BSandbox requires the [e2b] extra: "
-                "`pip install darwin-dna[e2b]`"
-            ) from exc
+        # The e2b SDK is imported by the user's ``sandbox_factory``
+        # when it constructs a Sandbox — no early import check here.
+        # Stub-based tests can run without the [e2b] extra installed;
+        # production users see a clean ImportError at first
+        # ``run_code()`` call from their factory.
         self._wallet = wallet
         self._factory = sandbox_factory
         self._cost = float(cost_per_session)
