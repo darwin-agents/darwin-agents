@@ -17,9 +17,12 @@ service trusts every caller. Do not expose this surface publicly as-is.
 from __future__ import annotations
 
 import base64
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any
+
+from fastapi import Response
 
 try:  # pragma: no cover - import-time guard
     from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
@@ -121,6 +124,7 @@ def build_app(
     below is the default singleton for the standard uvicorn entry point.
     """
     sup = supervisor or Supervisor()
+    app_started_ts = time.time()
 
     @asynccontextmanager
     async def lifespan(app_: FastAPI):
@@ -682,7 +686,175 @@ def build_app(
         _require_scope(ctx, PLATFORM_OPERATOR)
         return build_snapshot(_sup(request))
 
+    # -- liveness probe (unauthenticated; k8s readiness/liveness) --------
+    # Doc 08 §"Quotas and anomaly detection" mentions heartbeat health
+    # at the supervisor level; this is the supervisor process's own
+    # heartbeat surface (am I alive at all?). Returns 200 with a small
+    # status body so a probe + a human curl both work.
+    @app.get("/healthz")
+    async def healthz(request: Request) -> dict[str, Any]:
+        sup = _sup(request)
+        return {
+            "status": "ok",
+            "persistence": (
+                "sqlite" if sup._persistence is not None  # noqa: SLF001
+                else "memory"
+            ),
+            "uptime_seconds": time.time() - app_started_ts,
+            "darwins": len(sup.list_ids()),
+        }
+
+    # -- Prometheus metrics (unauthenticated; same posture as /healthz) --
+    # Doc 08 §Observability: the platform emits OpenTelemetry traces (we
+    # do, via the tracing module) AND should expose scrapable metrics for
+    # ops dashboards (Grafana / Honeycomb). Text format per
+    # https://prometheus.io/docs/instrumenting/exposition_formats/ —
+    # zero external deps required to render it.
+    @app.get("/metrics")
+    async def metrics(request: Request) -> Response:
+        sup = _sup(request)
+        return Response(
+            content=_render_metrics(sup, app_started_ts),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     return app
+
+
+# -- Prometheus exposition --------------------------------------------------
+def _render_metrics(sup: Supervisor, started_ts: float) -> str:
+    """Render the supervisor's current state as Prometheus text. No external
+    dep — the format is simple text we can build directly. Pulled into a
+    module-level function so tests can exercise it without spinning a full
+    HTTP server."""
+    lines: list[str] = []
+
+    def metric(
+        name: str,
+        kind: str,
+        help_: str,
+        samples: list[tuple[dict[str, str], float]],
+    ) -> None:
+        lines.append(f"# HELP {name} {help_}")
+        lines.append(f"# TYPE {name} {kind}")
+        for labels, value in samples:
+            if labels:
+                lbl = ",".join(
+                    f'{k}="{_escape_label(v)}"' for k, v in sorted(labels.items())
+                )
+                lines.append(f"{name}{{{lbl}}} {_fmt(value)}")
+            else:
+                lines.append(f"{name} {_fmt(value)}")
+
+    # -- per-Darwin state buckets ----------------------------------------
+    alive = killed = paused = quarantined = 0
+    for h in sup._darwins.values():  # noqa: SLF001
+        if h.killed:
+            killed += 1
+        elif h.runtime.state.alive:
+            alive += 1
+        if h.runtime.state.paused:
+            paused += 1
+        if h.quarantine.active:
+            quarantined += 1
+    metric(
+        "darwin_platform_darwins",
+        "gauge",
+        "Number of Darwins by state.",
+        [
+            ({"state": "alive"}, alive),
+            ({"state": "killed"}, killed),
+            ({"state": "paused"}, paused),
+            ({"state": "quarantined"}, quarantined),
+        ],
+    )
+
+    # -- audit log -------------------------------------------------------
+    audit_total = len(sup.audit_log)
+    metric(
+        "darwin_platform_audit_entries_total",
+        "counter",
+        "Total operator audit entries ever written.",
+        [({}, float(audit_total))],
+    )
+
+    # -- escalations -----------------------------------------------------
+    open_escalations = sum(
+        len(sup.router.for_darwin(did, include_resolved=False))
+        for did in sup.list_ids()
+    )
+    metric(
+        "darwin_platform_escalations_open",
+        "gauge",
+        "Currently-open escalation tickets across the fleet.",
+        [({}, float(open_escalations))],
+    )
+
+    # -- alerts ----------------------------------------------------------
+    severity_counts: dict[str, int] = {"info": 0, "warn": 0, "critical": 0}
+    for alert in sup.monitor.all_alerts():
+        severity_counts[alert.severity.value] = (
+            severity_counts.get(alert.severity.value, 0) + 1
+        )
+    metric(
+        "darwin_platform_alerts_total",
+        "counter",
+        "Monitor alerts emitted by severity, since process start (or "
+        "restored from persistence).",
+        [
+            ({"severity": sev}, float(count))
+            for sev, count in severity_counts.items()
+        ],
+    )
+
+    # -- billing ---------------------------------------------------------
+    fleet = sup.billing_service.fleet_summary()
+    metric(
+        "darwin_platform_billing_revenue_usdc",
+        "gauge",
+        "Total platform revenue (markup + harvest fees) across the fleet.",
+        [({}, float(fleet["total"]["platform_revenue_usdc"]))],
+    )
+    metric(
+        "darwin_platform_billing_harvest_fees_usdc",
+        "gauge",
+        "Total harvest fees collected across the fleet.",
+        [({}, float(fleet["total"]["harvest_fees_usdc"]))],
+    )
+
+    # -- lineage --------------------------------------------------------
+    edges = sup._lineage_registry.edges()  # noqa: SLF001
+    metric(
+        "darwin_platform_lineage_edges_total",
+        "counter",
+        "Parent->child lineage edges observed (across all reproductions).",
+        [({}, float(len(edges)))],
+    )
+
+    # -- process uptime --------------------------------------------------
+    metric(
+        "darwin_platform_uptime_seconds",
+        "gauge",
+        "Seconds since this supervisor process started.",
+        [({}, time.time() - started_ts)],
+    )
+
+    return "\n".join(lines) + "\n"
+
+
+def _escape_label(v: Any) -> str:
+    """Escape a Prometheus label value per spec: backslash, double-quote,
+    newline. Cheap; values here are short."""
+    return (
+        str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    )
+
+
+def _fmt(v: float) -> str:
+    """Prometheus prefers integers as ints, floats with limited precision."""
+    if isinstance(v, int) or float(v).is_integer():
+        return str(int(v))
+    return f"{v:.6f}"
 
 
 # Default singleton for ``uvicorn darwin_platform.api:app``.
