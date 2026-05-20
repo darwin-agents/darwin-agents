@@ -33,6 +33,11 @@ platform = [
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
 ]
+# Postgres-backed persistence (doc 08 production posture). Pulls in
+# psycopg 3 + the binary wheel so deployers don't need libpq-dev on the
+# host. Without this extra the platform falls back to SQLite — the
+# Supervisor accepts either a file path or a postgres:// DSN.
+postgres = ["psycopg[binary]>=3.1"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
