@@ -42,6 +42,9 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`25-operational-runbook.md`](25-operational-runbook.md) — deployment, monitoring, failure modes, recovery, soak test operations
 - [`26-testing-strategy.md`](26-testing-strategy.md) — test tiers, adversarial posture, red-team mapping, CI split (fast vs slow)
 - [`27-configuration-reference.md`](27-configuration-reference.md) — CLI flags, env vars, Helm values, and driver-mode knobs in one table
+- [`28-cross-cutting-contracts.md`](28-cross-cutting-contracts.md) — error handling philosophy, retry/halt/escalate rules, timeouts, idempotency
+- [`29-incident-postmortem-template.md`](29-incident-postmortem-template.md) — structured format for documenting and learning from failures
+- [`30-evolution-tuning-guide.md`](30-evolution-tuning-guide.md) — reading the archive, fitness trajectories, hyperparameter calibration, reproduction diagnostics
 
 ## Related (in `overview/`)
 
