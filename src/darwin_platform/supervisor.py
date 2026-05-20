@@ -225,6 +225,10 @@ class Supervisor:
         monitor_every_n_ticks: int = 5,
         billing_policy: BillingPolicy | None = None,
         llm_transport_factory: Callable[..., Any] | None = None,
+        wallet_factory: Callable[..., Any] | None = None,
+        vault_factory: Callable[[], Any] | None = None,
+        browser_factory: Callable[[Any], Any] | None = None,
+        x402_factory: Callable[[Any], Any] | None = None,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
     ) -> None:
@@ -306,6 +310,20 @@ class Supervisor:
         # Darwin gets a real adapter instead of the deterministic FakeLLM.
         # Default unset keeps the 90-day sim's reproducibility.
         self._llm_factory: Callable[..., Any] | None = llm_transport_factory
+        # Optional real-provider factories (docs 14–17). All are None by
+        # default so the supervisor keeps using the in-memory fakes, which is
+        # correct for tests and the 90-day sim. Set them via the CLI flags
+        # (--rpc-url, --vault-url, --browserbase-url) or by passing factory
+        # callables directly for programmatic wiring.
+        #
+        # wallet_factory(clock) -> WalletPort  (doc 17: RealWallet+Web3ChainClient)
+        # vault_factory()       -> RawVaultPort (doc 16: RealVaultBackend+HvacVaultClient)
+        # browser_factory(wallet) -> BrowserClient (doc 15: BrowserUseClient)
+        # x402_factory(wallet)    -> X402PaymentClient (doc 17: x402 HTTP wrapper)
+        self._wallet_factory: Callable[..., Any] | None = wallet_factory
+        self._vault_factory: Callable[[], Any] | None = vault_factory
+        self._browser_factory: Callable[[Any], Any] | None = browser_factory
+        self._x402_factory: Callable[[Any], Any] | None = x402_factory
         # Hash-chained operator audit log (doc 08). Every mutating
         # supervisor call writes an entry tagged with the calling actor's
         # subject so a compliance reviewer can replay who-did-what.
@@ -426,6 +444,27 @@ class Supervisor:
                 # wallet is already bound; the factory only needs a clock
                 # for its own time concerns (timeouts, day rollovers).
                 stack.llm = self._llm_factory(stack.wallet, self._clock)
+            # Real wallet: replace FakeWallet with a chain-backed adapter
+            # (doc 17 RealWallet + Web3ChainClient). Called BEFORE browser
+            # and x402 factories so they always receive the live wallet.
+            if self._wallet_factory is not None:
+                stack.wallet = self._wallet_factory(self._clock)
+            # Real vault backend: replace in-memory FakeVault with a
+            # HashiCorp Vault-backed adapter (doc 16 RealVaultBackend +
+            # HvacVaultClient). Per-Darwin namespace isolation lives in the
+            # HvacVaultClient's path prefix; the factory owns that config.
+            if self._vault_factory is not None:
+                stack.vault = self._vault_factory()
+            # Real browser substrate: replace FakeBrowser with BrowserUseClient
+            # on Browserbase (doc 15). Factory receives the active wallet so
+            # session-billing debits go to the correct Darwin.
+            if self._browser_factory is not None:
+                stack.browser = self._browser_factory(stack.wallet)
+            # x402 HTTP client: wire into Platform so outbound-capable neurons
+            # get it via NeuronContext.http (doc 17). Factory receives the
+            # active wallet so 402 payments settle against this Darwin.
+            if self._x402_factory is not None:
+                stack.x402_client = self._x402_factory(stack.wallet)
             # Genome's _sleep set to no-op: the supervisor schedules the gaps
             # between heartbeats itself with asyncio.sleep, so the event loop
             # never blocks on time.sleep even with many Darwins on one loop.
