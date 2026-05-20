@@ -298,6 +298,7 @@ class Supervisor:
         resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
+        k8s_driver: Any | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -306,6 +307,16 @@ class Supervisor:
         self._clock = clock
         self._darwins: dict[str, _Handle] = {}
         self._closed = False
+        # Doc-08 production driver: when set, the supervisor delegates
+        # per-Darwin lifecycle to K8s (one namespace + orchestrator pod
+        # per Darwin) instead of running them as asyncio.Tasks. Status
+        # and lifecycle reach the orchestrators over HTTP RPC; the
+        # supervisor's in-process services (monitor, harvest scheduler,
+        # billing sweep) are skipped in this mode — those move into the
+        # orchestrator pod or are reconciled from Postgres in a
+        # follow-on slice.
+        self._k8s_driver = k8s_driver
+        self._k8s_handles: dict[str, dict] = {}  # darwin_id → bookkeeping
         # Persistent storage (doc 08: the audit log is "permanent"). When
         # ``persistence_path`` is set, swap the in-memory collections for
         # SQLite-backed ones; restart-survivable. Default unset keeps the
@@ -685,6 +696,19 @@ class Supervisor:
             raise SupervisorError("supervisor is closed")
         await self.ensure_leader_started()
         self._require_leader()
+        # K8s mode (doc-08 production): hand off to the driver, which
+        # provisions a per-Darwin namespace + orchestrator pod under
+        # ``runtimeClassName: kata``. The in-process path below is
+        # skipped — no FakeStack, no asyncio.Task, no in-process
+        # services. The supervisor still records the audit + lineage
+        # entries; the orchestrator pod owns the rest of the lifecycle.
+        if self._k8s_driver is not None:
+            return await self._spawn_k8s(
+                opening_usdc=opening_usdc,
+                escalation_auto=escalation_auto,
+                parent_id=parent_id,
+                actor=actor,
+            )
         with span(
             "supervisor.spawn",
             attributes={"opening_usdc": opening_usdc, "parent_id": parent_id},
@@ -894,7 +918,36 @@ class Supervisor:
 
     # -- status (doc 08: GET /darwins/{id}) -------------------------------
     async def status(self, darwin_id: str) -> DarwinStatus:
+        if self._is_k8s(darwin_id):
+            return await self._k8s_status(darwin_id)
         return self._status(self._get(darwin_id))
+
+    async def _k8s_status(self, darwin_id: str) -> DarwinStatus:
+        """Build a DarwinStatus from the K8s driver's snapshot + the
+        supervisor's bookkeeping. Generation + l0_version come from the
+        driver via the orchestrator's snapshot endpoint (added in a
+        follow-on slice — for now those fields default)."""
+        bookkeeping = self._k8s_handles[darwin_id]
+        snapshot = await self._k8s_driver.snapshot(darwin_id)
+        self._k8s_handles[darwin_id]["snapshot"] = snapshot
+        return DarwinStatus(
+            darwin_id=darwin_id,
+            generation=0,
+            parent_id=bookkeeping.get("parent_id"),
+            l0_version="",
+            birth_ts=bookkeeping["spawned_at"],
+            spawned_at=bookkeeping["spawned_at"],
+            alive=snapshot.alive,
+            paused=snapshot.paused,
+            killed=snapshot.killed,
+            quarantined=False,
+            quarantine_reason=None,
+            death_reason=snapshot.death_reason,
+            balance_usdc=snapshot.balance_usdc,
+            tick=snapshot.tick,
+            days_elapsed=snapshot.days_elapsed,
+            open_escalations=0,
+        )
 
     # -- provisioning (doc 04, 07) ----------------------------------------
     def list_resources(
@@ -1321,6 +1374,13 @@ class Supervisor:
     ) -> None:
         """Flip the platform pause flag. The genome notices at the next
         heartbeat boundary, anchors, and breaks — same life, not a death."""
+        if self._is_k8s(darwin_id):
+            await self._k8s_driver.pause(darwin_id, reason=reason)
+            self._audit.record(
+                actor=actor, action="pause", darwin_id=darwin_id,
+                metadata={"reason": reason, "driver": "k8s"},
+            )
+            return
         with span("supervisor.pause", darwin_id=darwin_id,
                   attributes={"reason": reason}) as s:
             h = self._get(darwin_id)
@@ -1336,6 +1396,13 @@ class Supervisor:
             )
 
     async def resume(self, darwin_id: str, *, actor: str = "anonymous") -> None:
+        if self._is_k8s(darwin_id):
+            await self._k8s_driver.resume(darwin_id)
+            self._audit.record(
+                actor=actor, action="resume", darwin_id=darwin_id,
+                metadata={"driver": "k8s"},
+            )
+            return
         with span("supervisor.resume", darwin_id=darwin_id) as s:
             h = self._get(darwin_id)
             if h.killed:
@@ -1682,6 +1749,17 @@ class Supervisor:
         """Flip the platform kill flag. The genome polls it at the loop
         boundary and at every node boundary (doc 09: ≤5s latency), then runs
         ``_halt_on_kill`` which writes the final audit record and anchors."""
+        if self._is_k8s(darwin_id):
+            await self._k8s_driver.kill(darwin_id, reason=reason)
+            # The pod will halt itself; the driver's stop() is for full
+            # namespace teardown which we defer until the operator opts
+            # in (a killed Darwin's resources are still queryable for
+            # forensics until then).
+            self._audit.record(
+                actor=actor, action="kill", darwin_id=darwin_id,
+                metadata={"reason": reason, "driver": "k8s"},
+            )
+            return
         with span("supervisor.kill", darwin_id=darwin_id,
                   attributes={"reason": reason}) as s:
             h = self._get(darwin_id)
@@ -1705,6 +1783,13 @@ class Supervisor:
         """Set the genome's reproduce flag for the next heartbeat. The
         genome still runs its own treasury/fitness gates inside ``_reproduce``;
         forcing requests, it does not bypass."""
+        if self._is_k8s(darwin_id):
+            await self._k8s_driver.force_reproduce(darwin_id)
+            self._audit.record(
+                actor=actor, action="force_reproduce", darwin_id=darwin_id,
+                metadata={"driver": "k8s"},
+            )
+            return
         with span("supervisor.force_reproduce", darwin_id=darwin_id) as s:
             h = self._get(darwin_id)
             if not h.runtime.state.alive:
@@ -1923,6 +2008,17 @@ class Supervisor:
         """Stop driving every Darwin. If ``kill_running``, flip every kill
         flag first so the genomes write a clean final audit record."""
         self._closed = True
+        # K8s-mode: tell every per-Darwin orchestrator pod to halt
+        # cleanly, but leave the namespaces in place so an operator can
+        # forensically inspect them. The driver's stop() is a separate
+        # operator-driven call.
+        if self._k8s_driver is not None:
+            for did in list(self._k8s_handles):
+                try:
+                    if kill_running:
+                        await self._k8s_driver.kill(did, reason="supervisor shutdown")
+                except Exception:
+                    pass
         # Stop the leadership watch task first so it doesn't observe
         # mid-shutdown state and try to react to it.
         if self._leader_watch_task is not None:
@@ -1957,7 +2053,7 @@ class Supervisor:
 
     # -- introspection ----------------------------------------------------
     def list_ids(self) -> list[str]:
-        return list(self._darwins)
+        return list(self._darwins) + list(self._k8s_handles)
 
     @property
     def router(self) -> EscalationRouter:
@@ -1995,6 +2091,92 @@ class Supervisor:
             min_severity=min_severity, since=since, limit=limit
         )
         return [a.to_dict() for a in rows]
+
+    # -- K8s mode (doc-08 production driver) ------------------------------
+    async def _spawn_k8s(
+        self,
+        *,
+        opening_usdc: float,
+        escalation_auto: str | None,
+        parent_id: str | None,
+        actor: str,
+    ) -> DarwinStatus:
+        """Provision a per-Darwin K8s namespace + orchestrator pod via
+        :class:`darwin_platform.k8s.K8sDarwinDriver`. The driver mints the
+        Darwin id internally (the orchestrator pod boots fresh genesis;
+        lossless resume parity arrives in a follow-on slice).
+
+        The supervisor records the spawn in its audit chain + lineage
+        registry; subsequent reads route to the driver's snapshot."""
+        from .driver import DarwinSpec
+        import uuid as _uuid
+
+        # The driver expects an externally-minted id since it needs the
+        # namespace name before the pod boots. We mint a UUID here; the
+        # orchestrator's genesis id is independent and ends up in the
+        # status snapshot as the real darwin_id (the supervisor surfaces
+        # the supervisor-side id; the snapshot also carries the genome's
+        # own identity for cross-reference).
+        supervisor_id = _uuid.uuid4().hex[:16]
+        spec = DarwinSpec(
+            darwin_id=supervisor_id,
+            opening_usdc=float(opening_usdc),
+            escalation_auto=escalation_auto,
+            parent_id=parent_id,
+        )
+        with span(
+            "supervisor.spawn_k8s",
+            attributes={
+                "opening_usdc": float(opening_usdc),
+                "parent_id": parent_id or "",
+                "darwin_id": supervisor_id,
+            },
+        ):
+            snapshot = await self._k8s_driver.start(spec)
+        spawned_at = self._clock()
+        self._k8s_handles[supervisor_id] = {
+            "spawned_at": spawned_at,
+            "parent_id": parent_id,
+            "snapshot": snapshot,
+        }
+        if parent_id:
+            self._lineage_registry.add(
+                LineageEdge(
+                    parent_id=parent_id, child_id=supervisor_id,
+                    spawned_at=spawned_at,
+                    budget_usdc=float(opening_usdc),
+                )
+            )
+        self._audit.record(
+            actor=actor, action="spawn",
+            darwin_id=supervisor_id,
+            metadata={
+                "opening_usdc": float(opening_usdc),
+                "parent_id": parent_id,
+                "driver": "k8s",
+            },
+        )
+        return DarwinStatus(
+            darwin_id=supervisor_id,
+            generation=0,  # the orchestrator owns identity; refine via /snapshot
+            parent_id=parent_id,
+            l0_version="",
+            birth_ts=spawned_at,
+            spawned_at=spawned_at,
+            alive=snapshot.alive,
+            paused=snapshot.paused,
+            killed=snapshot.killed,
+            quarantined=False,
+            quarantine_reason=None,
+            death_reason=snapshot.death_reason,
+            balance_usdc=snapshot.balance_usdc,
+            tick=snapshot.tick,
+            days_elapsed=snapshot.days_elapsed,
+            open_escalations=0,
+        )
+
+    def _is_k8s(self, darwin_id: str) -> bool:
+        return self._k8s_driver is not None and darwin_id in self._k8s_handles
 
     # -- internals --------------------------------------------------------
     def _get(self, darwin_id: str) -> _Handle:
