@@ -101,3 +101,37 @@ jobs:
             > /tmp/pgsec.yaml
           grep -q "secretKeyRef:" /tmp/pgsec.yaml \
             || { echo "existingSecret should use secretKeyRef"; exit 1; }
+
+      - name: helm template (provider integrations — sinks + sanctions)
+        run: |
+          # Inline values render a providers Secret + the corresponding
+          # env vars on the Deployment.
+          helm template darwin deploy/helm/darwin-platform \
+            --set 'providers.sanctions.provider=chainalysis' \
+            --set 'providers.sanctions.apiKey=test-key' \
+            --set 'providers.notifications.slackWebhookUrl=https://hook.example/x' \
+            --set 'providers.notifications.pagerdutyRoutingKey=rk' \
+            --set 'providers.fiat.stripeApiKey=sk_test' \
+            > /tmp/providers.yaml
+          # A providers Secret is rendered.
+          grep -q "darwin-providers" /tmp/providers.yaml \
+            || { echo "providers Secret missing"; exit 1; }
+          # Env vars wired on the Deployment.
+          for env in DARWIN_SANCTIONS_API_KEY DARWIN_SLACK_WEBHOOK_URL \
+                     DARWIN_PAGERDUTY_ROUTING_KEY STRIPE_API_KEY; do
+            grep -q "name: ${env}" /tmp/providers.yaml \
+              || { echo "missing env ${env}"; exit 1; }
+          done
+
+      - name: helm template (provider existingSecret path)
+        run: |
+          # When existingSecret is set, no providers Secret should be
+          # rendered, but env vars should still be wired via
+          # secretKeyRef pointing at the referenced Secret.
+          helm template darwin deploy/helm/darwin-platform \
+            --set 'providers.notifications.existingSecret=my-notif-secret' \
+            > /tmp/providers-ext.yaml
+          grep -q "DARWIN_SLACK_WEBHOOK_URL" /tmp/providers-ext.yaml \
+            || { echo "external Secret should still wire env"; exit 1; }
+          grep -q "name: my-notif-secret" /tmp/providers-ext.yaml \
+            || { echo "missing reference to existingSecret"; exit 1; }
