@@ -68,6 +68,16 @@ dmypy.json
 *.pem
 *.key
 
+# --- Local dev artefacts (docker-compose state, real tokens) ---
+docker/.env
+docker/tokens.json
+!docker/.env.example
+!docker/tokens.example.json
+data/
+*.db
+*.db-wal
+*.db-shm
+
 # --- Jupyter ---
 .ipynb_checkpoints/
 
