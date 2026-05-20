@@ -1,0 +1,82 @@
+# Production-flavoured values fixture used by the helm CI workflow to
+# render every optional template. Not for actual deployment.
+
+image:
+  tag: "sha-abcdef1"
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+persistence:
+  enabled: true
+  storageClass: "gp3"
+  size: 50Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: darwin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: darwin-tls
+      hosts:
+        - darwin.example.com
+
+auth:
+  enabled: true
+  existingSecret: darwin-tokens-prod
+  existingSecretKey: tokens.json
+
+tracing:
+  endpoint: http://otel-collector.observability:4318
+  protocol: http/protobuf
+  serviceName: darwin-supervisor-prod
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  labels:
+    release: prometheus
+
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: edge
+        podSelector:
+          matchLabels:
+            app: ingress-nginx
+  egress:
+    dns: true
+    litellm:
+      namespace: ml-gateway
+      podLabels:
+        app: litellm
+      port: 4000
+    otlp:
+      namespace: observability
+      podLabels:
+        app: otel-collector
+      ports: [4317, 4318]
+    postgres:
+      namespace: data
+      podLabels:
+        app: postgres
+        component: primary
+      port: 5432
+    extraCIDRs:
+      - cidr: 0.0.0.0/0
+        ports: [443]
