@@ -40,7 +40,9 @@ from darwin_fakes import FakeStack, make_child_platform
 from darwin_fakes.fake_platform import SigningService
 
 from .billing import BillingPolicy, BillingService
+from .browser_cache import BrowserCacheService, CachedBrowserSubstrate
 from .escalation import EscalationRouter, NotificationSink
+from .harvest_scheduler import HarvestRule, HarvestRuleError, HarvestScheduler
 from .monitoring import (
     Alert,
     AlertSink,
@@ -50,7 +52,22 @@ from .monitoring import (
     Severity,
 )
 from .operator_audit import OperatorAuditLog, to_dicts as _audit_to_dicts
+from .provisioning import (
+    ProvisioningBackend,
+    ProvisioningError,
+    ProvisioningQuotas,
+    ProvisioningService,
+    ResourceRecord,
+)
+from .sanctions import SanctionsScreener
 from .tracing import annotate_span_with_runtime, span
+from .vault_admin import (
+    DEFAULT_SENSITIVE_TTL_SECONDS,
+    VaultAdminError,
+    VaultAdminService,
+    VaultEntryRef,
+    VaultRetentionService,
+)
 
 
 # -- errors ----------------------------------------------------------------
@@ -135,6 +152,16 @@ class LineageRegistry:
 
     def edges(self) -> list[LineageEdge]:
         return list(self._edges)
+
+    def has(self, darwin_id: str) -> bool:
+        """True if the registry has ever observed this id as parent or
+        child. Used by query paths (e.g. /resources) so a killed Darwin
+        with a recorded lineage edge still resolves to UnknownDarwin only
+        when the id is truly unknown to the supervisor."""
+        return (
+            darwin_id in self._by_child
+            or darwin_id in self._by_parent
+        )
 
     def parent_of(self, child_id: str) -> str | None:
         return self._by_child.get(child_id)
@@ -229,6 +256,14 @@ class Supervisor:
         vault_factory: Callable[[], Any] | None = None,
         browser_factory: Callable[[Any], Any] | None = None,
         x402_factory: Callable[[Any], Any] | None = None,
+        sandbox_factory: Callable[[Any], Any] | None = None,
+        provisioning_backend: ProvisioningBackend | None = None,
+        provisioning_quotas: ProvisioningQuotas | None = None,
+        vault_sensitive_ttl_seconds: float = DEFAULT_SENSITIVE_TTL_SECONDS,
+        vault_sweep_every_n_ticks: int = 60,
+        sanctions_screener: SanctionsScreener | None = None,
+        browser_cache_enabled: bool = True,
+        browser_cache_service: BrowserCacheService | None = None,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
     ) -> None:
@@ -260,6 +295,13 @@ class Supervisor:
             self._lineage_registry = self._persistence.lineage_registry()
         else:
             self._lineage_registry = LineageRegistry()
+        # Per-Darwin lifecycle store (doc 08 HA: runtime resume after
+        # leader failover). In-memory variant has no effect; the
+        # persistent variant is what makes resume meaningful.
+        self._lifecycle = (
+            self._persistence.lifecycle_store()
+            if self._persistence is not None else None
+        )
         # The platform-side escalation router (doc 08). Tickets the genome
         # posts to its inbox get observed at the heartbeat boundary, routed
         # through this object, and notified via the (optional) sink.
@@ -320,10 +362,61 @@ class Supervisor:
         # vault_factory()       -> RawVaultPort (doc 16: RealVaultBackend+HvacVaultClient)
         # browser_factory(wallet) -> BrowserClient (doc 15: BrowserUseClient)
         # x402_factory(wallet)    -> X402PaymentClient (doc 17: x402 HTTP wrapper)
+        # sandbox_factory(wallet) -> SandboxClient (doc 14: E2BSandbox)
         self._wallet_factory: Callable[..., Any] | None = wallet_factory
         self._vault_factory: Callable[[], Any] | None = vault_factory
         self._browser_factory: Callable[[Any], Any] | None = browser_factory
         self._x402_factory: Callable[[Any], Any] | None = x402_factory
+        self._sandbox_factory: Callable[[Any], Any] | None = sandbox_factory
+        # Platform-mediated provisioning (doc 04, 07). Replaces the fake
+        # in-memory provisioner with a service that records per-Darwin
+        # resources, enforces quotas, and lets operators deprovision via
+        # the HTTP API. Default backend = InMemoryProvisioningBackend so
+        # tests + the 90-day sim keep their deterministic behaviour.
+        self._provisioning = ProvisioningService(
+            backend=provisioning_backend,
+            quotas=provisioning_quotas,
+            clock=clock,
+        )
+        # Owner-write vault admin (doc 16 §"Bidirectional shared vault").
+        # The resolver walks the handle map at query time so the admin
+        # service stays one-instance-per-supervisor while still pointing at
+        # the right per-Darwin namespace.
+        self._vault_admin = VaultAdminService(
+            vault_resolver=self._resolve_vault_for,
+            retention=VaultRetentionService(
+                clock=clock,
+                sensitive_ttl_seconds=vault_sensitive_ttl_seconds,
+            ),
+            clock=clock,
+        )
+        # Sweep cadence: every Nth drive cycle the supervisor purges any
+        # sensitive vault entries whose TTL has run out (default 90 days
+        # from last use; doc 16). Default 60 ticks ≈ one minute at the
+        # default heartbeat; tests can drop this to 1 to exercise immediately.
+        self._vault_sweep_every_n = max(1, int(vault_sweep_every_n_ticks))
+        # Sanctions screener (doc 17). When set, every wallet the
+        # supervisor spawns gets the screener installed so every outbound
+        # payment is OFAC-checked before chain submit. Default None keeps
+        # the 90-day sim's deterministic recipients passing untouched.
+        self._sanctions: SanctionsScreener | None = sanctions_screener
+        # Browser cache (doc 15). One service per supervisor; every
+        # Darwin's browser substrate is wrapped at spawn time so the
+        # successful traces accumulate fleet-wide. Disable for tests that
+        # poke FakeBrowser directly.
+        self._browser_cache_enabled = bool(browser_cache_enabled)
+        self._browser_cache = (
+            browser_cache_service
+            if browser_cache_service is not None
+            else BrowserCacheService(clock=clock)
+        )
+        # Recurring harvest rules (doc 05). The scheduler holds rules; the
+        # drive cycle evaluates them per Darwin and fires harvest() when
+        # one is due. Default cadence: every N drive cycles. Set to 1 in
+        # tests for immediate evaluation; in production, every ~60 cycles
+        # is cheap and matches doc-05's "schedule Y".
+        self._harvest_scheduler = HarvestScheduler(clock=clock)
+        self._harvest_eval_every_n = 10
         # Hash-chained operator audit log (doc 08). Every mutating
         # supervisor call writes an entry tagged with the calling actor's
         # subject so a compliance reviewer can replay who-did-what.
@@ -365,6 +458,18 @@ class Supervisor:
         self._leader_started = True
         await self._leader.start()
         self._observed_leader_state = self._leader.is_leader
+        # Resume any alive Darwins persisted from a previous incarnation
+        # of this supervisor (doc 08 HA). Best-effort: a Darwin that
+        # cannot be reconstructed (e.g. missing manifest) is skipped, not
+        # crashed-on. Runs only when we hold leadership AND have a
+        # lifecycle store wired.
+        if self._leader.is_leader and self._lifecycle is not None:
+            try:
+                await self._resume_from_persistence()
+            except Exception:
+                # A bad row must not block the startup path; the audit
+                # log captures the failure for ops review.
+                pass
         # Background reconciler: when leadership flips, cancel any
         # running drive tasks (we lost the lock and shouldn't keep
         # writing). On gain, we don't auto-resume previously-spawned
@@ -395,6 +500,55 @@ class Supervisor:
                 for h in list(self._darwins.values()):
                     if h.task is not None and not h.task.done():
                         h.task.cancel()
+
+    async def _resume_from_persistence(self) -> int:
+        """Re-spawn every persisted Darwin marked alive. Returns the
+        count of resumed Darwins. Each resumed Darwin gets a FRESH
+        runtime + manifest (the audit chain captures the prior life;
+        in-life caches were not durable to begin with). The opening
+        balance comes from the last persisted snapshot, falling back to
+        the original opening_usdc when no snapshot was taken yet.
+
+        This is best-effort. Doc 08 §HA: "drive-loop resume across leader
+        failover is NOT supported until a separate slice"; this is that
+        slice — limited to the lifecycle-table view, not the audit-chain
+        replay. Re-spawned Darwins start fresh from genesis with the
+        same id + budget; the previous life lives in the audit log."""
+        assert self._lifecycle is not None
+        resumed = 0
+        for rec in self._lifecycle.list_alive():
+            if rec.darwin_id in self._darwins:
+                continue  # already running in-process
+            opening = (
+                rec.last_balance if rec.last_balance is not None
+                else rec.opening_usdc
+            )
+            try:
+                status = await self.spawn(
+                    opening_usdc=float(max(opening, 0.0)),
+                    escalation_auto=rec.escalation_auto or "approve",
+                    parent_id=rec.parent_id,
+                    actor="platform.resume",
+                )
+                self._audit.record(
+                    actor="platform.resume",
+                    action="resume",
+                    darwin_id=status.darwin_id,
+                    metadata={
+                        "from_id": rec.darwin_id,
+                        "opening_usdc": float(opening),
+                        "original_spawned_at": rec.spawned_at,
+                    },
+                )
+                resumed += 1
+            except Exception as exc:
+                self._audit.record(
+                    actor="platform.resume",
+                    action="resume_failed",
+                    darwin_id=rec.darwin_id,
+                    metadata={"reason": str(exc)},
+                )
+        return resumed
 
     def _require_leader(self) -> None:
         """Defense in depth — the readiness probe should already keep
@@ -465,10 +619,60 @@ class Supervisor:
             # active wallet so 402 payments settle against this Darwin.
             if self._x402_factory is not None:
                 stack.x402_client = self._x402_factory(stack.wallet)
-            # Genome's _sleep set to no-op: the supervisor schedules the gaps
+            # Sandbox: replace FakeSandbox with a real E2BSandbox (doc 14).
+            # Reaches compute.run-tagged neurons via NeuronContext.sandbox.
+            # Wallet is passed for per-session billing inside the adapter.
+            if self._sandbox_factory is not None:
+                stack.sandbox = self._sandbox_factory(stack.wallet)
+            # Sanctions screener (doc 17). Installed on every wallet so
+            # outbound payments are OFAC-checked at the wallet layer
+            # before any chain submit. The wallet's `set_sanctions_screener`
+            # is best-effort — a custom factory that doesn't implement it
+            # silently keeps the default (no screening), preserving
+            # backwards-compat for adapter stubs in tests.
+            if self._sanctions is not None:
+                setter = getattr(stack.wallet, "set_sanctions_screener", None)
+                if callable(setter):
+                    setter(self._sanctions)
+            # Genome's _sleep set to no-op:
+            # (browser cache wrapping happens AFTER boot so we know the
+            # final darwin_id; deferred to the post-boot block below.) the supervisor schedules the gaps
             # between heartbeats itself with asyncio.sleep, so the event loop
             # never blocks on time.sleep even with many Darwins on one loop.
             runtime = boot(stack.platform(), sleep=lambda _: None)
+            # Wrap the browser substrate with cache/promotion (doc 15).
+            # The wrapper proxies `run(steps) -> dict`, records every
+            # session, promotes signatures with N successes to a cached
+            # replay path, attributes cost per (darwin_id, neuron, URL).
+            if self._browser_cache_enabled and stack.browser is not None:
+                wrapped = CachedBrowserSubstrate(
+                    exploration=stack.browser,
+                    cache=self._browser_cache,
+                    darwin_id=runtime.identity.darwin_id,
+                    clock=self._clock,
+                )
+                stack.browser = wrapped
+                runtime._p.browser = wrapped  # noqa: SLF001
+            # Swap the fake provisioner for the per-Darwin scoped view of the
+            # platform-side ProvisioningService (doc 04, 07). Done AFTER boot
+            # so the genome's catalog already type-checks against the
+            # FakeProvisioner Protocol; we then rebind the ProvisionPort the
+            # neuron sees to the supervisor-backed one for runtime calls.
+            stack.provision = self._provisioning.scoped_for(
+                runtime.identity.darwin_id
+            )
+            # The neuron's catalog was wired against the OLD provision port
+            # at boot. Rebind the field so the next dispatch hits the
+            # platform-side service. (The neuron stores its provision port
+            # at construction; we go through the catalog to update it.)
+            try:
+                neuron = runtime.catalog.get("infrastructure.provisioner")
+                if neuron is not None:
+                    neuron._provision = stack.provision  # noqa: SLF001
+            except Exception:
+                # If the neuron isn't in this build, ignore — provisioning
+                # still works for HTTP-only operator-driven flows.
+                pass
             handle = _Handle(
                 darwin_id=runtime.identity.darwin_id,
                 stack=stack,
@@ -490,11 +694,368 @@ class Supervisor:
                     "parent_id": parent_id,
                 },
             )
+            # Persist lifecycle for resume-on-failover.
+            if self._lifecycle is not None:
+                try:
+                    self._lifecycle.upsert_spawn(
+                        darwin_id=handle.darwin_id,
+                        opening_usdc=float(opening_usdc),
+                        parent_id=parent_id,
+                        spawned_at=handle.spawned_at,
+                        escalation_auto=escalation_auto,
+                    )
+                except Exception:
+                    pass
             return self._status(handle)
 
     # -- status (doc 08: GET /darwins/{id}) -------------------------------
     async def status(self, darwin_id: str) -> DarwinStatus:
         return self._status(self._get(darwin_id))
+
+    # -- provisioning (doc 04, 07) ----------------------------------------
+    def list_resources(
+        self,
+        darwin_id: str,
+        *,
+        include_deprovisioned: bool = False,
+    ) -> list[ResourceRecord]:
+        """List the Darwin's provisioned infrastructure resources. Read-only;
+        no audit entry. Does NOT require the Darwin to still be alive (a
+        killed Darwin's resource history is part of the operator audit
+        view)."""
+        # Defense in depth: confirm the id is known to the supervisor. We
+        # accept inactive darwins so /resources still works after a kill.
+        if (
+            darwin_id not in self._darwins
+            and not self._lineage_registry.has(darwin_id)
+        ):
+            raise UnknownDarwin(darwin_id)
+        return self._provisioning.list_resources(
+            darwin_id, include_deprovisioned=include_deprovisioned,
+        )
+
+    async def deprovision_resource(
+        self,
+        darwin_id: str,
+        resource_id: str,
+        *,
+        actor: str = "anonymous",
+    ) -> ResourceRecord:
+        """Operator/owner-driven deprovision. Tears down the resource via
+        the platform backend and marks the record deprovisioned. Audit-logged.
+
+        Cannot be reversed — to re-provision, the Darwin must request a fresh
+        resource through its ``infrastructure.provisioner`` neuron."""
+        with span(
+            "supervisor.deprovision_resource",
+            darwin_id=darwin_id,
+            attributes={"resource_id": resource_id},
+        ):
+            if (
+                darwin_id not in self._darwins
+                and not self._lineage_registry.has(darwin_id)
+            ):
+                raise UnknownDarwin(darwin_id)
+            record = self._provisioning.deprovision(
+                darwin_id=darwin_id, resource_id=resource_id,
+            )
+            self._audit.record(
+                actor=actor,
+                action="deprovision_resource",
+                darwin_id=darwin_id,
+                metadata={"resource_id": resource_id, "kind": record.kind},
+            )
+            return record
+
+    def provisioning_summary(self) -> dict[str, int]:
+        """Fleet-level active-resource counts by kind. Cheap; for dashboards."""
+        return self._provisioning.fleet_summary()
+
+    # -- browser cache (doc 15 promotion + cost attribution) --------------
+    def browser_sessions(
+        self,
+        darwin_id: str,
+        *,
+        limit: int | None = None,
+    ) -> list:
+        """Per-Darwin browser session log. Read-only; for the owner UI."""
+        if (
+            darwin_id not in self._darwins
+            and not self._lineage_registry.has(darwin_id)
+        ):
+            raise UnknownDarwin(darwin_id)
+        return [
+            r.to_json() for r in self._browser_cache.sessions(
+                darwin_id=darwin_id, limit=limit,
+            )
+        ]
+
+    def browser_stats(self) -> dict:
+        """Fleet-level browser cache stats + cost breakdown. For the
+        operator dashboard."""
+        return self._browser_cache.stats()
+
+    # -- recurring harvest rules (doc 05) ---------------------------------
+    def add_harvest_rule(
+        self,
+        darwin_id: str,
+        *,
+        destination: str,
+        trigger_balance_usdc: float,
+        amount_usdc: float | None = None,
+        interval_seconds: float | None = None,
+        actor: str = "anonymous",
+    ) -> HarvestRule:
+        """Register a recurring rule. Fires whenever the wallet balance
+        exceeds ``trigger_balance_usdc`` and at least ``interval_seconds``
+        have passed since the last fire."""
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        with span(
+            "supervisor.add_harvest_rule",
+            darwin_id=darwin_id,
+            attributes={
+                "destination": destination,
+                "trigger_balance_usdc": float(trigger_balance_usdc),
+            },
+        ):
+            kwargs = dict(
+                darwin_id=darwin_id,
+                destination=destination,
+                trigger_balance_usdc=trigger_balance_usdc,
+                amount_usdc=amount_usdc,
+            )
+            if interval_seconds is not None:
+                kwargs["interval_seconds"] = interval_seconds
+            try:
+                rule = self._harvest_scheduler.add(**kwargs)
+            except HarvestRuleError as exc:
+                raise SupervisorError(str(exc)) from exc
+            self._audit.record(
+                actor=actor,
+                action="add_harvest_rule",
+                darwin_id=darwin_id,
+                metadata={
+                    "rule_id": rule.id,
+                    "destination": destination,
+                    "trigger_balance_usdc": float(trigger_balance_usdc),
+                    "amount_usdc": (
+                        float(amount_usdc) if amount_usdc is not None else None
+                    ),
+                    "interval_seconds": rule.interval_seconds,
+                },
+            )
+            return rule
+
+    def remove_harvest_rule(
+        self, darwin_id: str, rule_id: str, *, actor: str = "anonymous",
+    ) -> HarvestRule:
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        with span(
+            "supervisor.remove_harvest_rule",
+            darwin_id=darwin_id,
+            attributes={"rule_id": rule_id},
+        ):
+            try:
+                rule = self._harvest_scheduler.remove(rule_id)
+            except HarvestRuleError as exc:
+                raise SupervisorError(str(exc)) from exc
+            if rule.darwin_id != darwin_id:
+                # Re-insert so the rule isn't lost on a misaddressed call.
+                self._harvest_scheduler._rules[rule_id] = rule  # noqa: SLF001
+                raise SupervisorError(
+                    f"rule {rule_id!r} belongs to a different Darwin"
+                )
+            self._audit.record(
+                actor=actor,
+                action="remove_harvest_rule",
+                darwin_id=darwin_id,
+                metadata={"rule_id": rule_id},
+            )
+            return rule
+
+    def list_harvest_rules(self, darwin_id: str) -> list[HarvestRule]:
+        if (
+            darwin_id not in self._darwins
+            and not self._lineage_registry.has(darwin_id)
+        ):
+            raise UnknownDarwin(darwin_id)
+        return self._harvest_scheduler.list(darwin_id)
+
+    async def _evaluate_harvest_rules(self, handle: _Handle) -> None:
+        """Check the per-Darwin rules and fire any that are due. Errors
+        in one rule don't poison others."""
+        try:
+            balance = float(handle.stack.wallet.balance_usdc())
+        except Exception:
+            return
+        due = self._harvest_scheduler.due(
+            darwin_id=handle.darwin_id, balance_usdc=balance,
+        )
+        for d in due:
+            try:
+                result = await self.harvest(
+                    handle.darwin_id,
+                    amount_usdc=d.amount_usdc,
+                    destination=d.rule.destination,
+                    actor="platform.scheduler",
+                )
+                self._harvest_scheduler.mark_run(
+                    d.rule.id, amount=d.amount_usdc,
+                )
+                # Record at info level via audit (the harvest itself already
+                # writes its own ``harvest`` entry; this links rule -> harvest).
+                self._audit.record(
+                    actor="platform.scheduler",
+                    action="harvest_rule_fired",
+                    darwin_id=handle.darwin_id,
+                    metadata={
+                        "rule_id": d.rule.id,
+                        "amount_usdc": d.amount_usdc,
+                        "destination": d.rule.destination,
+                        "harvest_id": result.get("harvest_id"),
+                    },
+                )
+            except Exception as exc:
+                # Audit the refusal but don't break the drive loop.
+                self._audit.record(
+                    actor="platform.scheduler",
+                    action="harvest_rule_failed",
+                    darwin_id=handle.darwin_id,
+                    metadata={"rule_id": d.rule.id, "reason": str(exc)},
+                )
+
+    # -- vault admin (doc 16 §"Bidirectional shared vault") --------------
+    def _resolve_vault_for(self, darwin_id: str) -> Any | None:
+        """Return the raw vault backend for ``darwin_id``, or None if the
+        Darwin isn't currently held by this supervisor. Used by the vault
+        admin service so its API surface stays narrow (one service, many
+        Darwins) without sacrificing per-Darwin isolation."""
+        h = self._darwins.get(darwin_id)
+        if h is None:
+            return None
+        return h.stack.vault
+
+    def vault_put(
+        self,
+        darwin_id: str,
+        *,
+        tier: str,
+        key: str,
+        value: str,
+        scope: str | None = None,
+        ttl_seconds: float | None = None,
+        original_filename: str | None = None,
+        actor: str = "anonymous",
+    ) -> VaultEntryRef:
+        """Owner writes a secret into the Darwin's namespace (doc 16:
+        KYC docs, credentials, payment methods). Sensitive-tier uploads
+        are auto-tracked by the retention sweeper (default 90-day TTL
+        from last use)."""
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        with span(
+            "supervisor.vault_put",
+            darwin_id=darwin_id,
+            attributes={"tier": tier, "scope": scope or ""},
+        ):
+            try:
+                ref = self._vault_admin.put(
+                    darwin_id=darwin_id, tier=tier, key=key, value=value,
+                    scope=scope, uploaded_by=actor,
+                    ttl_seconds=ttl_seconds,
+                    original_filename=original_filename,
+                )
+            except VaultAdminError as exc:
+                raise SupervisorError(str(exc)) from exc
+            self._audit.record(
+                actor=actor,
+                action="vault_put",
+                darwin_id=darwin_id,
+                metadata={
+                    "tier": tier,
+                    "scope": scope,
+                    "key": key,
+                    "sha256": ref.sha256,
+                    "size_bytes": ref.size_bytes,
+                    # Value bytes never enter the audit chain.
+                },
+            )
+            return ref
+
+    def vault_delete(
+        self,
+        darwin_id: str,
+        *,
+        tier: str,
+        key: str,
+        scope: str | None = None,
+        actor: str = "anonymous",
+    ) -> VaultEntryRef:
+        """Owner removes a stored secret. Audit-logged. Refuses with a
+        clear error rather than silently no-opping on unknown keys (a
+        silent no-op would hide a typo'd path from compliance review)."""
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        with span(
+            "supervisor.vault_delete",
+            darwin_id=darwin_id,
+            attributes={"tier": tier, "scope": scope or ""},
+        ):
+            try:
+                ref = self._vault_admin.delete(
+                    darwin_id=darwin_id, tier=tier, key=key, scope=scope,
+                )
+            except VaultAdminError as exc:
+                raise SupervisorError(str(exc)) from exc
+            self._audit.record(
+                actor=actor,
+                action="vault_delete",
+                darwin_id=darwin_id,
+                metadata={
+                    "tier": tier, "scope": scope, "key": key,
+                    "sha256": ref.sha256,
+                },
+            )
+            return ref
+
+    def list_vault_entries(
+        self,
+        darwin_id: str,
+        *,
+        tier: str | None = None,
+    ) -> list[VaultEntryRef]:
+        """Read-only inventory for the owner UI. Values are never returned —
+        only refs (path, sha256, size, uploaded_at, expires_at)."""
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        return self._vault_admin.list(darwin_id, tier=tier)
+
+    def sweep_vault_retention(self) -> list[VaultEntryRef]:
+        """Purge expired sensitive entries. Returns the refs that were
+        purged so the caller can audit them. Called automatically by the
+        drive cycle; exposed for tests + an operator-on-demand sweep."""
+        purged = self._vault_admin.sweep_expired()
+        for ref in purged:
+            self._audit.record(
+                actor="platform.retention",
+                action="vault_retention_purge",
+                darwin_id=ref.darwin_id,
+                metadata={
+                    "tier": ref.tier, "scope": ref.scope, "key": ref.key,
+                    "sha256": ref.sha256,
+                    "uploaded_at": ref.uploaded_at,
+                },
+            )
+        return purged
+
+    @property
+    def vault_admin(self) -> VaultAdminService:
+        """For tests + advanced operators: direct access to the admin
+        service. The HTTP surface only goes through the supervisor
+        methods above (which audit-log every mutation)."""
+        return self._vault_admin
 
     # -- pause / resume (doc 08: POST /darwins/{id}/pause|resume) ---------
     async def pause(
@@ -877,6 +1438,11 @@ class Supervisor:
                 actor=actor, action="kill", darwin_id=darwin_id,
                 metadata={"reason": reason},
             )
+            if self._lifecycle is not None:
+                try:
+                    self._lifecycle.mark_killed(darwin_id, reason=reason)
+                except Exception:
+                    pass
 
     # -- force reproduction (doc 08: POST /darwins/{id}/reproduce/force) --
     async def force_reproduce(
@@ -1246,6 +1812,39 @@ class Supervisor:
                 self._monitor.observe_tick(handle.darwin_id, runtime.state.tick)
                 if handle.drive_cycles % self._monitor_every_n == 0:
                     self._run_monitor(handle)
+                # KYC retention sweep (doc 16). Cheap when nothing has
+                # expired; the audit chain records each purge.
+                if handle.drive_cycles % self._vault_sweep_every_n == 0:
+                    try:
+                        self.sweep_vault_retention()
+                    except Exception:
+                        # Sweep must never bring down a drive loop — a
+                        # backend hiccup re-queues the records for the next
+                        # cycle (see VaultAdminService.sweep_expired).
+                        pass
+                # Recurring harvest rules (doc 05). Evaluate per N drive
+                # cycles to keep the hot path cheap; the scheduler
+                # internally throttles per rule via interval_seconds.
+                if handle.drive_cycles % self._harvest_eval_every_n == 0:
+                    try:
+                        await self._evaluate_harvest_rules(handle)
+                    except Exception:
+                        pass
+                # Persist a balance snapshot per N cycles (doc 08 HA: so
+                # a resumed Darwin keeps an approximately-right opening
+                # budget). Cheap dict-write on the in-memory variant; one
+                # UPDATE on the persistent variant.
+                if (
+                    self._lifecycle is not None
+                    and handle.drive_cycles % self._harvest_eval_every_n == 0
+                ):
+                    try:
+                        self._lifecycle.snapshot_balance(
+                            handle.darwin_id,
+                            balance_usdc=float(handle.stack.wallet.balance_usdc()),
+                        )
+                    except Exception:
+                        pass
                 if not runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)
@@ -1519,6 +2118,15 @@ class Supervisor:
                     clock=self._clock,
                 )
                 child_runtime = boot(child_platform, sleep=lambda _: None)
+                # Inherit fleet-wide sanctions screener (doc 17) for the
+                # child too — otherwise a freshly spawned generation could
+                # transact unscreened until the operator re-installs it.
+                if self._sanctions is not None:
+                    setter = getattr(
+                        child_stack.wallet, "set_sanctions_screener", None,
+                    )
+                    if callable(setter):
+                        setter(self._sanctions)
             except Exception:
                 # A child whose DNA fails to verify is the platform's
                 # problem, not the parent's — log nothing here (caller has
