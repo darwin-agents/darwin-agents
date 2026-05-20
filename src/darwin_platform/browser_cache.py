@@ -245,6 +245,9 @@ class CachedBrowserSubstrate:
         replay: Any | None = None,
         cached_cost_multiplier: float = 0.1,
         clock: Callable[[], float] = time.time,
+        vision_fallback_enabled: bool = True,
+        vision_max_steps: int = 5,
+        vision_cost_cap_usdc: float = 0.5,
     ) -> None:
         self._exploration = exploration
         self._replay = replay
@@ -254,6 +257,13 @@ class CachedBrowserSubstrate:
         self._cached_cost_mult = float(cached_cost_multiplier)
         self._clock = clock
         self._trace_counter = 0
+        # Vision-mode fallback (doc 15). When the exploration substrate
+        # advertises ``supports_vision`` AND returns navigation_failed
+        # (canvas-only app, hard anti-bot), we retry once with vision
+        # mode before letting the failure propagate to the neuron.
+        self._vision_fallback_enabled = bool(vision_fallback_enabled)
+        self._vision_max_steps = int(vision_max_steps)
+        self._vision_cost_cap = float(vision_cost_cap_usdc)
 
     @property
     def cache(self) -> BrowserCacheService:
@@ -325,6 +335,70 @@ class CachedBrowserSubstrate:
             ts=self._clock(),
         )
         self._cache.record(record, steps=list(steps))
+        # Vision-mode fallback (doc 15). Only triggers on a fresh
+        # exploration that returned navigation_failed AND the substrate
+        # advertises vision support. Skipped for cached attempts (the
+        # cache itself is the demotion signal for those) and for captcha
+        # blockages (escalation is the right answer for those).
+        if (
+            self._vision_fallback_enabled
+            and not cached
+            and status == "fail"
+            and getattr(substrate, "supports_vision", False)
+        ):
+            vision_outcome = self._try_vision(
+                substrate=substrate, steps=list(steps), signature=signature,
+                url=url,
+            )
+            if vision_outcome is not None:
+                return vision_outcome
         # Pass through the underlying outcome; the genome sees the same
         # shape it would from FakeBrowser/BrowserUseClient.
         return outcome
+
+    def _try_vision(
+        self,
+        *,
+        substrate: Any,
+        steps: list[str],
+        signature: str,
+        url: str | None,
+    ) -> dict | None:
+        """Vision-mode retry. Returns the vision outcome if it ran (caller
+        returns it to the neuron); returns None if vision could not run
+        (substrate refused, ImportError, etc.) so the caller falls back to
+        the original navigation_failed."""
+        start = self._clock()
+        try:
+            vision_outcome = substrate.run_vision(
+                steps,
+                max_steps=self._vision_max_steps,
+                cost_cap_usdc=self._vision_cost_cap,
+            )
+        except Exception:
+            return None
+        if not isinstance(vision_outcome, dict):
+            return None
+        elapsed_ms = int((self._clock() - start) * 1000)
+        status = (
+            "ok" if vision_outcome.get("ok") else
+            "blocked" if vision_outcome.get("blocked") else
+            "fail"
+        )
+        cost = float(vision_outcome.get("cost_usdc", 0.0))
+        record = BrowserSessionRecord(
+            trace_id=self._next_trace_id(),
+            darwin_id=self._darwin_id,
+            neuron=self._neuron,
+            signature=signature,
+            url=url,
+            status=status,
+            via="vision",
+            cost_usdc=cost,
+            latency_ms=elapsed_ms,
+            ts=self._clock(),
+        )
+        # Vision outcomes don't update the promotion counters — that's
+        # for the exploration path only. Record raw via the sessions log.
+        self._cache._sessions.setdefault(self._darwin_id, []).append(record)  # noqa: SLF001
+        return vision_outcome

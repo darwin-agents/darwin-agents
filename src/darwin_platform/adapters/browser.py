@@ -53,6 +53,26 @@ class BrowserClient(Protocol):
         ...
 
 
+@runtime_checkable
+class VisionCapableBrowserClient(BrowserClient, Protocol):
+    """Optional extension — clients that support vision-mode fallback
+    (doc 15 §"vision-mode fallback for canvas-only apps"). The
+    CachedBrowserSubstrate consults ``supports_vision`` and falls back
+    to ``run_vision`` on a DOM-exploration ``navigation_failed`` before
+    escalating to the owner."""
+
+    @property
+    def supports_vision(self) -> bool: ...
+
+    def run_vision(
+        self,
+        steps: list[str],
+        *,
+        max_steps: int = 5,
+        cost_cap_usdc: float = 0.5,
+    ) -> dict: ...
+
+
 class BrowserUseClient:
     """Real :class:`BrowserClient` via the ``browser_use`` library on a
     Browserbase (or any Playwright-compatible) backend.
@@ -88,6 +108,8 @@ class BrowserUseClient:
         browser_factory,
         cost_per_session: float = 0.01,
         captcha_detectors: tuple[str, ...] | None = None,
+        vision_factory: Any | None = None,
+        vision_cost_per_step: float = 0.05,
     ) -> None:
         # The browser_use SDK is imported by the user's
         # ``browser_factory`` when it constructs an Agent — no early
@@ -100,6 +122,14 @@ class BrowserUseClient:
         self._captcha_detectors = tuple(
             (captcha_detectors or self._DEFAULT_CAPTCHA_DETECTORS)
         )
+        # Optional vision-mode factory. Doc 15: "Browser-Use vision mode on
+        # the SAME Browserbase session for canvas-only apps / hard anti-bot
+        # walls." Pass a zero-arg callable that returns a vision-enabled
+        # browser_use.Agent (or compatible). When unset, the client reports
+        # supports_vision=False and the cached substrate will not try the
+        # fallback.
+        self._vision_factory = vision_factory
+        self._vision_cost_per_step = float(vision_cost_per_step)
 
     # -- BrowserClient -----------------------------------------------------
     def run(self, steps: list[str]) -> dict:
@@ -143,6 +173,96 @@ class BrowserUseClient:
                         "cost_usdc": self._cost}
             return {"ok": False, "detail": detail, "cost_usdc": self._cost}
         return {"ok": True, "data": data, "cost_usdc": self._cost}
+
+    # -- vision-mode fallback (doc 15) -----------------------------------
+    @property
+    def supports_vision(self) -> bool:
+        return self._vision_factory is not None
+
+    def run_vision(
+        self,
+        steps: list[str],
+        *,
+        max_steps: int = 5,
+        cost_cap_usdc: float = 0.5,
+    ) -> dict:
+        """Vision-mode fallback. Used by :class:`CachedBrowserSubstrate`
+        on a ``navigation_failed`` from DOM exploration. Hard cost cap
+        + step cap per doc 15; the call refuses before launching the
+        session if those caps couldn't possibly be met.
+
+        Vision is *expensive* — each step incurs an LLM screenshot call.
+        The neuron sees the same three outcomes (ok / blocked / fail)
+        but the result dict carries ``via='vision'`` so the dashboard
+        can show the breakdown."""
+        if self._vision_factory is None:
+            return {
+                "ok": False,
+                "detail": "vision-mode not configured",
+                "cost_usdc": 0.0,
+                "via": "vision",
+            }
+        if cost_cap_usdc <= 0 or max_steps <= 0:
+            return {
+                "ok": False,
+                "detail": "vision-mode caps misconfigured",
+                "cost_usdc": 0.0,
+                "via": "vision",
+            }
+        # Estimate worst-case cost; bill upfront so the wallet can refuse
+        # before we contact Browserbase.
+        worst_case_cost = min(
+            cost_cap_usdc, max_steps * self._vision_cost_per_step,
+        )
+        try:
+            self._wallet.debit(worst_case_cost, "browserbase:vision_session")
+        except Exception as exc:
+            return {
+                "ok": False, "detail": f"no funds: {exc}",
+                "cost_usdc": 0.0, "via": "vision",
+            }
+        try:
+            agent = self._vision_factory()
+        except Exception as exc:
+            return {
+                "ok": False, "detail": f"vision agent init failed: {exc}",
+                "cost_usdc": worst_case_cost, "via": "vision",
+            }
+        prompt = " ; ".join(steps) if steps else ""
+        try:
+            # Browser-Use's vision-mode `run` accepts `use_vision=True` or
+            # the agent is constructed with it. The factory owns that
+            # detail — we just call run().
+            result = (
+                agent.run(prompt, max_steps=max_steps)
+                if hasattr(agent, "run") else agent(prompt)
+            )
+        except Exception as exc:
+            detail = str(exc)
+            if self._is_captcha(detail):
+                return {
+                    "blocked": "captcha", "detail": detail,
+                    "cost_usdc": worst_case_cost, "via": "vision",
+                }
+            return {
+                "ok": False, "detail": detail,
+                "cost_usdc": worst_case_cost, "via": "vision",
+            }
+        success, detail, data = self._unpack_result(result)
+        if not success:
+            if self._is_captcha(detail):
+                return {
+                    "blocked": "captcha", "detail": detail,
+                    "cost_usdc": worst_case_cost, "via": "vision",
+                }
+            return {
+                "ok": False, "detail": detail,
+                "cost_usdc": worst_case_cost, "via": "vision",
+            }
+        return {
+            "ok": True, "data": data,
+            "cost_usdc": worst_case_cost, "via": "vision",
+        }
 
     # -- internals --------------------------------------------------------
     def _is_captcha(self, detail: str | None) -> bool:

@@ -203,10 +203,11 @@ def test_stats_aggregates_per_darwin():
 async def test_supervisor_wraps_browser_substrate():
     from darwin_platform.supervisor import Supervisor
 
-    sup = Supervisor()
+    # Disable the throttle wrapper so the outer wrapper is CachedBrowserSubstrate.
+    sup = Supervisor(resource_throttle_enabled=False)
     status = await sup.spawn(opening_usdc=50.0)
     h = sup._darwins[status.darwin_id]
-    # The browser is now the wrapper, not the raw FakeBrowser.
+    # The browser is now the cache wrapper, not the raw FakeBrowser.
     assert isinstance(h.stack.browser, CachedBrowserSubstrate)
     # Drive a session via the wrapped substrate; should appear in stats.
     h.stack.browser.run(["open https://blog.example/post"])
@@ -223,7 +224,9 @@ async def test_supervisor_browser_cache_can_be_disabled():
     from darwin_fakes import FakeBrowser
     from darwin_platform.supervisor import Supervisor
 
-    sup = Supervisor(browser_cache_enabled=False)
+    sup = Supervisor(
+        browser_cache_enabled=False, resource_throttle_enabled=False,
+    )
     status = await sup.spawn(opening_usdc=50.0)
     h = sup._darwins[status.darwin_id]
     assert isinstance(h.stack.browser, FakeBrowser)
