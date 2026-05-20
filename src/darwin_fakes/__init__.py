@@ -85,6 +85,10 @@ class FakeStack:
             self.llm = FakeLLM(wallet=self.wallet)
         self.browser = FakeBrowser(wallet=self.wallet, captcha_every=captcha_every)
         self.spawner = FakeSpawner(parent_wallet=self.wallet)
+        # Optional x402 HTTP client (doc 17). None in fakes — tests that want
+        # to exercise the 402 path inject a stub via stack.x402_client before
+        # calling stack.platform().
+        self.x402_client = None
         self.manifest, self.layer_blobs, self.layer_names, self.identity = (
             mint_genesis(self.signer, birth_ts=clock())
         )
@@ -108,6 +112,7 @@ class FakeStack:
             signer=self.signer,
             spawner=self.spawner,
             browser=self.browser,
+            x402_client=self.x402_client,
         )
 
 

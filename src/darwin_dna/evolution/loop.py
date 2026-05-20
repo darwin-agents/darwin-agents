@@ -77,6 +77,7 @@ class Platform:
         browser=None,
         vault_grants=None,
         pause_source=None,
+        x402_client=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -100,6 +101,11 @@ class Platform:
         # The owner/supervisor pause flag (doc 09). Optional: absent means the
         # Darwin can never be paused, only killed — it still boots and runs.
         self.pause_source = pause_source
+        # x402-capable HTTP client (doc 17 §x402). When provided, neurons
+        # whose capability_tags overlap {"web.operate", "web.publish"} receive
+        # it via NeuronContext.http so HTTP 402 responses are transparently
+        # settled against this Darwin's wallet without per-neuron plumbing.
+        self.x402_client = x402_client
 
 
 class DarwinRuntime:
@@ -236,6 +242,14 @@ class DarwinRuntime:
         # that needs it.
         if neuron_name == "browser.operator" and self._p.browser is not None:
             nctx.browser = self._p.browser
+        # x402 HTTP client (doc 17): grant only to neurons that make outbound
+        # web requests. Guards against accidentally giving treasury-settling
+        # HTTP capability to a neuron that has no business making web calls.
+        if (
+            getattr(self._p, "x402_client", None) is not None
+            and tags & {"web.operate", "web.publish", "web.signup"}
+        ):
+            nctx.http = self._p.x402_client
         return nctx
 
     # -- the loop ----------------------------------------------------------
