@@ -16,12 +16,31 @@ image:
   pullSecrets: []
 
 # -- Replicas ---------------------------------------------------------------
-# Supervisor is single-writer per process (SQLite + in-memory drive
-# loops). Keep at 1 until the Postgres-backed persistence port lands and
-# we add a leader-election layer. Doc 08's lifecycle endpoints assume
-# one writer per Darwin id, so this is a correctness invariant, not just
-# a resource choice.
+# Supervisor is single-writer per process. With Postgres + leader
+# election (see `leaderElection.enabled` below), replicas > 1 is safe:
+# exactly one pod holds the lock and drives Darwins; the rest are warm
+# spares that take over within seconds of the leader dropping. With
+# SQLite (or NoLeaderElection), keep at 1 — multiple processes writing
+# to the same SQLite file is undefined and would corrupt the audit
+# chain.
 replicaCount: 1
+
+# -- Leader election (HA) ---------------------------------------------------
+# Required when ``replicaCount > 1``. Uses Postgres advisory locks
+# (``pg_try_advisory_lock``) — held while the locking connection is
+# alive; auto-released on pod death. Failover window ≈ heartbeat
+# interval (5s default).
+#
+# Enabling this implicitly switches the readinessProbe to ``/readyz``
+# so the Service routes API traffic only to the leader pod. Followers
+# stay alive (``/healthz`` 200) for fast failover but report 503 on
+# ``/readyz``.
+leaderElection:
+  enabled: false
+  # The advisory-lock key. Default is a fixed hash so chart releases
+  # don't collide unless an operator aligns them on purpose. Override
+  # to isolate multiple platforms sharing one Postgres.
+  lockKey: ""  # empty → use the supervisor's DEFAULT_LOCK_KEY
 
 # -- Resources --------------------------------------------------------------
 # Generous defaults for a small fleet; tune for actual load. The
