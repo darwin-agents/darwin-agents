@@ -20,6 +20,11 @@ from .auth import (
     disabled_context,
 )
 from .billing import BillingLedger, BillingPolicy, BillingService
+from .operator_audit import (
+    OperatorAuditEntry,
+    OperatorAuditError,
+    OperatorAuditLog,
+)
 from .escalation import (
     EscalationRouter,
     LogNotificationSink,
@@ -63,6 +68,9 @@ __all__ = [
     "BillingPolicy",
     "BillingLedger",
     "BillingService",
+    "OperatorAuditEntry",
+    "OperatorAuditError",
+    "OperatorAuditLog",
     "EscalationRouter",
     "RoutedTicket",
     "TicketStatus",
