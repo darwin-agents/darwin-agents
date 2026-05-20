@@ -157,7 +157,61 @@ CREATE TABLE IF NOT EXISTS darwin_lifecycle (
     escalation_auto TEXT
 );
 CREATE INDEX IF NOT EXISTS darwin_lifecycle_alive_idx ON darwin_lifecycle(alive);
+
+CREATE TABLE IF NOT EXISTS darwin_audit_records (
+    darwin_id   TEXT     NOT NULL,
+    seq         INTEGER  NOT NULL,
+    record      TEXT     NOT NULL,
+    ts          {real}   NOT NULL,
+    PRIMARY KEY (darwin_id, seq)
+);
+CREATE INDEX IF NOT EXISTS darwin_audit_ts_idx
+    ON darwin_audit_records(ts);
+
+CREATE TABLE IF NOT EXISTS darwin_checkpoints (
+    darwin_id   TEXT PRIMARY KEY,
+    node        TEXT     NOT NULL,
+    state       TEXT     NOT NULL,
+    saved_at    {real}   NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS darwin_manifests (
+    darwin_id   TEXT PRIMARY KEY,
+    manifest    TEXT NOT NULL,
+    layer_blobs TEXT NOT NULL,
+    layer_names TEXT NOT NULL,
+    created_at  {real} NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_signing_key (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    private_key  TEXT     NOT NULL,
+    created_at   {real}   NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    version       INTEGER  NOT NULL,
+    applied_at    {real}   NOT NULL,
+    code_version  TEXT     NOT NULL
+);
 """
+
+
+# The current schema version. Bump and add a migration each time the
+# table layout changes. The migration framework runs every step from
+# the persisted version up to this number on open.
+CURRENT_SCHEMA_VERSION: int = 1
+# String tag for the code that opened the DB. Tests can override; in
+# real deployments this lets a forensic audit confirm which release
+# touched a row.
+CODE_VERSION_TAG: str = "darwin-platform/0.1"
+
+
+class SchemaVersionError(Exception):
+    """Raised when the persisted schema is newer than this code can
+    handle — refusing to open is safer than silently mis-interpreting
+    a future column shape."""
 
 
 # -- backend abstraction --------------------------------------------------
@@ -323,6 +377,7 @@ class PersistenceStore:
         self._backend = _open_backend(spec)
         with self._backend:
             self._backend.executescript(self._backend.schema())
+        self._apply_migrations()
         self._clock = clock
         self._audit = PersistentOperatorAuditLog(self._backend, clock=clock)
         self._tokens = PersistentTokenStore(self._backend)
@@ -333,6 +388,58 @@ class PersistenceStore:
     @property
     def spec(self) -> str | Path:
         return self._spec
+
+    # -- schema versioning (forward-compat refusal) -----------------------
+    def _apply_migrations(self) -> None:
+        """Read the persisted schema version; run forward migrations
+        from there to ``CURRENT_SCHEMA_VERSION``. Refuses to open a DB
+        whose persisted version is *newer* than this code knows about —
+        an older binary against a newer schema would silently
+        misinterpret columns."""
+        row = self._backend.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            persisted = 0
+        else:
+            persisted = int(row["version"] if isinstance(row, dict) else row[0])
+        if persisted > CURRENT_SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"persisted schema version {persisted} is newer than this "
+                f"code supports ({CURRENT_SCHEMA_VERSION}); upgrade the "
+                f"darwin-platform binary before opening this DB"
+            )
+        if persisted == CURRENT_SCHEMA_VERSION:
+            return
+        # Apply forward migrations sequentially.
+        for v in range(persisted + 1, CURRENT_SCHEMA_VERSION + 1):
+            migration = _MIGRATIONS.get(v)
+            if migration is None:
+                # No-op step — additive schema changes are absorbed by
+                # the CREATE TABLE IF NOT EXISTS in the main schema.
+                pass
+            else:
+                with self._backend:
+                    migration(self._backend)
+            with self._backend:
+                self._backend.execute(
+                    "INSERT INTO schema_version "
+                    "(id, version, applied_at, code_version) "
+                    "VALUES (1, ?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET "
+                    "version = excluded.version, "
+                    "applied_at = excluded.applied_at, "
+                    "code_version = excluded.code_version",
+                    (v, float(time.time()), CODE_VERSION_TAG),
+                )
+
+    def schema_version(self) -> int:
+        row = self._backend.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["version"] if isinstance(row, dict) else row[0])
 
     @property
     def backend_kind(self) -> str:
@@ -363,6 +470,50 @@ class PersistenceStore:
 
     def lifecycle_store(self) -> "PersistentLifecycleStore":
         return PersistentLifecycleStore(self._backend)
+
+    def audit_sink_for(self, darwin_id: str) -> "PersistentDarwinAuditSink":
+        """Per-Darwin audit sink. The genome's AuditLogger rebuilds its
+        chain head from ``sink.read_all()`` at boot — using this sink
+        means a resumed Darwin continues the same chain it had before
+        the restart, not a fresh one."""
+        return PersistentDarwinAuditSink(self._backend, darwin_id=darwin_id)
+
+    def checkpoint_store(self) -> "PersistentCheckpointStore":
+        """Platform-wide checkpoint store. The genome's evolution loop
+        calls ``platform.checkpoint.save / load`` per heartbeat — this
+        variant survives across process restarts so a resumed Darwin
+        picks up at the last saved node."""
+        return PersistentCheckpointStore(self._backend)
+
+    def manifest_store(self) -> "PersistentManifestStore":
+        return PersistentManifestStore(self._backend)
+
+    def load_signing_key(self) -> bytes | None:
+        """Return the persisted 32-byte Ed25519 private key, or None when
+        no key has been persisted yet. The supervisor uses this on
+        startup so manifests signed before a process restart still
+        verify after the restart."""
+        import base64
+        row = self._backend.execute(
+            "SELECT private_key FROM platform_signing_key WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        b64 = row["private_key"] if isinstance(row, dict) else row[0]
+        return base64.b64decode(b64)
+
+    def save_signing_key(self, raw_private_key: bytes) -> None:
+        import base64
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO platform_signing_key (id, private_key, created_at) "
+                "VALUES (1, ?, ?) "
+                "ON CONFLICT(id) DO NOTHING",
+                (
+                    base64.b64encode(raw_private_key).decode("ascii"),
+                    float(time.time()),
+                ),
+            )
 
     def escalation_router(
         self,
@@ -1004,3 +1155,191 @@ def _lifecycle_from_row(row) -> LifecycleRecord:
         kill_reason=_get("kill_reason"),
         escalation_auto=_get("escalation_auto"),
     )
+
+
+# -- per-Darwin audit sink (doc 08 §HA: lossless resume) -------------------
+class PersistentDarwinAuditSink:
+    """Persistent variant of :class:`darwin_fakes.fake_platform.MemoryAuditSink`.
+
+    Records survive process restart; ``read_all`` returns them in seq order
+    so the genome's :class:`darwin_dna.machinery.audit_logger.AuditLogger`
+    rebuilds its chain head from the same prefix it saw before the restart.
+    This is the cornerstone of lossless resume: the same Darwin id picks
+    up exactly where its previous life left off.
+
+    Concurrency note: AuditLogger already serializes access via its own
+    lock; this sink doesn't need its own.
+    """
+
+    def __init__(self, backend: _Backend, *, darwin_id: str) -> None:
+        self._backend = backend
+        self._darwin_id = darwin_id
+        # Track the next seq we expect so duplicate inserts (e.g. a retry
+        # after a transient DB hiccup) are recognized and skipped rather
+        # than re-inserted with a PK conflict.
+        self._next_seq = self._max_seq() + 1
+
+    def _max_seq(self) -> int:
+        row = self._backend.execute(
+            "SELECT MAX(seq) AS m FROM darwin_audit_records "
+            "WHERE darwin_id = ?",
+            (self._darwin_id,),
+        ).fetchone()
+        if row is None:
+            return -1
+        m = row["m"] if isinstance(row, dict) else row[0]
+        return -1 if m is None else int(m)
+
+    def read_all(self) -> list[dict]:
+        rows = list(self._backend.execute(
+            "SELECT seq, record FROM darwin_audit_records "
+            "WHERE darwin_id = ? ORDER BY seq ASC",
+            (self._darwin_id,),
+        ).fetchall())
+        out: list[dict] = []
+        for r in rows:
+            rec_json = r["record"] if isinstance(r, dict) else r[1]
+            out.append(json.loads(rec_json))
+        return out
+
+    def append(self, record: dict) -> None:
+        seq = int(record.get("seq", self._next_seq))
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO darwin_audit_records "
+                "(darwin_id, seq, record, ts) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(darwin_id, seq) DO NOTHING",
+                (
+                    self._darwin_id, seq, json.dumps(record),
+                    float(record.get("ts", 0.0)),
+                ),
+            )
+        self._next_seq = max(self._next_seq, seq + 1)
+
+
+# -- platform-wide checkpoint store (doc 03/12) ----------------------------
+class PersistentCheckpointStore:
+    """Persistent variant of :class:`MemoryCheckpointStore`. Used by the
+    genome's evolution loop via ``platform.checkpoint.save / load``.
+
+    One row per Darwin (the latest checkpoint). The genome's boot path
+    reads the row at startup; the drive loop overwrites it at every node
+    boundary. Restart-survivable so a leader failover resumes from the
+    last saved node, not from a fresh state."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+        self.saves = 0
+
+    @staticmethod
+    def _json_default(obj):
+        # The genome's OrchestratorState.model_dump() may include
+        # frozensets (e.g. required_tags). JSON doesn't natively
+        # support them; encode as sorted lists. tuples + sets fall
+        # through the same path.
+        if isinstance(obj, (frozenset, set)):
+            return sorted(obj)
+        raise TypeError(f"unserialisable type {type(obj).__name__}")
+
+    def save(self, darwin_id: str, node: str, state: dict) -> None:
+        payload = json.dumps(state, default=self._json_default)
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO darwin_checkpoints "
+                "(darwin_id, node, state, saved_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(darwin_id) DO UPDATE SET "
+                "node = excluded.node, state = excluded.state, "
+                "saved_at = excluded.saved_at",
+                (darwin_id, node, payload, float(time.time())),
+            )
+        self.saves += 1
+
+    def load(self, darwin_id: str) -> dict | None:
+        row = self._backend.execute(
+            "SELECT node, state FROM darwin_checkpoints "
+            "WHERE darwin_id = ?",
+            (darwin_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        node = row["node"] if isinstance(row, dict) else row[0]
+        state_json = row["state"] if isinstance(row, dict) else row[1]
+        return {"node": node, "state": json.loads(state_json)}
+
+
+# -- per-Darwin manifest store (doc 08 §HA: lossless resume) ---------------
+class PersistentManifestStore:
+    """Stores the sealed manifest + layer blobs per Darwin so a resume
+    can re-mint the exact same DNA identity instead of generating a
+    fresh genesis. The blob bytes are base64-encoded for the TEXT column.
+
+    The audit chain is the authoritative life record; the manifest is
+    what lets ``boot()`` verify the chain belongs to the same Darwin."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    def put(
+        self,
+        *,
+        darwin_id: str,
+        manifest_json: str,
+        layer_blobs: dict[int, bytes],
+        layer_names: dict[int, str],
+    ) -> None:
+        import base64
+        blobs_b64 = {
+            str(k): base64.b64encode(v).decode("ascii")
+            for k, v in layer_blobs.items()
+        }
+        names = {str(k): v for k, v in layer_names.items()}
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO darwin_manifests "
+                "(darwin_id, manifest, layer_blobs, layer_names, created_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(darwin_id) DO UPDATE SET "
+                "manifest = excluded.manifest, "
+                "layer_blobs = excluded.layer_blobs, "
+                "layer_names = excluded.layer_names",
+                (
+                    darwin_id, manifest_json, json.dumps(blobs_b64),
+                    json.dumps(names), float(time.time()),
+                ),
+            )
+
+    def get(
+        self, darwin_id: str,
+    ) -> tuple[str, dict[int, bytes], dict[int, str]] | None:
+        import base64
+        row = self._backend.execute(
+            "SELECT manifest, layer_blobs, layer_names "
+            "FROM darwin_manifests WHERE darwin_id = ?",
+            (darwin_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        manifest_json = row["manifest"] if isinstance(row, dict) else row[0]
+        blobs_json = row["layer_blobs"] if isinstance(row, dict) else row[1]
+        names_json = row["layer_names"] if isinstance(row, dict) else row[2]
+        blobs = {
+            int(k): base64.b64decode(v)
+            for k, v in json.loads(blobs_json).items()
+        }
+        names = {int(k): v for k, v in json.loads(names_json).items()}
+        return manifest_json, blobs, names
+
+
+# -- migration registry ----------------------------------------------------
+# Each entry maps an INCOMING version number → a function that takes a
+# _Backend and applies that step's schema changes. Additive table
+# creations are already covered by the CREATE TABLE IF NOT EXISTS in
+# the main schema; this registry is for changes that those statements
+# CAN'T express (column drops, type changes, data migrations).
+#
+# Version 1 is the baseline — every table the schema currently
+# declares. There's no migration for it; the version stamp is just
+# recorded.
+_MIGRATIONS: dict[int, Any] = {
+    # 1: no-op baseline (covered by CREATE TABLE IF NOT EXISTS).
+}
