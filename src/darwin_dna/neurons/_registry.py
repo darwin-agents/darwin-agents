@@ -14,6 +14,8 @@ orchestrator has to escalate "I don't have anything that can do X".
 from __future__ import annotations
 
 from ._base import Neuron
+from .accounts_manager import AccountsManager
+from .ads_manager import AdsManager
 from .analytics_measurer import AnalyticsMeasurer
 from .browser_operator import BrowserOperator
 from .content_publisher import ContentPublisher
@@ -21,16 +23,16 @@ from .content_writer import ContentWriter
 from .infrastructure_provisioner import InfrastructureProvisioner, ProvisionPort
 from .payments_facilitator import PaymentsFacilitator, WalletPort
 from .research_scout import ResearchScout
+from .support_responder import SupportResponder
+from .trading_operator import TradingOperator
 from .vault_writer import VaultWriter
 
 # Capabilities the founding strategy may want but Layer 0 still does not
-# ship as first-class neurons. The orchestrator turns an unmet required
-# tag into a structured capability request (Path B) instead of failing.
-# As of the multi-neuron expansion, the previously-flagged content.publish,
-# analytics.measure, and research.scout are now in the catalog.
-KNOWN_GAPS = frozenset(
-    {"accounts.manage", "ads.manage", "trading.operate", "support.respond"}
-)
+# ship as first-class neurons. As of the full catalog expansion the
+# original doc-04 founding cohort is fully built; what remains is the
+# Path-C (Darwin-generated) extensions a Darwin earns the right to
+# author after the earn-before-mutate gate opens.
+KNOWN_GAPS = frozenset()
 
 
 def build_catalog(
@@ -50,5 +52,9 @@ def build_catalog(
         InfrastructureProvisioner(provision=provision),
         AnalyticsMeasurer(),
         ResearchScout(),
+        AccountsManager(),
+        AdsManager(),
+        TradingOperator(),
+        SupportResponder(),
     ]
     return load_catalog(neurons)
