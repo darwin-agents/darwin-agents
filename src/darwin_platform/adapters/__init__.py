@@ -13,5 +13,22 @@ Currently implemented:
 """
 
 from .litellm_transport import LiteLLMTransport, TierMapping
+from .vault_backend import (
+    InMemoryVaultClient,
+    RealVaultBackend,
+    VaultClient,
+    VaultError,
+)
+from .wallet import ChainClient, RealWallet, WalletError
 
-__all__ = ["LiteLLMTransport", "TierMapping"]
+__all__ = [
+    "LiteLLMTransport",
+    "TierMapping",
+    "ChainClient",
+    "RealWallet",
+    "WalletError",
+    "VaultClient",
+    "VaultError",
+    "RealVaultBackend",
+    "InMemoryVaultClient",
+]
