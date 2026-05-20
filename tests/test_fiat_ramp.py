@@ -146,6 +146,29 @@ def test_stripe_requires_client():
         StripeFiatRamp(stripe_client=None)
 
 
+def test_stripe_constructs_with_real_stripe_sdk():
+    """With the [stripe] extra installed, the real ``stripe`` module
+    can be passed directly as the client — no shimming needed."""
+    pytest.importorskip("stripe")
+    import stripe as real_stripe
+    # Adapter construction succeeds against the real module.
+    ramp = StripeFiatRamp(stripe_client=real_stripe)
+    assert ramp.name == "stripe"
+
+
+def test_stripe_real_sdk_namespaces_resolve():
+    """Confirm the namespaces the adapter uses (PaymentIntent,
+    Transfer) exist on the real Stripe SDK. Catches a SDK rename
+    at PR time."""
+    pytest.importorskip("stripe")
+    import stripe as real_stripe
+    assert hasattr(real_stripe, "PaymentIntent")
+    assert hasattr(real_stripe.PaymentIntent, "create")
+    assert hasattr(real_stripe.PaymentIntent, "retrieve")
+    assert hasattr(real_stripe, "Transfer")
+    assert hasattr(real_stripe.Transfer, "create")
+
+
 # ---------------------------------------------------------------------------
 # MoonPayFiatRamp
 # ---------------------------------------------------------------------------
