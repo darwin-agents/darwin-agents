@@ -82,3 +82,22 @@ jobs:
             || { echo "missing Secret when auth.tokens is set"; exit 1; }
           grep -q "tokens.json:" /tmp/inline.yaml \
             || { echo "Secret missing tokens.json key"; exit 1; }
+
+      - name: helm template (postgres mode)
+        run: |
+          # Exercise the Postgres-mode rendering: PVC is omitted, the
+          # Deployment env carries DATABASE_URL, the Deployment args
+          # use --db=$(DATABASE_URL). Both URL forms (inline + Secret).
+          helm template darwin deploy/helm/darwin-platform \
+            --set database.url='postgresql://darwin:test@pg:5432/darwin' \
+            > /tmp/pg.yaml
+          grep -q "^kind: PersistentVolumeClaim$" /tmp/pg.yaml \
+            && { echo "Postgres mode should not render PVC"; exit 1; } || true
+          grep -q "DATABASE_URL" /tmp/pg.yaml \
+            || { echo "Postgres mode missing DATABASE_URL env"; exit 1; }
+          # existingSecret path: env value should reference the Secret.
+          helm template darwin deploy/helm/darwin-platform \
+            --set database.existingSecret=darwin-db-url \
+            > /tmp/pgsec.yaml
+          grep -q "secretKeyRef:" /tmp/pgsec.yaml \
+            || { echo "existingSecret should use secretKeyRef"; exit 1; }
