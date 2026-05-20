@@ -56,6 +56,29 @@ browser = ["browser-use>=0.2"]
 # fresh microVM per session — used by the mutation eval harness's
 # "clean substrate" path and by future code-running neurons.
 e2b = ["e2b>=0.17"]
+# K8s driver (docs/engineering/08 production posture). Pulls in the
+# kubernetes Python client so the supervisor can provision per-Darwin
+# namespaces + workloads via the API. The driver also needs httpx
+# (already on the [platform] extra) for RPC to orchestrator pods.
+k8s = ["kubernetes>=29"]
+# Solana fallback chain (docs/engineering/17 §multi-chain). The
+# adapter's ``build_solana_chain_client`` wraps solana-py + solders
+# (spl.token lives inside the ``solana`` package).
+solana = ["solana>=0.34", "solders>=0.21"]
+# Stellar fallback chain (docs/engineering/17 §multi-chain). Centre/
+# Circle-issued USDC via stellar-sdk.
+stellar = ["stellar-sdk>=10.0"]
+# Stripe fiat ramp (docs/engineering/17 §fiat ramps). Card / ACH
+# deposit via PaymentIntent + bank withdraw via Stripe Connect
+# Transfer. MoonPay is HTTP-only (covered by the [platform] extra's
+# httpx).
+stripe = ["stripe>=8.0"]
+# Embedded PDF watermarking (docs/engineering/16). Round-3's
+# HmacWatermarker appends a trailer after %%EOF; with pypdf it can
+# also embed the HMAC into proper PDF metadata so a re-saved
+# document still carries the trace. Optional — the trailer is the
+# baseline; pypdf is the upgrade path.
+pdfwatermark = ["pypdf>=4.0"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
