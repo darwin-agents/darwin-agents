@@ -11,6 +11,7 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Added
 
+- docs(engineering): add cross-cutting contracts, post-mortem template, and evolution tuning guide (docs 28–30)
 - feat(platform): embed PDF watermarks in /Info metadata via pypdf
 - feat(platform): add per-Darwin orchestrator entrypoint and control API
 - feat(platform): add outbound egress proxy with allowlist enforcement
