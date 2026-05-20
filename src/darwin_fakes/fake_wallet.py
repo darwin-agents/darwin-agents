@@ -217,6 +217,64 @@ class FakeWallet:
             ),
         )
 
+    # -- harvest to owner (doc 05, doc 08 §"Billing model") ---------------
+    def harvest_to_owner(
+        self,
+        *,
+        destination: str,
+        net_usdc: float,
+        fee_usdc: float,
+    ) -> dict:
+        """Move ``net_usdc`` to the owner's external address and ``fee_usdc``
+        to the platform's fee account. One on-chain operation per part in
+        production; here both are recorded as movements on the wallet's
+        ledger with a ``harvest`` kind so the platform's billing service can
+        attribute them. Refuses when balance is short or amounts are bad.
+        Does NOT pass through the genome's policy engine — harvest is a
+        platform-mediated transaction; the policy engine guards *neuron*
+        spends."""
+        net = float(net_usdc)
+        fee = float(fee_usdc)
+        if net < 0 or fee < 0:
+            raise WalletError("harvest amounts must be non-negative")
+        gross = net + fee
+        if gross <= 0:
+            raise WalletError("harvest amount is zero")
+        if gross > self._balance + 1e-9:
+            raise WalletError(
+                f"harvest of ${gross:.2f} exceeds balance ${self._balance:.2f}"
+            )
+        self._balance -= gross
+        ts = float(self._clock())
+        net_row = {
+            "harvest": {
+                "destination": destination,
+                "amount_usdc": net,
+                "kind": "owner_net",
+                "ts": ts,
+            }
+        }
+        fee_row = {
+            "harvest": {
+                "destination": "platform.fee",
+                "amount_usdc": fee,
+                "kind": "platform_fee",
+                "ts": ts,
+            }
+        }
+        # Net first, fee second — operator-visible chronological order.
+        if net > 0:
+            self.ledger.append(net_row)
+        if fee > 0:
+            self.ledger.append(fee_row)
+        return {
+            "gross_usdc": gross,
+            "net_usdc": net,
+            "fee_usdc": fee,
+            "destination": destination,
+            "ts": ts,
+        }
+
     # -- platform reproduction transfer (omnibus move, not a neuron spend) --
     def transfer_out_for_child(self, amount_usdc: float) -> None:
         amount = float(amount_usdc)
