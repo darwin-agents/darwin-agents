@@ -133,7 +133,7 @@ flowchart TB
 | `  tracing.py`         | OpenTelemetry / OTLP tracing (no-op shim when OTel is absent)                                                                           |
 | `  adapters/`          | Real provider adapters: `Web3ChainClient`, `HvacVaultClient`, `BrowserUseClient`, `X402PaymentClient`, `E2BSandbox`, `LiteLLMTransport` |
 | `src/darwin_fakes/`    | **In-memory fakes** — deterministic, no network, no API keys required                                                                   |
-| `tests/`               | Unit · property · integration · 90-day simulation suites                                                                                |
+| `tests/`               | Tiered: `unit/`, `property/`, `redteam/`, `integration/`, `simulation/`, `fixtures/` — see [`tests/README.md`](tests/README.md)         |
 | `tools/sim/`           | Simulated world — runs a Darwin for N days and asserts invariants                                                                       |
 | `docker/`              | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger                                                                    |
 | `deploy/helm/`         | Kubernetes Helm chart (see [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md))                            |
@@ -154,8 +154,8 @@ git clone https://github.com/quantium-rock/darwin-agent
 cd darwin-agent
 
 uv sync --extra dev
-uv run pytest -q                       # unit + property + integration (~60 s)
-uv run pytest -m slow -q               # 90-day simulation (~5 min)
+uv run pytest -m "not slow" -q         # unit + property + redteam + integration (~90 s)
+uv run pytest -q                       # full suite including 90-day simulation (~3–5 min)
 ```
 
 ### 2 — Watch a Darwin live (simulation)
@@ -396,19 +396,35 @@ Key technology choices at a glance. Full rationale in [`docs/engineering/11-tech
 
 ## Testing strategy
 
-Tests live in `tests/` and are split into three tiers:
+Tests live in `tests/` and are organised by tier (see [`tests/README.md`](tests/README.md) for the one-page map and [`docs/engineering/26-testing-strategy.md`](docs/engineering/26-testing-strategy.md) for the long-form rationale):
 
-| Tier                | Marker      | Run command                | What it covers                                                                                                                                                                                                                                                                                          |
-| ------------------- | ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Unit + property** | _(default)_ | `uv run pytest -q`         | Individual subsystems in isolation. The four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) are tested with a malicious soma assumed — adversarial inputs, tampered layers, over-limit spends. Hypothesis generates thousands of random cases for each property. |
-| **Integration**     | _(default)_ | `uv run pytest -q`         | Full boot cycle with `FakeStack`. Verifies that the orchestrator, neurons, wallet, vault, and platform API compose correctly end-to-end without any real network calls.                                                                                                                                 |
-| **Simulation**      | `slow`      | `uv run pytest -m slow -q` | 90 simulated days. A Darwin is spawned, evolves, and optionally reproduces while the test suite asserts financial invariants, audit-chain integrity, and kill-switch latency under load. Takes several minutes; marked `slow` so it's excluded from the fast commit loop.                               |
+```
+tests/
+├── unit/                  # tier 1 — single-module, fakes only
+│   ├── darwin_dna/{machinery,constitution,evolution,neurons,…}
+│   └── darwin_platform/{core,adapters,k8s}
+├── property/              # tier 2 — hypothesis / property-based
+├── redteam/               # tier 3 — adversarial, one file per threat class
+├── integration/           # tier 4 — multi-module flows (boot, resume, HTTP, …)
+├── simulation/            # tier 5 — multi-day in-sim runs (slow)
+└── fixtures/              # static test data
+```
 
-Run the full suite:
+| Tier            | Marker        | Run command                                | What it covers                                                                                                                                       |
+| --------------- | ------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unit**        | `unit`        | `uv run pytest tests/unit`                 | Single-module tests against fakes — the four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) live here.        |
+| **Property**    | `property`    | `uv run pytest tests/property`             | Hypothesis-generated random inputs over each hot-path invariant.                                                                                     |
+| **Red-team**    | `redteam`     | `uv run pytest tests/redteam`              | Adversarial scenarios scripted from doc 24's threat-model table — one file per threat class.                                                         |
+| **Integration** | `integration` | `uv run pytest tests/integration`          | Multi-module in-process flows: boot → loop → kill, supervisor lifecycle, HTTP API, runtime resume, Path-C pipeline, cross-pollination wiring.        |
+| **Simulation**  | `simulation`  | `uv run pytest tests/simulation` (or `-m slow`) | Multi-day in-sim runs asserting invariants over an entire lifecycle. Slow (minutes); excluded from the fast loop.                                |
+
+Tier markers are auto-applied by per-tier `conftest.py` — no decorators required on individual test files.
+
+Run the suite:
 
 ```bash
-uv run pytest -q          # fast loop (unit + integration, ~60 s)
-uv run pytest -m slow -q  # includes simulation (~5 min)
+uv run pytest -m "not slow"   # fast loop: unit + property + redteam + integration (~90 s)
+uv run pytest                 # everything including the simulation tier (~3–5 min)
 ```
 
 ---
