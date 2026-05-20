@@ -436,7 +436,7 @@ Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [proj
 
 ## License
 
-Proprietary — all rights reserved. See [LICENSE](LICENSE) for the full terms.
+Copyright (c) 2026 [Specimen Labs, Inc.](https://specimenlabs.com) — All rights reserved. See [LICENSE](LICENSE) for the full terms.
 
 ---
 

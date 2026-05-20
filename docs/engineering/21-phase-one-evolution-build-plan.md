@@ -1,6 +1,6 @@
 # Phase 1 — evolution loop build plan
 
-Phase 0 proved the plumbing: one Darwin loops, dispatches, reconciles, and survives restarts. Phase 1 proves the *thesis*: a Darwin rewrites its own soma based on observed failures, the rewrite measurably improves (or is correctly rejected), and a reproduction event spawns a child that boots from inherited lessons and survives on its own.
+Phase 0 proved the plumbing: one Darwin loops, dispatches, reconciles, and survives restarts. Phase 1 proves the _thesis_: a Darwin rewrites its own soma based on observed failures, the rewrite measurably improves (or is correctly rejected), and a reproduction event spawns a child that boots from inherited lessons and survives on its own.
 
 This doc is the concrete, file-by-file build plan for Phase 1. It leans on docs [03](03-soma-and-orchestrator.md) (self-modification engine), [06](06-evolution-and-reproduction.md) (evolution + reproduction), and the Phase 0 infrastructure (doc [20](20-phase-zero-runtime-build-plan.md)).
 
@@ -16,32 +16,32 @@ This doc is the concrete, file-by-file build plan for Phase 1. It leans on docs 
 
 ### Already implemented (in `darwin_dna`)
 
-| Component | File | Purpose |
-| --------- | ---- | ------- |
-| Proposal gate | `orchestrator_skeleton/nodes/propose_mutation.py` | Gated on recurring failure; calls coding-tier LLM; validates via patch_validator |
-| Patch validator | `machinery/patch_validator.py` | Rejects patches targeting DNA, kill-switch, audit, treasury |
-| Evaluation harness | `machinery/eval_harness.py` | Frozen scenario replay; baseline vs. candidate trajectory comparison |
-| Apply mutation | `orchestrator_skeleton/nodes/apply_mutation.py` | Records promotion; clears recurring-failure counter |
-| Mutation archive | `evolution/archive.py` | Ring-buffer of proposals + dead-end detection |
-| Fitness scorer | `machinery/fitness.py` | Weighted fitness: profit + diversity + escalation quality − violations |
-| Reproduction event | `evolution/reproduction.py` | Full PAUSE→DISTILL→VALIDATE→SIGN→SPAWN→REGISTER→RESUME sequence |
-| Lesson distiller | `evolution/lesson_distiller.py` | Deterministic, legibility-checked lesson generation |
-| Layer compaction | `evolution/reproduction.py::_compact` | Deterministic fold of old layers past generation soft cap |
-| Check reproduction | `orchestrator_skeleton/nodes/check_reproduction.py` | Fitness + surplus gating; force-reproduce support |
+| Component          | File                                                | Purpose                                                                          |
+| ------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Proposal gate      | `orchestrator_skeleton/nodes/propose_mutation.py`   | Gated on recurring failure; calls coding-tier LLM; validates via patch_validator |
+| Patch validator    | `machinery/patch_validator.py`                      | Rejects patches targeting DNA, kill-switch, audit, treasury                      |
+| Evaluation harness | `machinery/eval_harness.py`                         | Frozen scenario replay; baseline vs. candidate trajectory comparison             |
+| Apply mutation     | `orchestrator_skeleton/nodes/apply_mutation.py`     | Records promotion; clears recurring-failure counter                              |
+| Mutation archive   | `evolution/archive.py`                              | Ring-buffer of proposals + dead-end detection                                    |
+| Fitness scorer     | `machinery/fitness.py`                              | Weighted fitness: profit + diversity + escalation quality − violations           |
+| Reproduction event | `evolution/reproduction.py`                         | Full PAUSE→DISTILL→VALIDATE→SIGN→SPAWN→REGISTER→RESUME sequence                  |
+| Lesson distiller   | `evolution/lesson_distiller.py`                     | Deterministic, legibility-checked lesson generation                              |
+| Layer compaction   | `evolution/reproduction.py::_compact`               | Deterministic fold of old layers past generation soft cap                        |
+| Check reproduction | `orchestrator_skeleton/nodes/check_reproduction.py` | Fitness + surplus gating; force-reproduce support                                |
 
 ### New work for Phase 1
 
-| Component | Where | What |
-| --------- | ----- | ---- |
-| **Real soma sandbox** | `darwin_platform/soma_sandbox.py` | Mount DNA read-only + soma read-write in an E2B microVM; apply patch in isolation before promotion |
-| **Patch staging pipeline** | `darwin_platform/patch_staging.py` | Fresh sandbox → copy soma → apply diff → run evaluation harness → return pass/fail |
-| **Production eval runner** | `darwin_platform/eval_runner.py` | Replays N recent real situations (from audit log) through the patched soma; measures fitness delta |
-| **DNA signing service (prod)** | `darwin_platform/signing_service.py` | HSM-backed (AWS KMS in Phase 1); signs new layers at reproduction; exposes `PlatformSigner` protocol |
-| **Lineage tree API + visualization** | `darwin_platform/api.py` extension | `GET /darwins/{id}/lineage/tree` → JSON tree; minimal Next.js rendering |
-| **Real content publishing** | `darwin_dna/neurons/content_publisher.py` | Wire WordPress API via x402; measure real published-piece count |
-| **Real analytics** | `darwin_dna/neurons/analytics_measurer.py` | Wire Google Analytics or affiliate network dashboard; measure real revenue |
-| **Mainnet wallet (small)** | `darwin_platform/adapters/wallet.py` | Base mainnet USDC; funded from our test pool ($50–100 per Darwin) |
-| **Extended neuron wiring** | See § below | `accounts.manager`, `infrastructure.provisioner` in real dispatch paths |
+| Component                            | Where                                      | What                                                                                                 |
+| ------------------------------------ | ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| **Real soma sandbox**                | `darwin_platform/soma_sandbox.py`          | Mount DNA read-only + soma read-write in an E2B microVM; apply patch in isolation before promotion   |
+| **Patch staging pipeline**           | `darwin_platform/patch_staging.py`         | Fresh sandbox → copy soma → apply diff → run evaluation harness → return pass/fail                   |
+| **Production eval runner**           | `darwin_platform/eval_runner.py`           | Replays N recent real situations (from audit log) through the patched soma; measures fitness delta   |
+| **DNA signing service (prod)**       | `darwin_platform/signing_service.py`       | HSM-backed (AWS KMS in Phase 1); signs new layers at reproduction; exposes `PlatformSigner` protocol |
+| **Lineage tree API + visualization** | `darwin_platform/api.py` extension         | `GET /darwins/{id}/lineage/tree` → JSON tree; minimal Next.js rendering                              |
+| **Real content publishing**          | `darwin_dna/neurons/content_publisher.py`  | Wire WordPress API via x402; measure real published-piece count                                      |
+| **Real analytics**                   | `darwin_dna/neurons/analytics_measurer.py` | Wire Google Analytics or affiliate network dashboard; measure real revenue                           |
+| **Mainnet wallet (small)**           | `darwin_platform/adapters/wallet.py`       | Base mainnet USDC; funded from our test pool ($50–100 per Darwin)                                    |
+| **Extended neuron wiring**           | See § below                                | `accounts.manager`, `infrastructure.provisioner` in real dispatch paths                              |
 
 ## The patch staging pipeline (detailed)
 
@@ -140,13 +140,13 @@ Phase 1 is where a Darwin touches real money — small, bounded, and monitored.
 
 ```
                   ┌──────────────────────────────────────────────┐
-                  │ content_affiliate strategy (Layer 0)          │
+                  │ content_affiliate strategy (Layer 0)         │
                   └──────────────────────┬───────────────────────┘
                                          │ proposes
                                          ▼
                ┌─── Neuron dispatches (real infrastructure) ───────────┐
                │                                                       │
-  ┌────────────▼──────────┐  ┌──────────────▼───────────┐  ┌─────────▼───────────┐
+  ┌────────────▼───────────┐  ┌──────────────▼───────────┐  ┌─────────▼───────────┐
   │ content.writer         │  │ content.publisher        │  │ analytics.measurer  │
   │ LLM → article text     │  │ WordPress API (x402)     │  │ affiliate dashboard │
   │ cost: ~$0.02/piece     │  │ cost: ~$0.01/publish     │  │ cost: ~$0.005/poll  │
@@ -170,14 +170,14 @@ Phase 1 is where a Darwin touches real money — small, bounded, and monitored.
 
 ### Extended neuron catalog (Phase 1 additions)
 
-| Neuron | Purpose | Status |
-| ------ | ------- | ------ |
-| `content.publisher` | Posts to WordPress via x402 API | **Implemented** (Layer 0); wire real endpoint |
-| `accounts.manager` | Handles signup flows; escalates on captchas | **Implemented** (Layer 0); wire real browser path |
-| `analytics.measurer` | Reads metrics from affiliate dashboards | **Implemented** (Layer 0); wire real endpoint |
-| `infrastructure.provisioner` | Requests managed resources from platform | **Implemented** (Layer 0); wire real provisioning backend |
-| `research.scout` | Web search + synthesis via x402 API | **Implemented** (Layer 0); wire real search endpoint |
-| `vault.writer` | Centralized vault writes for credentials | **Implemented** (Layer 0); wire real vault |
+| Neuron                       | Purpose                                     | Status                                                    |
+| ---------------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| `content.publisher`          | Posts to WordPress via x402 API             | **Implemented** (Layer 0); wire real endpoint             |
+| `accounts.manager`           | Handles signup flows; escalates on captchas | **Implemented** (Layer 0); wire real browser path         |
+| `analytics.measurer`         | Reads metrics from affiliate dashboards     | **Implemented** (Layer 0); wire real endpoint             |
+| `infrastructure.provisioner` | Requests managed resources from platform    | **Implemented** (Layer 0); wire real provisioning backend |
+| `research.scout`             | Web search + synthesis via x402 API         | **Implemented** (Layer 0); wire real search endpoint      |
+| `vault.writer`               | Centralized vault writes for credentials    | **Implemented** (Layer 0); wire real vault                |
 
 All neurons already exist in the genome; Phase 1's work is **wiring real backends** and confirming dispatch success rates ≥ 80% against real infrastructure.
 
@@ -185,13 +185,13 @@ All neurons already exist in the genome; Phase 1's work is **wiring real backend
 
 Phase 1 automates cost tracking (Phase 0 was manual):
 
-| Metric | Source | Dashboard |
-| ------ | ------ | --------- |
-| LLM cost/heartbeat | LiteLLM proxy usage endpoint | Prometheus gauge `darwin_llm_cost_usdc` |
-| Neuron cost/dispatch | `NeuronResult.cost_actual_usdc` | Prometheus counter `darwin_neuron_cost_total` |
-| Total daily spend | Wallet ledger + billing service | Prometheus gauge `darwin_daily_spend_usdc` |
-| Revenue (affiliate) | `analytics.measurer` neuron output | Prometheus gauge `darwin_revenue_usdc` |
-| Cost per Darwin/day | Billing sweep (existing) | Alert if > $20/day |
+| Metric               | Source                             | Dashboard                                     |
+| -------------------- | ---------------------------------- | --------------------------------------------- |
+| LLM cost/heartbeat   | LiteLLM proxy usage endpoint       | Prometheus gauge `darwin_llm_cost_usdc`       |
+| Neuron cost/dispatch | `NeuronResult.cost_actual_usdc`    | Prometheus counter `darwin_neuron_cost_total` |
+| Total daily spend    | Wallet ledger + billing service    | Prometheus gauge `darwin_daily_spend_usdc`    |
+| Revenue (affiliate)  | `analytics.measurer` neuron output | Prometheus gauge `darwin_revenue_usdc`        |
+| Cost per Darwin/day  | Billing sweep (existing)           | Alert if > $20/day                            |
 
 The billing service (`billing.py`) already meters wallet debits. Phase 1 adds a Prometheus exporter so Grafana can visualize spend vs. revenue trajectories.
 
@@ -267,11 +267,11 @@ src/
 
 Phase 1 builds on Phase 0's passing soak test. The work splits into three tracks that can partially overlap:
 
-| Track | Weeks | Deliverable |
-| ----- | ----- | ----------- |
-| **A — Patch staging** | 8–10 | `patch_staging.py`, `eval_runner.py`, modified `propose_mutation`/`evaluate_mutation`, end-to-end mutation test |
-| **B — Reproduction + signing** | 9–12 | `signing_service.py` (KMS), mainnet wallet provisioning, lineage tree API/UI, end-to-end reproduction test |
-| **C — Real economic activity** | 10–14 | Real WordPress site, real affiliate links, wired neurons, cost dashboard, revenue measurement |
+| Track                          | Weeks | Deliverable                                                                                                     |
+| ------------------------------ | ----- | --------------------------------------------------------------------------------------------------------------- |
+| **A — Patch staging**          | 8–10  | `patch_staging.py`, `eval_runner.py`, modified `propose_mutation`/`evaluate_mutation`, end-to-end mutation test |
+| **B — Reproduction + signing** | 9–12  | `signing_service.py` (KMS), mainnet wallet provisioning, lineage tree API/UI, end-to-end reproduction test      |
+| **C — Real economic activity** | 10–14 | Real WordPress site, real affiliate links, wired neurons, cost dashboard, revenue measurement                   |
 
 Tracks A and B are the engineering core; track C provides the empirical evidence that the whole thing earns money.
 
