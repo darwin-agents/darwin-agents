@@ -40,6 +40,8 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`23-data-model-reference.md`](23-data-model-reference.md) — canonical Postgres schemas, state machine, checkpoint format, audit shape, migration strategy
 - [`24-security-threat-model.md`](24-security-threat-model.md) — attack surfaces, adversarial soma contract, red-team checklist, kill-switch timing proof
 - [`25-operational-runbook.md`](25-operational-runbook.md) — deployment, monitoring, failure modes, recovery, soak test operations
+- [`26-testing-strategy.md`](26-testing-strategy.md) — test tiers, adversarial posture, red-team mapping, CI split (fast vs slow)
+- [`27-configuration-reference.md`](27-configuration-reference.md) — CLI flags, env vars, Helm values, and driver-mode knobs in one table
 
 ## Related (in `overview/`)
 
