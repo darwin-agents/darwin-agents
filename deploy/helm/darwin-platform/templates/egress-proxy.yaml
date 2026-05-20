@@ -1,0 +1,143 @@
+{{- if and (eq .Values.driver.mode "k8s") .Values.egressProxy.enabled -}}
+{{- $proxyImage := default .Values.image.repository .Values.egressProxy.image.repository -}}
+{{- $proxyTag := default (include "darwin-platform.imageTag" .) .Values.egressProxy.image.tag -}}
+{{- $proxyNs := .Values.platformDataNamespace.name -}}
+{{- if .Values.platformDataNamespace.create }}
+---
+# platform-data namespace — single outbound choke-point for per-Darwin
+# orchestrator pods. Labeled so per-Darwin NetworkPolicies can match it
+# via namespaceSelector.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $proxyNs }}
+  labels:
+    kubernetes.io/metadata.name: {{ $proxyNs }}
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+    {{- with .Values.platformDataNamespace.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+---
+# Allowlist for the proxy. Operators can update this ConfigMap and
+# restart the proxy (or SIGHUP if/when reload lands) to change which
+# destinations Darwins are permitted to reach.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}-egress-allowlist
+  namespace: {{ $proxyNs }}
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+data:
+  allowlist.json: |-
+    {{ toJson .Values.egressProxy.allowlist | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}-egress-proxy
+  namespace: {{ $proxyNs }}
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+    darwin.io/component: egress-proxy
+spec:
+  replicas: {{ .Values.egressProxy.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "darwin-platform.name" . }}
+      darwin.io/component: egress-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "darwin-platform.name" . }}
+        darwin.io/component: egress-proxy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: proxy
+          image: "{{ $proxyImage }}:{{ $proxyTag }}"
+          imagePullPolicy: {{ .Values.egressProxy.image.pullPolicy }}
+          args:
+            - python
+            - -m
+            - darwin_platform.egress_proxy
+            - serve
+            - --host=0.0.0.0
+            - --port={{ .Values.egressProxy.port }}
+            - --allowlist=/etc/egress/allowlist.json
+          ports:
+            - name: http
+              containerPort: {{ .Values.egressProxy.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.egressProxy.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: allowlist
+              mountPath: /etc/egress
+              readOnly: true
+      volumes:
+        - name: allowlist
+          configMap:
+            name: {{ include "darwin-platform.fullname" . }}-egress-allowlist
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}-egress-proxy
+  namespace: {{ $proxyNs }}
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+    darwin.io/component: egress-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "darwin-platform.name" . }}
+    darwin.io/component: egress-proxy
+  ports:
+    - name: http
+      port: {{ .Values.egressProxy.port }}
+      targetPort: http
+      protocol: TCP
+---
+# NetworkPolicy on the egress-proxy itself: accept ingress from any pod
+# in any darwin-* namespace; deny ingress from elsewhere. Allows all
+# egress (the proxy needs to reach the public internet).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}-egress-proxy
+  namespace: {{ $proxyNs }}
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      darwin.io/component: egress-proxy
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              darwin.io/managed-by: darwin-platform
+      ports:
+        - protocol: TCP
+          port: {{ .Values.egressProxy.port }}
+  egress:
+    - {}  # all egress allowed — this is the choke-point that talks to the world
+{{- end }}

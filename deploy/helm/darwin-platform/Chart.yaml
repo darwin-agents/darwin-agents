@@ -15,11 +15,13 @@ description: |
 type: application
 
 # Chart-side semver. Bump when chart templates change in a breaking way.
-version: 0.1.0
+# 0.2.0 adds the K8s-driver mode (per-Darwin namespace + orchestrator
+# pod + egress proxy + Kata RuntimeClass + RBAC for namespace mgmt).
+version: 0.2.0
 
 # The supervisor image tag this chart's manifests are validated against.
 # Helm's standard `image.tag` value can override this per-release.
-appVersion: "0.1.0"
+appVersion: "0.2.0"
 
 keywords:
   - darwin

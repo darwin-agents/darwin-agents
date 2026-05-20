@@ -74,6 +74,27 @@ spec:
             - --leader-lock-key={{ .Values.leaderElection.lockKey }}
             {{- end }}
             {{- end }}
+            {{- if eq .Values.driver.mode "k8s" }}
+            - --driver=k8s
+            - --k8s-namespace-prefix={{ .Values.driver.namespacePrefix }}
+            - --k8s-runtime-class={{ .Values.driver.runtimeClassName }}
+            - --k8s-egress-proxy-namespace={{ .Values.platformDataNamespace.name }}
+            - --k8s-lancedb-image={{ .Values.driver.lancedb.image }}
+            - --k8s-lancedb-storage-size={{ .Values.driver.lancedb.storageSize }}
+            {{- if .Values.driver.lancedb.storageClass }}
+            - --k8s-lancedb-storage-class={{ .Values.driver.lancedb.storageClass }}
+            {{- end }}
+            {{- if .Values.driver.orchestrator.image.repository }}
+            - --k8s-orchestrator-image={{ .Values.driver.orchestrator.image.repository }}:{{ default (include "darwin-platform.imageTag" .) .Values.driver.orchestrator.image.tag }}
+            {{- else }}
+            - --k8s-orchestrator-image={{ .Values.image.repository }}:{{ include "darwin-platform.imageTag" . }}
+            {{- end }}
+            {{- if .Values.postgresEgress.namespace }}
+            - --k8s-postgres-namespace={{ .Values.postgresEgress.namespace }}
+            - --k8s-postgres-pod-label={{ .Values.postgresEgress.podLabelKey }}={{ .Values.postgresEgress.podLabelValue }}
+            - --k8s-postgres-port={{ .Values.postgresEgress.port }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8000

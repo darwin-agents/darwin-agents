@@ -279,3 +279,125 @@ serviceAccount:
 # persistence + leader election.
 podDisruptionBudget:
   enabled: false
+
+# -- Driver mode (in-process vs K8s) ---------------------------------------
+# `in-process` (default): every Darwin is an asyncio.Task in the
+# supervisor pod. Right for dev + single-tenant deploys.
+# `k8s`: each Darwin gets its own `darwin-{id}` namespace + orchestrator
+# pod (`runtimeClassName: kata`) + LanceDB sidecar + NetworkPolicy
+# constraining egress to the platform egress proxy. The supervisor pod
+# manages those resources via the kubernetes API and drives lifecycle
+# over HTTP RPC. Doc-08's production posture.
+driver:
+  mode: "in-process"
+  # When mode=k8s, the supervisor needs a ServiceAccount with cluster-
+  # wide permission to create/delete namespaces matching the prefix.
+  # See templates/rbac.yaml for the granted verbs.
+  namespacePrefix: "darwin-"
+  # Kata RuntimeClass name. The chart's templates/runtimeclass.yaml
+  # creates this RuntimeClass when `runtimeClass.create=true`; or
+  # reference an existing one (e.g. installed by Kata Containers).
+  runtimeClassName: "kata"
+  # Per-Darwin orchestrator pod shape. Most operators will want to
+  # adjust resources; image defaults to the same image as the
+  # supervisor (the entrypoint differs).
+  orchestrator:
+    image:
+      repository: ""  # empty → reuse .Values.image.repository
+      tag: ""         # empty → reuse the supervisor's tag
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  # LanceDB sidecar — lightweight vector store the genome's memory
+  # layer writes through. PVC per Darwin.
+  lancedb:
+    image: "lancedb/lancedb:latest"
+    storageSize: 1Gi
+    storageClass: ""  # empty → cluster default
+
+# -- RuntimeClass (Kata Containers) ----------------------------------------
+# When `runtimeClass.create=true`, the chart installs a RuntimeClass
+# resource named per `driver.runtimeClassName`. Most operators install
+# Kata via the Kata Containers operator; in that case leave create=false
+# and reference the operator-installed name.
+runtimeClass:
+  create: false
+  handler: "kata"  # the CRI-O / containerd runtime handler the node has
+  # Node selector for kata-capable nodes (set by the Kata operator).
+  scheduling:
+    nodeSelector: {}
+    tolerations: []
+
+# -- Platform-data namespace (where the egress proxy lives) ----------------
+# Per-Darwin NetworkPolicies allow egress only to this namespace's
+# `darwin.io/component=egress-proxy` pods. The chart will create the
+# namespace when `platformDataNamespace.create=true` AND `egressProxy.
+# enabled=true`; otherwise the operator must create it out-of-band.
+platformDataNamespace:
+  create: true
+  name: "platform-data"
+  labels: {}
+
+# -- Egress proxy (platform-data) ------------------------------------------
+# The single outbound choke-point every per-Darwin NetworkPolicy allows.
+# Refuses traffic to destinations not on the allowlist; logs every
+# attempt for compliance review.
+egressProxy:
+  enabled: true
+  image:
+    repository: ""   # empty → reuse the supervisor image
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # The destination allowlist. Each entry: host_suffix (literal or
+  # ".suffix"), optional port, schemes, methods. Defaults cover the
+  # substrates a typical Darwin reaches (LiteLLM via OpenAI/Anthropic,
+  # Browserbase, Coinbase, MoonPay, Stripe). Operators tune for their
+  # actual fleet.
+  allowlist:
+    entries:
+      - host_suffix: ".anthropic.com"
+        schemes: ["https"]
+        methods: ["GET", "POST"]
+        note: "Anthropic via LiteLLM"
+      - host_suffix: ".openai.com"
+        schemes: ["https"]
+        methods: ["GET", "POST"]
+        note: "OpenAI via LiteLLM"
+      - host_suffix: ".browserbase.com"
+        schemes: ["https"]
+        methods: ["GET", "POST", "DELETE"]
+      - host_suffix: ".e2b.dev"
+        schemes: ["https"]
+        methods: ["GET", "POST", "DELETE"]
+      - host_suffix: ".coinbase.com"
+        schemes: ["https"]
+        methods: ["GET", "POST"]
+      - host_suffix: ".stripe.com"
+        schemes: ["https"]
+        methods: ["GET", "POST"]
+      - host_suffix: ".moonpay.com"
+        schemes: ["https"]
+        methods: ["GET", "POST"]
+
+# -- Postgres egress target (per-Darwin NetworkPolicy peer) ----------------
+# When set, per-Darwin NetworkPolicies permit egress from the
+# orchestrator pod to this Postgres deployment for shared state writes
+# (audit chain, billing, lineage). Leave empty for SQLite mode.
+postgresEgress:
+  namespace: ""
+  podLabelKey: "app.kubernetes.io/name"
+  podLabelValue: "postgres"
+  port: 5432

@@ -1,0 +1,60 @@
+{{- if eq .Values.driver.mode "k8s" -}}
+# Cluster-scoped RBAC for the supervisor's K8s driver. The supervisor
+# needs to create + delete per-Darwin namespaces matching the configured
+# prefix, plus manage the standard set of per-Darwin resources inside
+# those namespaces.
+#
+# We grant the verbs cluster-wide on namespaces (namespace creation is
+# itself a cluster-scoped operation), then grant namespaced verbs on the
+# child resources so a misconfigured supervisor can't poke at unrelated
+# workloads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}-darwin-mgr
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+rules:
+  # Namespace lifecycle.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  # Per-Darwin workload + supporting objects, anywhere — the supervisor
+  # only writes to ``{namespacePrefix}*`` namespaces in practice but K8s
+  # doesn't model namespace-name-pattern RBAC, so we scope to verb+kind.
+  # The supervisor's own code enforces the prefix.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services",
+                "persistentvolumeclaims", "serviceaccounts"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/status"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  # Pod read-only for status (the driver reads pod conditions to detect
+  # crash-looping orchestrators).
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch"]
+  # Events — useful for surfacing K8s-side problems via the supervisor.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "darwin-platform.fullname" . }}-darwin-mgr
+  labels:
+    {{- include "darwin-platform.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "darwin-platform.fullname" . }}-darwin-mgr
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "darwin-platform.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
