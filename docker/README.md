@@ -106,6 +106,44 @@ docker exec darwin-supervisor python -m darwin_platform signing-key \
   --db /data/state.db
 ```
 
+## CI / published images
+
+GitHub Actions workflows live under `.github/workflows/`:
+
+| Workflow    | Trigger                                          | What it does                                           |
+| ----------- | ------------------------------------------------ | ------------------------------------------------------ |
+| `test.yml`  | push/PR to main + `release/**`                   | Fast tier (`pytest -m "not slow"`).                    |
+| `slow.yml`  | push to main, weekly cron, manual                | 90-day cross-engine sim (`pytest -m slow`).            |
+| `lint.yml`  | push/PR to main + `release/**`                   | `ruff check` + `ruff format --check` (non-blocking).   |
+| `build.yml` | push to main, semver tags, manual                | Multi-arch (amd64+arm64) image build + push to GHCR.   |
+
+Pull a published image and run it the same way `docker compose` does:
+
+```bash
+# Latest from main
+docker pull ghcr.io/<org>/<repo>/darwin-platform:latest
+
+# Pinned to a specific commit (the safe choice for production)
+docker pull ghcr.io/<org>/<repo>/darwin-platform:sha-abc1234
+
+# Run with persistence + auth tokens
+docker run --rm -d \
+  -p 8000:8000 \
+  -v $(pwd)/data:/data \
+  -v $(pwd)/tokens.json:/run/secrets/tokens.json:ro \
+  ghcr.io/<org>/<repo>/darwin-platform:sha-abc1234 \
+  python -m darwin_platform serve \
+    --host 0.0.0.0 --port 8000 \
+    --db /data/state.db \
+    --auth-tokens /run/secrets/tokens.json
+```
+
+Replace `<org>/<repo>` with your GitHub repo path (the build workflow
+substitutes the live value via `${{ github.repository }}`). For
+production deploys, **pin a specific `sha-`tag** rather than `latest` —
+that gives you reproducible rollouts with one container image per
+commit.
+
 ## What's not in this stack yet
 
 - Real on-chain wallet (`Web3ChainClient`) — the genome runs against
