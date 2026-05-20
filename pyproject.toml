@@ -104,6 +104,10 @@ packages = ["src/darwin_dna", "src/darwin_fakes", "src/darwin_platform"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["src", "."]
+# Nested test packages without __init__.py: use importlib import mode so
+# pytest doesn't mutate sys.path per test directory. Standard recommendation
+# for src-layout projects with a tiered tests/ tree.
+addopts = "--import-mode=importlib"
 filterwarnings = [
     "error::DeprecationWarning",
     # web3.py 7.x transitively imports websockets.legacy on a path we
@@ -113,11 +117,16 @@ filterwarnings = [
     "ignore::DeprecationWarning:websockets.legacy",
     "ignore::DeprecationWarning:websockets",
 ]
-# docs/engineering/18 testing strategy: unit/integration run every commit;
-# the simulation tier is heavier ("run nightly"). Mark it so a fast loop can
-# `-m "not slow"` while CI/nightly runs everything (the default).
+# docs/engineering/26 (testing strategy): five tiers. Filenames live in
+# tests/<tier>/ so `pytest tests/unit` runs a tier by path, and these
+# markers let `pytest -m redteam` filter across paths when needed.
 markers = [
     "slow: simulation-tier test (multi-day sim; minutes, not milliseconds)",
+    "unit: tier-1 single-module unit test",
+    "property: tier-2 hypothesis / property-based test",
+    "redteam: tier-3 adversarial scenario from doc 24",
+    "integration: tier-4 multi-module end-to-end flow",
+    "simulation: tier-5 multi-day in-process simulation",
 ]
 
 [tool.uv]
