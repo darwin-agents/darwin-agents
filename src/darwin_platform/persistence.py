@@ -195,13 +195,22 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at    {real}   NOT NULL,
     code_version  TEXT     NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS platform_retired_keys (
+    id              {auto_id_pk},
+    public_key_pem  TEXT     NOT NULL,
+    retired_at      {real}   NOT NULL,
+    drain_until     {real}   NOT NULL
+);
+CREATE INDEX IF NOT EXISTS platform_retired_keys_drain_idx
+    ON platform_retired_keys(drain_until);
 """
 
 
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 1
+CURRENT_SCHEMA_VERSION: int = 2
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -250,7 +259,13 @@ class _SqliteBackend(_Backend):
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path))
+        # check_same_thread=False so FastAPI's threadpool (TestClient,
+        # uvicorn's default sync-route executor) can use the connection
+        # safely; we serialize writes via the connection's implicit
+        # lock + the ``with self._backend:`` transaction pattern.
+        self._conn = sqlite3.connect(
+            str(self._path), check_same_thread=False,
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.row_factory = sqlite3.Row
@@ -1340,6 +1355,9 @@ class PersistentManifestStore:
 # Version 1 is the baseline — every table the schema currently
 # declares. There's no migration for it; the version stamp is just
 # recorded.
+# Version 2 adds platform_retired_keys (additive — handled by the
+# schema's CREATE TABLE IF NOT EXISTS).
 _MIGRATIONS: dict[int, Any] = {
     # 1: no-op baseline (covered by CREATE TABLE IF NOT EXISTS).
+    # 2: no-op (platform_retired_keys table covered by schema).
 }

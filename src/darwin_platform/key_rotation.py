@@ -165,16 +165,9 @@ class KeyRotationService:
 
     # -- persistence helpers --------------------------------------------
     def _load_retired(self) -> list[RetiredKey]:
+        # platform_retired_keys is part of the main schema (v2). The
+        # PersistenceStore.__init__ has already executed it.
         backend = self._persistence._backend  # noqa: SLF001
-        with backend:
-            backend.execute(
-                "CREATE TABLE IF NOT EXISTS platform_retired_keys ("
-                "  id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "  public_key_pem TEXT NOT NULL, "
-                "  retired_at REAL NOT NULL, "
-                "  drain_until REAL NOT NULL"
-                ")"
-            )
         rows = list(backend.execute(
             "SELECT public_key_pem, retired_at, drain_until "
             "FROM platform_retired_keys ORDER BY retired_at ASC"
