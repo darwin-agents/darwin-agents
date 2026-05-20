@@ -73,11 +73,17 @@ class RealWallet:
         chain: ChainClient,
         *,
         clock,
+        sanctions=None,
     ) -> None:
         if not isinstance(chain, ChainClient):
             raise TypeError("RealWallet requires a ChainClient")
         self._chain = chain
         self._clock = clock
+        # Optional sanctions screener (doc 17). When set, every outbound
+        # transfer is checked against the screener BEFORE the chain submit;
+        # a refusal raises WalletError so the genome's treasury layer sees
+        # the same refusal shape it would for any cap breach.
+        self._sanctions = sanctions
         self._spent_today = 0.0
         self._spent_lifetime = 0.0
         self._today = self._day()
@@ -158,6 +164,17 @@ class RealWallet:
             raise WalletError(
                 f"insufficient on-chain funds: ${amount:.2f}"
             )
+        # Sanctions screening (doc 17). Refused recipients never reach the
+        # chain. Failures inside the screener must surface as a closed-fail
+        # (the screener returns ``allowed=False``) — we never bypass it
+        # because of a backend error.
+        if self._sanctions is not None:
+            verdict = self._sanctions.check(str(to))
+            if not verdict.allowed:
+                raise WalletError(
+                    f"sanctions:{verdict.source} refused recipient "
+                    f"{to!r}: {verdict.reason or 'screening refused'}"
+                )
         # Submit to the chain. A failure here MUST NOT update bookkeeping
         # (otherwise the platform thinks the Darwin spent money it
         # didn't actually move on-chain).
@@ -208,6 +225,16 @@ class RealWallet:
             raise WalletError(
                 f"harvest of ${gross:.2f} exceeds on-chain balance"
             )
+        # Screen the owner's destination — a harvest is the largest single
+        # outbound the platform ever issues, so this is the highest-value
+        # screening call we make. Platform fee address bypasses (symbolic).
+        if self._sanctions is not None:
+            verdict = self._sanctions.check(str(destination))
+            if not verdict.allowed:
+                raise WalletError(
+                    f"sanctions:{verdict.source} refused harvest "
+                    f"destination {destination!r}: {verdict.reason or 'refused'}"
+                )
         ts = float(self._clock())
         # Two real transfers: one to the owner, one to the platform's
         # fee address. A real implementation would batch via a multisend
@@ -310,6 +337,12 @@ class RealWallet:
         )
 
     # -- reproduction transfer --------------------------------------------
+    def set_sanctions_screener(self, screener) -> None:
+        """Install (or replace) the screener at runtime. Used by the
+        Supervisor at spawn time so a single fleet-wide screener reaches
+        every Darwin's wallet."""
+        self._sanctions = screener
+
     def transfer_out_for_child(self, amount_usdc: float) -> None:
         """The platform's omnibus move of the parent's surplus to a child
         wallet. Real impls submit a USDC transfer to the child's address;
