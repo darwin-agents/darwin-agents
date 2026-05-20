@@ -28,12 +28,14 @@ def test_founding_catalog_loads():
     from darwin_dna.neurons import build_catalog
 
     cat = build_catalog(wallet=_Wallet(), provision=_Prov())
-    # The founding catalog expanded to cover doc 04's first cohort:
-    # write, publish, browse, pay, vault, provision, measure, scout.
+    # The full founding catalog per doc 04: write/publish/browse/pay/
+    # vault/provision/measure/scout/accounts/ads/trading/support.
     expected = {
         "content.writer", "content.publisher", "browser.operator",
         "payments.facilitator", "vault.writer", "infrastructure.provisioner",
         "analytics.measurer", "research.scout",
+        "accounts.manager", "ads.manager", "trading.operator",
+        "support.responder",
     }
     assert set(cat) == expected
 
