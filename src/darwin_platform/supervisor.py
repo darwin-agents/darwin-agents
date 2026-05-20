@@ -41,6 +41,11 @@ from darwin_fakes.fake_platform import SigningService
 
 from .billing import BillingPolicy, BillingService
 from .browser_cache import BrowserCacheService, CachedBrowserSubstrate
+from .cross_pollination import (
+    CrossPollinationArchive,
+    CrossPollinationError,
+    PollinationLesson,
+)
 from .escalation import EscalationRouter, NotificationSink
 from .harvest_scheduler import HarvestRule, HarvestRuleError, HarvestScheduler
 from .monitoring import (
@@ -270,6 +275,7 @@ class Supervisor:
         browser_factory: Callable[[Any], Any] | None = None,
         x402_factory: Callable[[Any], Any] | None = None,
         sandbox_factory: Callable[[Any], Any] | None = None,
+        stagehand_factory: Callable[[Any], Any] | None = None,
         provisioning_backend: ProvisioningBackend | None = None,
         provisioning_quotas: ProvisioningQuotas | None = None,
         vault_sensitive_ttl_seconds: float = DEFAULT_SENSITIVE_TTL_SECONDS,
@@ -279,6 +285,8 @@ class Supervisor:
         sanctions_screener: SanctionsScreener | None = None,
         browser_cache_enabled: bool = True,
         browser_cache_service: BrowserCacheService | None = None,
+        cross_pollination_archive: CrossPollinationArchive | None = None,
+        cross_pollination_per_scope_limit: int = 3,
         resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
@@ -406,11 +414,15 @@ class Supervisor:
         # browser_factory(wallet) -> BrowserClient (doc 15: BrowserUseClient)
         # x402_factory(wallet)    -> X402PaymentClient (doc 17: x402 HTTP wrapper)
         # sandbox_factory(wallet) -> SandboxClient (doc 14: E2BSandbox)
+        # stagehand_factory(wallet) -> StagehandReplayClient (doc 15: cached
+        #   replay path; nests inside CachedBrowserSubstrate as the cheap
+        #   half. None keeps the default modeled-cost replay.)
         self._wallet_factory: Callable[..., Any] | None = wallet_factory
         self._vault_factory: Callable[[], Any] | None = vault_factory
         self._browser_factory: Callable[[Any], Any] | None = browser_factory
         self._x402_factory: Callable[[Any], Any] | None = x402_factory
         self._sandbox_factory: Callable[[Any], Any] | None = sandbox_factory
+        self._stagehand_factory: Callable[[Any], Any] | None = stagehand_factory
         # Platform-mediated provisioning (doc 04, 07). Replaces the fake
         # in-memory provisioner with a service that records per-Darwin
         # resources, enforces quotas, and lets operators deprovision via
@@ -471,6 +483,18 @@ class Supervisor:
         # is cheap and matches doc-05's "schedule Y".
         self._harvest_scheduler = HarvestScheduler(clock=clock)
         self._harvest_eval_every_n = 10
+        # Cross-pollination archive (doc 06 phase 3). When set, the
+        # supervisor sweeps each Darwin's distilled lessons after a
+        # reproduction event + admits public-safe ones into the archive;
+        # children boot with a vetted subset of sibling lessons.
+        # Default None preserves the previous "lessons stay private to
+        # the lineage" behaviour.
+        self._cross_pollination: CrossPollinationArchive | None = (
+            cross_pollination_archive
+        )
+        self._cross_pollination_per_scope_limit = max(
+            1, int(cross_pollination_per_scope_limit)
+        )
         # Non-LLM resource throttles (doc 09 level 2). The LLM tier
         # throttle lives on the genome's LLMRouter; sandbox / browser /
         # egress live here because their substrates are platform-side.
@@ -743,11 +767,16 @@ class Supervisor:
             # session, promotes signatures with N successes to a cached
             # replay path, attributes cost per (darwin_id, neuron, URL).
             if self._browser_cache_enabled and stack.browser is not None:
+                replay_client = (
+                    self._stagehand_factory(stack.wallet)
+                    if self._stagehand_factory is not None else None
+                )
                 wrapped = CachedBrowserSubstrate(
                     exploration=stack.browser,
                     cache=self._browser_cache,
                     darwin_id=runtime.identity.darwin_id,
                     clock=self._clock,
+                    replay=replay_client,
                 )
                 stack.browser = wrapped
                 runtime._p.browser = wrapped  # noqa: SLF001
@@ -2096,6 +2125,10 @@ class Supervisor:
             # seen it via a different path in future expansions).
             if child_id not in self._darwins:
                 self._boot_child(parent, record, child_id)
+            # Cross-pollination (doc 06 phase 3): on a successful
+            # reproduction, sweep the parent's distilled lessons into
+            # the platform archive so future siblings can inherit them.
+            self._deposit_cross_pollination(parent)
         parent.children_observed = len(spawner.children)
         # doc 02: after a forced amendment reproduction, the parent dies.
         # We flip the kill flag here so the genome's next node-boundary
@@ -2113,6 +2146,176 @@ class Supervisor:
                 except Exception:
                     parent.killed = False
                 parent.kill_after_reproduction_reason = None
+
+    # -- cross-pollination (doc 06 phase 3) -------------------------------
+    @property
+    def cross_pollination(self) -> CrossPollinationArchive | None:
+        """The platform's cross-pollination archive, if one is configured.
+        Tests + operators can introspect via this; the supervisor's
+        ``_deposit_cross_pollination`` is the write path."""
+        return self._cross_pollination
+
+    def _deposit_cross_pollination(self, parent: _Handle) -> None:
+        """Sweep the parent's distilled lessons + admit a vetted subset
+        into the platform archive. Skipped if no archive is configured
+        OR the parent's layer stack has no new lessons to share."""
+        if self._cross_pollination is None:
+            return
+        try:
+            stack = parent.runtime._stack  # noqa: SLF001
+            # The genome's distilled-lesson set lives on the most recent
+            # layer the parent emitted. Reproduction has just sealed
+            # that layer; we read the topmost layer's lessons.
+            top = stack.find()
+        except Exception:
+            return
+        deposited = 0
+        seen_scopes: dict[str, int] = {}
+        for lesson in (top or []):
+            try:
+                scope = getattr(lesson, "scope", None)
+                kind = getattr(lesson, "kind", "prefer")
+                statement = getattr(lesson, "statement", None)
+                evidence = int(getattr(lesson, "evidence", 1) or 1)
+            except Exception:
+                continue
+            if not scope or not statement:
+                continue
+            seen = seen_scopes.get(scope, 0)
+            if seen >= self._cross_pollination_per_scope_limit:
+                # Doc 06: rate-limit per-scope so a single Darwin doesn't
+                # dominate the archive.
+                continue
+            try:
+                self._cross_pollination.deposit(
+                    kind=kind, scope=scope, statement=statement,
+                    source_darwin_id=parent.darwin_id,
+                    evidence_count=evidence,
+                )
+                deposited += 1
+                seen_scopes[scope] = seen + 1
+            except CrossPollinationError:
+                # Bad shape — skip rather than poison the deposit batch.
+                continue
+        if deposited > 0:
+            self._audit.record(
+                actor="platform.cross_pollination",
+                action="cross_pollination_deposit",
+                darwin_id=parent.darwin_id,
+                metadata={"deposited": deposited,
+                          "scopes": list(seen_scopes)},
+            )
+
+    # -- platform signing key rotation (doc 02) ---------------------------
+    def rotate_signing_key(
+        self,
+        *,
+        drain_window_seconds: float | None = None,
+        actor: str = "anonymous",
+    ) -> dict:
+        """Issue a new platform signing key + retire the current one
+        (doc 02 §rotation). Requires persistence (otherwise there's
+        nothing to persist the retired key into). Audit-logged."""
+        if self._persistence is None:
+            raise SupervisorError(
+                "key rotation requires persistence (--db) to be configured"
+            )
+        from .key_rotation import KeyRotationService
+        svc = KeyRotationService(
+            persistence=self._persistence,
+            signer=self._signer,
+            signer_factory=SigningService,
+            signer_from_bytes=SigningService.from_private_bytes,
+            clock=self._clock,
+        )
+        summary = svc.rotate(
+            new_drain_window_seconds=drain_window_seconds,
+        )
+        # Adopt the new active signer for subsequent spawns.
+        self._signer = svc.signer
+        self._audit.record(
+            actor=actor,
+            action="rotate_signing_key",
+            darwin_id=None,
+            metadata={
+                "retired_public_key_pem": summary["retired_public_key_pem"],
+                "drain_until": summary["drain_until"],
+            },
+        )
+        return summary
+
+    # -- Path-C neuron proposal admission (doc 04 phase 3) ----------------
+    def list_neuron_proposals(self, darwin_id: str) -> dict:
+        """Per-Darwin view of pending + admitted neuron proposals."""
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        h = self._darwins[darwin_id]
+        gate = h.runtime.neuron_admission
+        return {
+            "pending": [p.to_json() for p in gate.pending()],
+            "admitted": [
+                {"name": n.name,
+                 "tags": sorted(n.capability_tags),
+                 "version": n.version}
+                for n in gate.admitted().values()
+            ],
+        }
+
+    def admit_neuron_proposal(
+        self, darwin_id: str, name: str, *, actor: str = "anonymous",
+    ) -> dict:
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        h = self._darwins[darwin_id]
+        try:
+            h.runtime.admit_neuron_proposal(name)
+        except Exception as exc:
+            raise SupervisorError(str(exc)) from exc
+        self._audit.record(
+            actor=actor,
+            action="admit_neuron_proposal",
+            darwin_id=darwin_id,
+            metadata={"name": name},
+        )
+        return {"admitted": name}
+
+    def reject_neuron_proposal(
+        self,
+        darwin_id: str,
+        name: str,
+        *,
+        reason: str = "operator rejected",
+        actor: str = "anonymous",
+    ) -> dict:
+        if darwin_id not in self._darwins:
+            raise UnknownDarwin(darwin_id)
+        h = self._darwins[darwin_id]
+        h.runtime.neuron_admission.reject(name, reason=reason)
+        self._audit.record(
+            actor=actor,
+            action="reject_neuron_proposal",
+            darwin_id=darwin_id,
+            metadata={"name": name, "reason": reason},
+        )
+        return {"rejected": name, "reason": reason}
+
+    def fetch_cross_pollination(
+        self,
+        *,
+        scope: str,
+        excluding_darwin_ids: set[str] | None = None,
+        limit: int = 5,
+    ) -> list[PollinationLesson]:
+        """Read-side: a child at boot (or an operator) requests vetted
+        sibling lessons for ``scope``. Returns an empty list when no
+        archive is configured."""
+        if self._cross_pollination is None:
+            return []
+        return self._cross_pollination.retrieve(
+            scope=scope,
+            excluding_darwin_ids=excluding_darwin_ids,
+            limit=limit,
+        )
 
     def _signals_for(self, handle: _Handle) -> DarwinSignals:
         rt = handle.runtime
