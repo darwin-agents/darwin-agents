@@ -33,6 +33,7 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`19-system-diagrams.md`](19-system-diagrams.md) — ASCII reference renderings of the platform and the organism
 - [`20-phase-zero-runtime-build-plan.md`](20-phase-zero-runtime-build-plan.md) — wiring Layer 0 into the supervisor, adapters, persistence, and the 24h soak test
 - [`21-phase-one-evolution-build-plan.md`](21-phase-one-evolution-build-plan.md) — self-modification staging, reproduction, real economic activity, and the evolution loop
+- [`22-phase-two-multi-tenant-build-plan.md`](22-phase-two-multi-tenant-build-plan.md) — tenant isolation, full payment stack, user dashboard, and operational maturity for alpha
 
 ## Related (in `overview/`)
 
