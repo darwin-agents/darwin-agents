@@ -1,0 +1,47 @@
+# Simulation tier — the 90-day cross-engine bit-for-bit parity sim.
+#
+# Doc 18 testing strategy: "simulation tests run nightly". We schedule
+# this weekly (cheap) and also fire on main pushes so a regression in
+# anything that touches the genome lands here within hours, not days.
+#
+# Runtime: ~10 minutes on a stock GHA runner. Within free tier even at
+# weekly + every-main cadence.
+
+name: slow
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 04:00 UTC every Monday — quiet hour, finishes well before the
+    # weekday work window.
+    - cron: "0 4 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: slow-${{ github.ref }}
+  cancel-in-progress: false  # let an in-flight nightly finish
+
+jobs:
+  sim:
+    name: pytest -m slow
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install deps
+        run: uv sync --all-extras --dev
+
+      - name: Run simulation tier
+        run: uv run pytest -m slow -v

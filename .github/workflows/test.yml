@@ -1,0 +1,46 @@
+# Fast test tier — runs the bulk of the suite on every push/PR.
+#
+# The 90-day cross-engine simulation lives in slow.yml and runs on a
+# schedule (and on main pushes). docs/engineering/18 testing strategy:
+# "unit + integration on every commit; simulation tier nightly."
+
+name: test
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main, "release/**"]
+  workflow_dispatch: {}
+
+concurrency:
+  # New pushes to the same branch supersede in-flight runs to keep the
+  # queue tight; a finished run on the latest commit is what matters.
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: pytest -m "not slow"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install deps
+        run: uv sync --all-extras --dev
+
+      - name: Run fast tier
+        # The genome's deprecation-warnings-as-errors filter is in
+        # pyproject; CI honours it.
+        run: uv run pytest -m "not slow" --maxfail=3
