@@ -162,6 +162,47 @@ tracing:
   protocol: "http/protobuf"
   serviceName: "darwin-supervisor"
 
+# -- External provider integrations ----------------------------------------
+# All optional. Each block follows the same pattern:
+#   1. Set the relevant fields below to enable the integration; OR
+#   2. Reference a pre-existing Secret via ``existingSecret`` so the
+#      chart projects its keys as env without copying secrets into
+#      this values file.
+# Either path injects the right ``--*`` CLI flag or env var; the
+# supervisor's ``_build_*`` builders consume the env at startup.
+providers:
+  # ---- sanctions screening (doc 17) -----------------------------------
+  # provider ∈ {"local", "chainalysis", "trm"}. Default "local" with no
+  # denylist file is the no-op posture.
+  sanctions:
+    provider: "local"
+    apiKey: ""  # for chainalysis | trm — rendered into the Secret
+    # When set, the chart mounts /run/secrets/denylist.json + passes
+    # --sanctions-denylist to the supervisor. Provide either the inline
+    # JSON OR an existingSecret name.
+    denylist: ""  # raw JSON string; see docs for the shape
+    existingSecret: ""
+
+  # ---- notification + alert sinks (doc 08) ----------------------------
+  # Every URL/key may be inline OR read from an existing Secret via
+  # ``existingSecret`` (one Secret carries all sink keys; matches the
+  # ExternalSecrets pattern most production deploys use).
+  notifications:
+    slackWebhookUrl: ""        # https://hooks.slack.com/services/...
+    escalationWebhookUrl: ""   # generic JSON-POST URL
+    alertWebhookUrl: ""        # monitor alerts → generic webhook
+    pagerdutyRoutingKey: ""    # PagerDuty Events v2 routing key
+    existingSecret: ""
+
+  # ---- fiat ramps (doc 17) --------------------------------------------
+  # Stripe + MoonPay live behind separate, optional Secret refs. Each
+  # is read by the supervisor's _build_fiat_ramp helper (operator-side
+  # wiring; not in CLI today — set the env vars directly).
+  fiat:
+    stripeApiKey: ""
+    moonpayApiKey: ""
+    existingSecret: ""
+
 # -- ServiceMonitor (kube-prometheus-stack discovery) ----------------------
 # Off by default — set true if you have prometheus-operator installed
 # and want auto-discovery of the /metrics endpoint. The chart's plain
