@@ -38,6 +38,24 @@ platform = [
 # host. Without this extra the platform falls back to SQLite — the
 # Supervisor accepts either a file path or a postgres:// DSN.
 postgres = ["psycopg[binary]>=3.1"]
+# Real wallet adapter (docs/engineering/17). web3.py talks to any
+# EVM-compatible chain — Base Sepolia for testnet, Base for mainnet.
+# Pulls in eth-account for local signing. Production deployers using
+# Coinbase Agentic Wallets / CDP can swap this for their SDK behind
+# the same :class:`darwin_platform.adapters.ChainClient` Protocol.
+web3 = ["web3>=7.0"]
+# Real Vault adapter (docs/engineering/16). hvac is HashiCorp's
+# canonical Python client; this extra pulls it in for the
+# :class:`darwin_platform.adapters.HvacVaultClient` wrapper.
+hvac = ["hvac>=2.0"]
+# Real browser substrate (docs/engineering/15). browser-use is the
+# agent-shaped wrapper around Playwright; the Darwin platform's
+# :class:`BrowserUseClient` runs it against a Browserbase backend.
+browser = ["browser-use>=0.2"]
+# Real microVM sandbox (docs/engineering/14). e2b runs code in a
+# fresh microVM per session — used by the mutation eval harness's
+# "clean substrate" path and by future code-running neurons.
+e2b = ["e2b>=0.17"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
@@ -63,7 +81,15 @@ packages = ["src/darwin_dna", "src/darwin_fakes", "src/darwin_platform"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["src", "."]
-filterwarnings = ["error::DeprecationWarning"]
+filterwarnings = [
+    "error::DeprecationWarning",
+    # web3.py 7.x transitively imports websockets.legacy on a path we
+    # don't actually exercise (we sign + send via HTTP, never WS). The
+    # warning is cosmetic for our usage; whitelist only that source so
+    # the rest of the genome's deprecation-as-error policy stands.
+    "ignore::DeprecationWarning:websockets.legacy",
+    "ignore::DeprecationWarning:websockets",
+]
 # docs/engineering/18 testing strategy: unit/integration run every commit;
 # the simulation tier is heavier ("run nightly"). Mark it so a fast loop can
 # `-m "not slow"` while CI/nightly runs everything (the default).
