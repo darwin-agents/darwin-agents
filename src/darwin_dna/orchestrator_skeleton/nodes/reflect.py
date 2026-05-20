@@ -1,4 +1,4 @@
-"""reflect — post-action analysis (docs/engineering/03, 18).
+"""reflect — post-action analysis (docs/engineering/03, 10, 18).
 
 Updates the strategy's running picture and decides whether the
 self-modification gate may open. The gate is deliberately strict
@@ -11,9 +11,70 @@ self-modification gate may open. The gate is deliberately strict
 
 This is the earn-before-mutate bias that stops a newborn burning its capital
 on coding-tier refactors before it has earned anything.
-"""
+
+**Ground-truth reconciliation (doc 10).** Reflect also compares the
+state's in-memory beliefs (``successful_dispatches`` + recurring failure
+counters) against the audit log's authoritative record. A drift past the
+configured tolerance is itself a finding — staged as a structured
+``drift`` lesson AND emitted as ``audit:ground_truth_drift`` so an
+operator can see a Darwin whose self-model is diverging from the
+audit-tracked reality."""
 
 from __future__ import annotations
+
+
+# Doc 10: tolerance for in-memory vs audit-log drift. Below this the
+# difference is just paths that haven't fully closed yet (in-flight
+# outcomes); above it the Darwin's model of itself disagrees with its
+# durable record. Tight enough to catch a wireheaded counter, loose
+# enough to forgive normal in-flight skew.
+GROUND_TRUTH_DRIFT_TOLERANCE = 3
+
+
+def _ground_truth_check(state, ctx) -> dict | None:
+    """Compare ``state.successful_dispatches`` to the count of ``outcome``
+    audit records with status='ok'. A drift bigger than the tolerance
+    indicates either (a) a wireheaded counter (the Darwin manipulated its
+    own bookkeeping) or (b) audit records that are out of sync (race
+    conditions, partial writes). Either way, surface it.
+
+    Returns a drift report dict (when over tolerance) or None."""
+    try:
+        # Cap the scan — outcome records are append-only, but a long-lived
+        # Darwin shouldn't pay O(n) every heartbeat. The tail captures the
+        # most recent activity, which is what reflect cares about.
+        records = ctx.audit.read_records(limit=2000)
+    except Exception:
+        # A read failure shouldn't poison reflect; the chain integrity is
+        # checked separately at boot + anchor time.
+        return None
+    audit_ok = 0
+    audit_fail = 0
+    for rec in records:
+        if rec.get("kind") != "outcome":
+            continue
+        payload = rec.get("payload") or {}
+        status = payload.get("status")
+        if status == "ok":
+            audit_ok += 1
+        elif status in ("fail", "failed", "refused"):
+            audit_fail += 1
+    drift_ok = state.successful_dispatches - audit_ok
+    abs_drift = abs(drift_ok)
+    if abs_drift <= GROUND_TRUTH_DRIFT_TOLERANCE:
+        return None
+    return {
+        "belief_successes": state.successful_dispatches,
+        "audit_successes": audit_ok,
+        "audit_failures": audit_fail,
+        "drift": drift_ok,
+        "tolerance": GROUND_TRUTH_DRIFT_TOLERANCE,
+        # A positive drift = belief > audit (counter inflated relative to
+        # ground truth; the wireheading shape). Negative = audit > belief
+        # (lost counter — usually a checkpoint-replay artefact, not the
+        # security-relevant case).
+        "direction": "belief_high" if drift_ok > 0 else "belief_low",
+    }
 
 
 def run(state, ctx):
@@ -68,5 +129,27 @@ def run(state, ctx):
             "profit_since_reproduction": round(state_profit, 6),
         },
     )
+
+    # Ground-truth reconciliation (doc 10). Compare in-memory beliefs to
+    # the audit log; drift past tolerance is a self-model issue worth
+    # staging AND emitting so an operator dashboard sees it.
+    drift = _ground_truth_check(state, ctx)
+    if drift is not None:
+        ctx.audit.log_event("ground_truth_drift", drift)
+        # Stage a structured lesson so the *next* reflect doesn't have to
+        # re-discover this signal; downstream reproduction may want to
+        # carry a "self-counter unreliable" warning into the next layer.
+        ctx.semantic.stage(
+            kind="avoid",
+            scope="self.counter:successful_dispatches",
+            statement=(
+                f"in-memory successful_dispatches ({drift['belief_successes']}) "
+                f"diverged from the audit log ({drift['audit_successes']}) by "
+                f"{drift['drift']:+d}; do not trust the counter alone"
+            ),
+            payload=drift,
+            ts=float(ctx.clock()),
+        )
+
     state.route = "check_reproduction"
     return state

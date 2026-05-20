@@ -122,6 +122,20 @@ class AuditLogger:
         with self._lock:
             self._verify_chain(self._sink.read_all())
 
+    def read_records(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Read the durable chain (newest-last). Used by the reflect node's
+        ground-truth reconciliation (doc 10): compare in-memory beliefs to
+        what the audit log actually says.
+
+        The records are returned defensively-copied so a caller cannot
+        mutate committed history. ``limit=None`` returns the full chain;
+        a numeric limit returns the last N records."""
+        with self._lock:
+            rows = self._sink.read_all()
+        if limit is not None and limit > 0:
+            rows = rows[-int(limit):]
+        return rows
+
     # -- write-before-act --------------------------------------------------
     def _commit(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         seq = self._seq
