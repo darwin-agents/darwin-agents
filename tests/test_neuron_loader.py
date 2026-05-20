@@ -28,8 +28,14 @@ def test_founding_catalog_loads():
     from darwin_dna.neurons import build_catalog
 
     cat = build_catalog(wallet=_Wallet(), provision=_Prov())
-    assert "payments.facilitator" in cat
-    assert len(cat) == 5
+    # The founding catalog expanded to cover doc 04's first cohort:
+    # write, publish, browse, pay, vault, provision, measure, scout.
+    expected = {
+        "content.writer", "content.publisher", "browser.operator",
+        "payments.facilitator", "vault.writer", "infrastructure.provisioner",
+        "analytics.measurer", "research.scout",
+    }
+    assert set(cat) == expected
 
 
 def test_non_async_method_rejected():
