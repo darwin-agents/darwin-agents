@@ -175,6 +175,12 @@ def build_app(
         if not ctx.owns(darwin_id):
             raise HTTPException(403, f"forbidden: not your darwin: {darwin_id}")
 
+    def _actor(ctx: AuthContext) -> str:
+        """Operator identity for the audit log: prefer the human-readable
+        ``subject`` (email / user id), fall back to the token, fall back to
+        ``anonymous`` (auth-disabled mode)."""
+        return ctx.subject or ctx.token or "anonymous"
+
     # -- spawn / status ----------------------------------------------------
     @app.post("/darwins", status_code=201)
     async def spawn(
@@ -191,6 +197,7 @@ def build_app(
                 opening_usdc=req.opening_usdc,
                 escalation_auto=req.escalation_auto,
                 parent_id=req.parent_id,
+                actor=_actor(ctx),
             )
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
@@ -237,7 +244,9 @@ def build_app(
         _require_scope(ctx, OWNER)
         _require_owns(ctx, darwin_id)
         try:
-            await _sup(request).pause(darwin_id, reason=req.reason)
+            await _sup(request).pause(
+                darwin_id, reason=req.reason, actor=_actor(ctx)
+            )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
@@ -253,7 +262,7 @@ def build_app(
         _require_scope(ctx, OWNER)
         _require_owns(ctx, darwin_id)
         try:
-            await _sup(request).resume(darwin_id)
+            await _sup(request).resume(darwin_id, actor=_actor(ctx))
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
@@ -270,7 +279,9 @@ def build_app(
         _require_scope(ctx, OWNER)
         _require_owns(ctx, darwin_id)
         try:
-            await _sup(request).kill(darwin_id, reason=req.reason)
+            await _sup(request).kill(
+                darwin_id, reason=req.reason, actor=_actor(ctx)
+            )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         return {"status": "killing"}
@@ -285,7 +296,7 @@ def build_app(
         _require_scope(ctx, OWNER)
         _require_owns(ctx, darwin_id)
         try:
-            await _sup(request).force_reproduce(darwin_id)
+            await _sup(request).force_reproduce(darwin_id, actor=_actor(ctx))
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
@@ -309,6 +320,7 @@ def build_app(
                 escalation_id=escalation_id,
                 decision=req.decision,
                 data=req.data,
+                actor=_actor(ctx),
             )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
@@ -412,6 +424,7 @@ def build_app(
                 darwin_id,
                 amount_usdc=req.amount_usdc,
                 destination=req.destination,
+                actor=_actor(ctx),
             )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
@@ -493,7 +506,8 @@ def build_app(
         _require_scope(ctx, PLATFORM_OPERATOR)
         try:
             await _sup(request).quarantine(
-                darwin_id, reason=req.reason, operator=req.operator
+                darwin_id, reason=req.reason, operator=req.operator,
+                actor=_actor(ctx),
             )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
@@ -510,7 +524,9 @@ def build_app(
     ) -> dict[str, str]:
         _require_scope(ctx, PLATFORM_OPERATOR)
         try:
-            await _sup(request).unquarantine(darwin_id, operator=operator)
+            await _sup(request).unquarantine(
+                darwin_id, operator=operator, actor=_actor(ctx)
+            )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         return {"status": "cleared"}
@@ -528,6 +544,7 @@ def build_app(
             kwargs = {
                 "per_action_cap_usdc": req.per_action_cap_usdc,
                 "per_day_cap_usdc": req.per_day_cap_usdc,
+                "actor": _actor(ctx),
             }
             # per_lifetime_cap_usdc is added in the slice-2 threading; the
             # request model carries it, but pass through only when set so
@@ -565,7 +582,8 @@ def build_app(
         _require_scope(ctx, PLATFORM_OPERATOR)
         try:
             return await _sup(request).throttle_llm_tier(
-                darwin_id, tier=req.tier, max_daily_calls=req.max_daily_calls
+                darwin_id, tier=req.tier, max_daily_calls=req.max_daily_calls,
+                actor=_actor(ctx),
             )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
@@ -581,7 +599,9 @@ def build_app(
     ) -> dict[str, Any]:
         _require_scope(ctx, PLATFORM_OPERATOR)
         try:
-            return await _sup(request).clear_llm_throttle(darwin_id, tier=tier)
+            return await _sup(request).clear_llm_throttle(
+                darwin_id, tier=tier, actor=_actor(ctx)
+            )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
@@ -618,6 +638,7 @@ def build_app(
                 amendment_blob=blob,
                 amendment_name=req.amendment_name,
                 kill_parent_reason=req.kill_parent_reason,
+                actor=_actor(ctx),
             )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
@@ -634,6 +655,24 @@ def build_app(
         _require_scope(ctx, PLATFORM_OPERATOR)
         pem = _sup(request).signing_public_key_pem().decode("ascii")
         return {"format": "PEM", "public_key": pem}
+
+    # -- operator audit log (doc 08) --------------------------------------
+    @app.get("/platform/audit")
+    async def fleet_audit(
+        request: Request,
+        actor: str | None = Query(None),
+        action: str | None = Query(None),
+        darwin_id: str | None = Query(None),
+        since: float | None = Query(None),
+        limit: int | None = Query(None, ge=1, le=10_000),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        rows = await _sup(request).audit_entries(
+            actor=actor, action=action, darwin_id=darwin_id,
+            since=since, limit=limit,
+        )
+        return {"entries": rows, "tip_hash": _sup(request).audit_log.tip_hash()}
 
     # -- snapshot (ops-side; not in doc 08) -------------------------------
     @app.get("/platform/snapshot")

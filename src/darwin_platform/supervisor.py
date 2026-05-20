@@ -48,6 +48,7 @@ from .monitoring import (
     Quotas,
     Severity,
 )
+from .operator_audit import OperatorAuditLog, to_dicts as _audit_to_dicts
 from .tracing import annotate_span_with_runtime, span
 
 
@@ -214,6 +215,10 @@ class Supervisor:
         # Darwin gets a real adapter instead of the deterministic FakeLLM.
         # Default unset keeps the 90-day sim's reproducibility.
         self._llm_factory: Callable[..., Any] | None = llm_transport_factory
+        # Hash-chained operator audit log (doc 08). Every mutating
+        # supervisor call writes an entry tagged with the calling actor's
+        # subject so a compliance reviewer can replay who-did-what.
+        self._audit = OperatorAuditLog(clock=clock)
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -222,6 +227,7 @@ class Supervisor:
         opening_usdc: float = 100.0,
         escalation_auto: str | None = "approve",
         parent_id: str | None = None,
+        actor: str = "anonymous",
     ) -> DarwinStatus:
         """Mint genesis, boot, start the drive task. Returns the new Darwin's
         status. ``parent_id`` is metadata only for genesis spawns — children
@@ -265,6 +271,15 @@ class Supervisor:
             handle.task = asyncio.create_task(
                 self._drive(handle), name=f"darwin:{handle.darwin_id}"
             )
+            self._audit.record(
+                actor=actor,
+                action="spawn",
+                darwin_id=handle.darwin_id,
+                metadata={
+                    "opening_usdc": float(opening_usdc),
+                    "parent_id": parent_id,
+                },
+            )
             return self._status(handle)
 
     # -- status (doc 08: GET /darwins/{id}) -------------------------------
@@ -272,7 +287,13 @@ class Supervisor:
         return self._status(self._get(darwin_id))
 
     # -- pause / resume (doc 08: POST /darwins/{id}/pause|resume) ---------
-    async def pause(self, darwin_id: str, *, reason: str = "owner paused") -> None:
+    async def pause(
+        self,
+        darwin_id: str,
+        *,
+        reason: str = "owner paused",
+        actor: str = "anonymous",
+    ) -> None:
         """Flip the platform pause flag. The genome notices at the next
         heartbeat boundary, anchors, and breaks — same life, not a death."""
         with span("supervisor.pause", darwin_id=darwin_id,
@@ -284,8 +305,12 @@ class Supervisor:
                 )
             annotate_span_with_runtime(s, h.runtime)
             h.stack.pause.pause(reason)
+            self._audit.record(
+                actor=actor, action="pause", darwin_id=darwin_id,
+                metadata={"reason": reason},
+            )
 
-    async def resume(self, darwin_id: str) -> None:
+    async def resume(self, darwin_id: str, *, actor: str = "anonymous") -> None:
         with span("supervisor.resume", darwin_id=darwin_id) as s:
             h = self._get(darwin_id)
             if h.killed:
@@ -302,6 +327,9 @@ class Supervisor:
             # again if the breach is still live. (A repeat breach is a
             # different alert event from the operator's perspective.)
             h.auto_paused_for = None
+            self._audit.record(
+                actor=actor, action="resume", darwin_id=darwin_id, metadata={},
+            )
 
     # -- platform-side quarantine (doc 08/09 level 4) ---------------------
     async def quarantine(
@@ -310,6 +338,7 @@ class Supervisor:
         *,
         reason: str,
         operator: str = "platform",
+        actor: str | None = None,
     ) -> None:
         """Move a Darwin to doc-09 level 4: pause + flag for platform review.
         Cannot be cleared via owner ``resume`` — only ``unquarantine`` or a
@@ -340,8 +369,19 @@ class Supervisor:
                 # The fake should not raise here, but a misbehaving pause
                 # source must not block the quarantine state.
                 pass
+            self._audit.record(
+                actor=actor or operator, action="quarantine",
+                darwin_id=darwin_id,
+                metadata={"reason": reason, "operator": operator},
+            )
 
-    async def unquarantine(self, darwin_id: str, *, operator: str = "platform") -> None:
+    async def unquarantine(
+        self,
+        darwin_id: str,
+        *,
+        operator: str = "platform",
+        actor: str | None = None,
+    ) -> None:
         """Clear the quarantine flag. Does NOT auto-resume — an operator
         clearing quarantine has to make a separate ``resume`` call so the
         two state transitions are independently auditable."""
@@ -355,6 +395,11 @@ class Supervisor:
                 return
             annotate_span_with_runtime(s, h.runtime)
             h.quarantine = QuarantineState(active=False)
+            self._audit.record(
+                actor=actor or operator, action="unquarantine",
+                darwin_id=darwin_id,
+                metadata={"operator": operator},
+            )
 
     # -- billing (doc 08 §"Billing model") --------------------------------
     async def harvest(
@@ -363,6 +408,7 @@ class Supervisor:
         *,
         amount_usdc: float,
         destination: str,
+        actor: str = "anonymous",
     ) -> dict[str, Any]:
         """Owner-initiated profit harvest. Splits ``amount_usdc`` into a
         net payout to ``destination`` and a platform fee per
@@ -410,6 +456,15 @@ class Supervisor:
             # bump the cursor so the harvest fee is not double-counted as
             # infrastructure revenue.
             h.billing_observed = len(h.stack.wallet.movements())
+            self._audit.record(
+                actor=actor, action="harvest", darwin_id=darwin_id,
+                metadata={
+                    "amount_usdc": float(amount_usdc),
+                    "destination": destination,
+                    "fee_usdc": float(fee),
+                    "net_usdc": float(net),
+                },
+            )
             return {**wallet_row, "ledger": ledger_row}
 
     async def billing(self, darwin_id: str) -> dict[str, Any]:
@@ -423,6 +478,29 @@ class Supervisor:
     def billing_service(self) -> BillingService:
         return self._billing
 
+    # -- operator audit log (doc 08) --------------------------------------
+    @property
+    def audit_log(self) -> OperatorAuditLog:
+        """The hash-chained operator audit log. Ops + compliance reviewers
+        read through this rather than the OpenTelemetry traces; it's
+        durable and walkable as a chain."""
+        return self._audit
+
+    async def audit_entries(
+        self,
+        *,
+        actor: str | None = None,
+        action: str | None = None,
+        darwin_id: str | None = None,
+        since: float | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self._audit.entries(
+            actor=actor, action=action, darwin_id=darwin_id,
+            since=since, limit=limit,
+        )
+        return _audit_to_dicts(rows)
+
     # -- platform-side throttle (doc 08, doc 09 level 2) ------------------
     async def throttle_llm_tier(
         self,
@@ -430,6 +508,7 @@ class Supervisor:
         *,
         tier: str,
         max_daily_calls: int,
+        actor: str = "anonymous",
     ) -> dict[str, Any]:
         """Install a tighter per-day cap on one LLM tier. The genome's
         :class:`LLMRouter` takes ``min(hp cap, throttle)``, so a throttle
@@ -448,6 +527,11 @@ class Supervisor:
             h = self._get(darwin_id)
             annotate_span_with_runtime(s, h.runtime)
             h.runtime.llm.set_throttle(t, max_daily_calls)
+            self._audit.record(
+                actor=actor, action="throttle_llm_tier",
+                darwin_id=darwin_id,
+                metadata={"tier": tier, "max_daily_calls": int(max_daily_calls)},
+            )
         return {"tier": tier, "max_daily_calls": int(max_daily_calls),
                 "throttles": h.runtime.llm.throttles()}
 
@@ -456,6 +540,7 @@ class Supervisor:
         darwin_id: str,
         *,
         tier: str | None = None,
+        actor: str = "anonymous",
     ) -> dict[str, Any]:
         """Clear the platform throttle for ``tier`` (or all tiers when
         ``tier is None``)."""
@@ -479,6 +564,10 @@ class Supervisor:
             # follow-up WARN can throttle again.
             if tier is None:
                 h.auto_throttled.clear()
+            self._audit.record(
+                actor=actor, action="clear_llm_throttle",
+                darwin_id=darwin_id, metadata={"tier": tier},
+            )
         return {"throttles": h.runtime.llm.throttles()}
 
     async def get_llm_throttles(self, darwin_id: str) -> dict[str, int]:
@@ -493,6 +582,7 @@ class Supervisor:
         per_action_cap_usdc: float | None = None,
         per_day_cap_usdc: float | None = None,
         per_lifetime_cap_usdc: float | None = None,
+        actor: str = "anonymous",
     ) -> dict[str, Any]:
         """Tighten a Darwin's per-action / per-day / per-lifetime spend caps
         below the genome's hard caps. The platform may only LOWER caps (the
@@ -517,11 +607,21 @@ class Supervisor:
                 raise SupervisorError(
                     "wallet does not support platform-installed policy"
                 )
-            return wallet.set_policy(
+            new_policy = wallet.set_policy(
                 per_action_cap_usdc=per_action_cap_usdc,
                 per_day_cap_usdc=per_day_cap_usdc,
                 per_lifetime_cap_usdc=per_lifetime_cap_usdc,
             )
+            self._audit.record(
+                actor=actor, action="set_wallet_policy",
+                darwin_id=darwin_id,
+                metadata={
+                    "per_action_cap_usdc": per_action_cap_usdc,
+                    "per_day_cap_usdc": per_day_cap_usdc,
+                    "per_lifetime_cap_usdc": per_lifetime_cap_usdc,
+                },
+            )
+            return new_policy
 
     async def get_wallet_policy(self, darwin_id: str) -> dict[str, Any]:
         h = self._get(darwin_id)
@@ -540,7 +640,13 @@ class Supervisor:
         return self._signer.public_key_pem()
 
     # -- kill (doc 08: POST /darwins/{id}/kill) ---------------------------
-    async def kill(self, darwin_id: str, *, reason: str = "owner kill") -> None:
+    async def kill(
+        self,
+        darwin_id: str,
+        *,
+        reason: str = "owner kill",
+        actor: str = "anonymous",
+    ) -> None:
         """Flip the platform kill flag. The genome polls it at the loop
         boundary and at every node boundary (doc 09: ≤5s latency), then runs
         ``_halt_on_kill`` which writes the final audit record and anchors."""
@@ -550,9 +656,15 @@ class Supervisor:
             annotate_span_with_runtime(s, h.runtime)
             h.killed = True
             h.stack.kill.flip(reason)
+            self._audit.record(
+                actor=actor, action="kill", darwin_id=darwin_id,
+                metadata={"reason": reason},
+            )
 
     # -- force reproduction (doc 08: POST /darwins/{id}/reproduce/force) --
-    async def force_reproduce(self, darwin_id: str) -> None:
+    async def force_reproduce(
+        self, darwin_id: str, *, actor: str = "anonymous"
+    ) -> None:
         """Set the genome's reproduce flag for the next heartbeat. The
         genome still runs its own treasury/fitness gates inside ``_reproduce``;
         forcing requests, it does not bypass."""
@@ -562,6 +674,10 @@ class Supervisor:
                 raise SupervisorError(f"darwin {darwin_id} is not alive")
             annotate_span_with_runtime(s, h.runtime)
             h.reproduce_requested = True
+            self._audit.record(
+                actor=actor, action="force_reproduce", darwin_id=darwin_id,
+                metadata={},
+            )
 
     # -- forced reproduction with amendment (doc 02 + doc 09) -------------
     async def force_reproduce_with_amendment(
@@ -571,6 +687,7 @@ class Supervisor:
         amendment_blob: bytes,
         amendment_name: str,
         kill_parent_reason: str = "amendment reproduction",
+        actor: str = "anonymous",
     ) -> None:
         """The platform-supervisor pathway for shipping a constitutional
         update (doc 02 §amendment). Stages the amendment on the runtime,
@@ -607,6 +724,22 @@ class Supervisor:
                 raise SupervisorError(str(exc)) from exc
             h.reproduce_requested = True
             h.kill_after_reproduction_reason = kill_parent_reason
+            # Constitutional update; auditable in full detail. The amendment
+            # blob bytes are NOT included in metadata (they may be large);
+            # the name + sha256 prefix locate the canonical platform blob.
+            import hashlib as _hashlib
+            self._audit.record(
+                actor=actor,
+                action="force_reproduce_with_amendment",
+                darwin_id=darwin_id,
+                metadata={
+                    "amendment_name": amendment_name,
+                    "amendment_sha256_prefix": _hashlib.sha256(
+                        amendment_blob
+                    ).hexdigest()[:16],
+                    "kill_parent_reason": kill_parent_reason,
+                },
+            )
 
     # -- escalations (doc 08: POST .../escalations/{eid}/respond) ---------
     async def respond_escalation(
@@ -616,6 +749,7 @@ class Supervisor:
         escalation_id: str,
         decision: str,
         data: dict[str, Any] | None = None,
+        actor: str = "anonymous",
     ) -> None:
         """Route an owner decision to the genome's escalation inbox AND
         record it on the platform-side router. Two writes — the inbox is
@@ -633,6 +767,11 @@ class Supervisor:
             h.stack.escalation.respond(escalation_id, decision, data or {})
             self._router.mark_responded(escalation_id, decision, data or {})
             h.handled_responses.add(escalation_id)
+            self._audit.record(
+                actor=actor, action="respond_escalation",
+                darwin_id=darwin_id,
+                metadata={"escalation_id": escalation_id, "decision": decision},
+            )
 
     # -- lineage (doc 08: GET /darwins/{id}/lineage) ----------------------
     async def lineage(self, darwin_id: str) -> dict[str, Any]:
