@@ -53,20 +53,34 @@ containerSecurityContext:
   runAsUser: 1000
 
 # -- Persistence ------------------------------------------------------------
-# The supervisor writes a SQLite database under /data/state.db. Audit log,
-# tokens, billing, lineage, escalation tickets, monitor alerts all live
-# here — losing this volume LOSES doc-08's permanent audit chain.
+# The supervisor writes durable state (audit chain, tokens, billing,
+# lineage, escalation tickets, monitor alerts) to one of two backends:
+#
+#   - SQLite: one file at /data/state.db on a PVC. Right for the
+#     single-process posture this chart pins to today (replicaCount=1).
+#   - Postgres: connection string via `database.url`. Right for HA when
+#     the leader-election layer lands; also better backup/restore
+#     ergonomics. Mount the URL via `database.existingSecret`.
+#
+# When `database.url` is set OR `database.existingSecret` is set, the
+# chart skips the PVC entirely — the supervisor connects to the URL
+# instead. SQLite vs Postgres detection happens at the persistence
+# layer (postgres:// prefix → Postgres).
 persistence:
   enabled: true
-  # Provide your storageClassName explicitly in production; the empty
-  # string falls back to the cluster default which may or may not be
-  # what you want.
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 10Gi
-  # existingClaim takes precedence — point at a PVC you already created
-  # with a snapshot/restore policy in place.
   existingClaim: ""
+
+database:
+  # postgresql:// or postgres:// connection string. Overrides the
+  # SQLite PVC mode when set.
+  url: ""  # e.g. postgresql://darwin:CHANGE_ME@postgres-rw:5432/darwin
+  # Reference an existing Secret with a `DATABASE_URL` key for
+  # production deployments (ExternalSecrets / SealedSecrets).
+  existingSecret: ""
+  existingSecretKey: "DATABASE_URL"
 
 # -- Service ----------------------------------------------------------------
 service:

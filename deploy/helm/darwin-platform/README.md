@@ -54,6 +54,9 @@ same cluster:
 | `auth.enabled`                            | `false`                                                       | Off = trust-everyone (DEV ONLY).                                                       |
 | `auth.tokens`                             | `[]`                                                          | In-line tokens; ends up in a Secret rendered by the chart. Avoid in production.        |
 | `auth.existingSecret` / `existingSecretKey` | `""` / `tokens.json`                                        | Reference a Secret you manage out-of-band (ExternalSecrets/SealedSecrets).             |
+| `database.url`                            | `""`                                                          | postgresql:// URL — switches to Postgres mode and drops the PVC.                       |
+| `database.existingSecret`                 | `""`                                                          | Secret holding `DATABASE_URL`; preferred over inline `database.url` in prod.           |
+| `database.existingSecretKey`              | `DATABASE_URL`                                                | Key within the existing Secret.                                                        |
 | `tracing.endpoint`                        | `""`                                                          | OTLP collector. Empty disables tracing env injection.                                  |
 | `tracing.serviceName` / `protocol`        | `darwin-supervisor` / `http/protobuf`                         | Standard OTel.                                                                         |
 | `serviceMonitor.enabled`                  | `false`                                                       | On if you have prometheus-operator.                                                    |
@@ -65,6 +68,37 @@ same cluster:
 | `networkPolicy.egress.postgres.*`         | `namespace=""`                                                | Allow egress to Postgres (future use).                                                 |
 | `networkPolicy.egress.extraCIDRs`         | `[]`                                                          | Public destinations (e.g. Coinbase APIs for the real wallet adapter).                  |
 
+## SQLite vs Postgres
+
+The chart defaults to SQLite on a PVC — right for single-replica
+deployments and dev clusters. Switch to Postgres when you want:
+
+- **HA / multi-replica** (after the leader-election layer lands).
+- **Backups + point-in-time recovery** that play with your standard
+  Postgres ops (rather than PVC snapshots).
+- **A managed database** (RDS, Cloud SQL, Neon, Supabase) so the
+  supervisor is stateless from the cluster's view.
+
+```bash
+# Inline DSN (simplest; the URL ends up in the rendered manifest).
+helm install darwin deploy/helm/darwin-platform \
+  --set database.url='postgresql://darwin:CHANGE_ME@postgres-rw:5432/darwin'
+
+# Production (recommended): reference a Secret managed by ExternalSecrets
+# / SealedSecrets. The chart never sees the URL in plain text.
+helm install darwin deploy/helm/darwin-platform \
+  --set database.existingSecret=darwin-db-url
+```
+
+Switching to Postgres drops the PVC from the rendered manifests; the
+supervisor reads `DATABASE_URL` from env and connects directly. Make
+sure `networkPolicy.egress.postgres.namespace` + `podLabels` point at
+your Postgres so the supervisor pod can reach it.
+
+Migration between modes is not automated — backing up the SQLite
+audit chain and replaying it into Postgres is out of scope; switch
+modes during a maintenance window when the audit log can start fresh.
+
 ## Production checklist
 
 Before exposing publicly:
@@ -72,8 +106,9 @@ Before exposing publicly:
 - [ ] `auth.enabled=true` AND `auth.existingSecret` pointing at an
       ExternalSecrets-managed Secret (do not store tokens in values.yaml).
 - [ ] `image.tag` pinned to a specific `sha-` tag, NOT `latest`.
-- [ ] `persistence.storageClass` chosen explicitly + matching snapshot
-      policy.
+- [ ] `database.existingSecret` set if Postgres mode, or
+      `persistence.storageClass` chosen explicitly + matching snapshot
+      policy if SQLite mode.
 - [ ] `ingress.tls` configured with cert-manager or your TLS provider.
 - [ ] `serviceMonitor.enabled=true` and Prometheus + Alertmanager wired
       to the doc-08 alerts on `darwin_platform_alerts_total{severity}`.

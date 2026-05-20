@@ -30,6 +30,7 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $usePostgres := or .Values.database.url .Values.database.existingSecret }}
       containers:
         - name: supervisor
           image: "{{ .Values.image.repository }}:{{ include "darwin-platform.imageTag" . }}"
@@ -43,7 +44,12 @@ spec:
             - serve
             - --host=0.0.0.0
             - --port=8000
-            {{- if .Values.persistence.enabled }}
+            {{- if $usePostgres }}
+            # Postgres mode: --db expands DATABASE_URL via the
+            # container's env-var substitution (set below from either an
+            # inline value or an existing Secret).
+            - --db=$(DATABASE_URL)
+            {{- else if .Values.persistence.enabled }}
             - --db=/data/state.db
             {{- end }}
             {{- if .Values.auth.enabled }}
@@ -53,8 +59,19 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
-          {{- if or .Values.tracing.endpoint .Values.extraEnv }}
+          {{- if or $usePostgres .Values.tracing.endpoint .Values.extraEnv }}
           env:
+            {{- if $usePostgres }}
+            - name: DATABASE_URL
+              {{- if .Values.database.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.existingSecretKey | default "DATABASE_URL" }}
+              {{- else }}
+              value: {{ .Values.database.url | quote }}
+              {{- end }}
+            {{- end }}
             {{- if .Values.tracing.endpoint }}
             - name: OTEL_SERVICE_NAME
               value: {{ .Values.tracing.serviceName | quote }}
@@ -89,7 +106,7 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.persistence.enabled }}
+            {{- if and .Values.persistence.enabled (not $usePostgres) }}
             - name: data
               mountPath: /data
             {{- end }}
@@ -99,7 +116,7 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
-        {{- if .Values.persistence.enabled }}
+        {{- if and .Values.persistence.enabled (not $usePostgres) }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-data" (include "darwin-platform.fullname" .)) .Values.persistence.existingClaim }}
