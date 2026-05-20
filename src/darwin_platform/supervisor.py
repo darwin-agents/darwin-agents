@@ -170,6 +170,7 @@ class Supervisor:
         auto_throttle_on_warn: bool = False,
         monitor_every_n_ticks: int = 5,
         billing_policy: BillingPolicy | None = None,
+        llm_transport_factory: Callable[..., Any] | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -208,6 +209,11 @@ class Supervisor:
         # genome doesn't know about billing — the supervisor sweeps the
         # wallet ledger at the heartbeat boundary to attribute revenue.
         self._billing = BillingService(billing_policy, clock=clock)
+        # Optional real-LLM transport factory (doc 13). Signature:
+        # ``factory(wallet, clock) -> LLMTransport``. When set, each spawned
+        # Darwin gets a real adapter instead of the deterministic FakeLLM.
+        # Default unset keeps the 90-day sim's reproducibility.
+        self._llm_factory: Callable[..., Any] | None = llm_transport_factory
 
     # -- spawn (doc 08: POST /darwins) ------------------------------------
     async def spawn(
@@ -227,12 +233,22 @@ class Supervisor:
             "supervisor.spawn",
             attributes={"opening_usdc": opening_usdc, "parent_id": parent_id},
         ) as s:
+            # Stage 1: build the stack with the wallet but defer the LLM
+            # so the real-adapter factory can wire it against the wallet
+            # below. FakeStack constructs FakeWallet eagerly in __init__,
+            # so building once and overwriting ``stack.llm`` afterwards is
+            # the cleanest path (a real factory can read stack.wallet).
             stack = FakeStack(
                 opening_usdc=opening_usdc,
                 clock=self._clock,
                 escalation_auto=escalation_auto,
                 signer=self._signer,
             )
+            if self._llm_factory is not None:
+                # Replace the default FakeLLM with the real adapter. The
+                # wallet is already bound; the factory only needs a clock
+                # for its own time concerns (timeouts, day rollovers).
+                stack.llm = self._llm_factory(stack.wallet, self._clock)
             # Genome's _sleep set to no-op: the supervisor schedules the gaps
             # between heartbeats itself with asyncio.sleep, so the event loop
             # never blocks on time.sleep even with many Darwins on one loop.
