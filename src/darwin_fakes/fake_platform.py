@@ -150,10 +150,24 @@ class MemoryEscalationInbox:
 # -- signing service (HSM stand-in) ---------------------------------------
 class SigningService:
     """Ed25519. The platform's birth-time signer. Private key never leaves
-    this object."""
+    this object.
+
+    Construction options:
+      - ``SigningService()`` — generate a fresh key (default).
+      - ``SigningService.from_private_bytes(b)`` — load from a persisted
+        raw 32-byte private key (used by HA resume so manifests signed
+        before a process restart still verify against the same public
+        key after the restart).
+    """
 
     def __init__(self) -> None:
         self._sk = Ed25519PrivateKey.generate()
+
+    @classmethod
+    def from_private_bytes(cls, raw: bytes) -> "SigningService":
+        inst = cls.__new__(cls)
+        inst._sk = Ed25519PrivateKey.from_private_bytes(bytes(raw))
+        return inst
 
     def sign(self, message: bytes) -> bytes:
         return self._sk.sign(bytes(message))
@@ -162,6 +176,17 @@ class SigningService:
         return self._sk.public_key().public_bytes(
             serialization.Encoding.PEM,
             serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
+    def private_bytes(self) -> bytes:
+        """Raw 32-byte private key. Used by the platform's HA-resume
+        persistence ONLY — never written to the audit chain or any
+        log. The genome never sees this; it only ever holds the
+        public key."""
+        return self._sk.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
         )
 
 
