@@ -33,7 +33,9 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dev deps
-        run: uv sync --dev
+        # ruff/pytest live in [project.optional-dependencies].dev, not a
+        # [dependency-groups] entry — --dev alone does not install them.
+        run: uv sync --extra dev
 
       - name: ruff check
         run: uv run ruff check src tests tools
