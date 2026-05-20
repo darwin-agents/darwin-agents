@@ -137,6 +137,93 @@ def test_verify_fails_on_missing_marker():
 
 
 # ---------------------------------------------------------------------------
+# pypdf-embedded metadata path (doc 16 — richer KYC trace)
+# ---------------------------------------------------------------------------
+
+def _real_pdf_bytes() -> bytes:
+    """Construct a real (minimal) PDF that pypdf can read + write."""
+    pytest.importorskip("pypdf")
+    import io
+    import pypdf
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def test_pypdf_path_embeds_into_info_dict():
+    pytest.importorskip("pypdf")
+    import io
+    import pypdf
+    wm = HmacWatermarker(signing_key=b"secret")
+    pdf = _real_pdf_bytes()
+    marked, record = wm.stamp(value=pdf, darwin_id="d-1", upload_ts=100.0)
+    # The /Info dict gained our HMAC field — and pypdf can read it
+    # back (this is the "survives a PDF re-save" property).
+    reader = pypdf.PdfReader(io.BytesIO(marked))
+    info = dict(reader.metadata or {})
+    assert info.get("/DarwinWatermarkHmac") == record.hmac_b64
+    assert info.get("/DarwinWatermarkDarwinId") == "d-1"
+
+
+def test_pypdf_path_verify_after_resave():
+    """A PDF that's been re-saved (which strips post-EOF garbage)
+    must still verify via the /Info path. This is the WHOLE POINT
+    of the pypdf embed — the trailer wouldn't survive a re-save."""
+    pytest.importorskip("pypdf")
+    import io
+    import pypdf
+    wm = HmacWatermarker(signing_key=b"secret")
+    pdf = _real_pdf_bytes()
+    marked, record = wm.stamp(value=pdf, darwin_id="d-1", upload_ts=100.0)
+    # Simulate a re-save through pypdf: this preserves /Info but
+    # drops anything appended after %%EOF.
+    reader = pypdf.PdfReader(io.BytesIO(marked))
+    writer = pypdf.PdfWriter(clone_from=reader)
+    buf = io.BytesIO()
+    writer.write(buf)
+    resaved = buf.getvalue()
+    # Confirm the trailer is gone (pypdf re-write).
+    assert WATERMARK_MARKER not in resaved
+    # But /Info verification still works.
+    assert verify(
+        marked_bytes=resaved, signing_key=b"secret",
+        expected_darwin_id="d-1", expected_upload_ts=100.0,
+        expected_sha256=record.sha256_of_original,
+    )
+
+
+def test_pypdf_metadata_survives_wrong_key_verify():
+    """The metadata path is also tamper-evident: an attacker who can
+    edit the /Info dict but doesn't have the signing key cannot
+    forge a valid HMAC."""
+    pytest.importorskip("pypdf")
+    import io
+    import pypdf
+    wm = HmacWatermarker(signing_key=b"real")
+    pdf = _real_pdf_bytes()
+    marked, record = wm.stamp(value=pdf, darwin_id="d-1", upload_ts=100.0)
+    # Strip the trailer; verification via /Info must still succeed
+    # with the right key + fail with the wrong key.
+    reader = pypdf.PdfReader(io.BytesIO(marked))
+    writer = pypdf.PdfWriter(clone_from=reader)
+    buf = io.BytesIO()
+    writer.write(buf)
+    resaved = buf.getvalue()
+    assert verify(
+        marked_bytes=resaved, signing_key=b"real",
+        expected_darwin_id="d-1", expected_upload_ts=100.0,
+        expected_sha256=record.sha256_of_original,
+    )
+    assert not verify(
+        marked_bytes=resaved, signing_key=b"forged",
+        expected_darwin_id="d-1", expected_upload_ts=100.0,
+        expected_sha256=record.sha256_of_original,
+    )
+
+
+# ---------------------------------------------------------------------------
 # VaultAdminService integration
 # ---------------------------------------------------------------------------
 

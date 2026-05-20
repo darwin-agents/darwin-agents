@@ -150,10 +150,13 @@ class HmacWatermarker:
         original_filename: str | None,
     ) -> bytes:
         trailer = self._build_trailer(record)
-        # PDF: appended bytes after the existing %%EOF are tolerated by
-        # most readers as a "comment" trailer.
+        # PDF: embed into the /Info dict via pypdf (when available) AND
+        # append a trailer after %%EOF. The /Info embed survives PDF
+        # re-saves that strip post-EOF garbage; the trailer is the
+        # baseline for forensics when pypdf isn't around.
         if value.startswith(b"%PDF-") or _has_pdf_eof(value):
-            return value + b"\n" + trailer + b"\n"
+            with_meta = self._embed_pdf_metadata(value, record)
+            return with_meta + b"\n" + trailer + b"\n"
         # PNG: append a tEXt chunk-like sentinel at the end. We don't
         # construct a real PNG chunk (which would require a CRC32 over
         # the chunk type + data) to avoid a Pillow dependency; an
@@ -169,6 +172,34 @@ class HmacWatermarker:
         # vault_admin module already writes a JSON sidecar; the HMAC
         # goes there too).
         return value
+
+    @staticmethod
+    def _embed_pdf_metadata(value: bytes, record: WatermarkRecord) -> bytes:
+        """Inject the HMAC + darwin id into the PDF /Info dict. Failure
+        is silent — the trailer path still works."""
+        try:
+            import io
+            import pypdf
+        except ImportError:
+            return value
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(value))
+            writer = pypdf.PdfWriter(clone_from=reader)
+            existing = dict(reader.metadata or {})
+            existing.update({
+                "/DarwinWatermarkHmac": record.hmac_b64,
+                "/DarwinWatermarkDarwinId": record.darwin_id,
+                "/DarwinWatermarkTs": f"{record.upload_ts:.6f}",
+                "/DarwinWatermarkSha256": record.sha256_of_original,
+            })
+            writer.add_metadata(existing)
+            buf = io.BytesIO()
+            writer.write(buf)
+            return buf.getvalue()
+        except Exception:
+            # Any pypdf failure (malformed PDF, unsupported feature)
+            # falls back to the trailer path.
+            return value
 
     def _build_trailer(self, record: WatermarkRecord) -> bytes:
         # The trailer is human-greppable enough for a forensics tool to
@@ -201,7 +232,13 @@ def verify(
     expected_sha256: str,
 ) -> bool:
     """Verify a leaked document's HMAC. Used by a forensics tool
-    against the platform's signing key + the stored WatermarkRecord."""
+    against the platform's signing key + the stored WatermarkRecord.
+
+    Checks BOTH paths the watermarker may have used:
+      1. The post-%%EOF trailer (always written when the formatter
+         recognised the file as PDF/PNG/JPEG).
+      2. The pypdf ``/Info`` metadata (only written when pypdf was
+         available at stamp time AND the doc was a PDF)."""
     msg = (
         f"{expected_sha256}|{expected_darwin_id}|"
         f"{expected_upload_ts:.6f}"
@@ -209,11 +246,41 @@ def verify(
     expected = base64.b64encode(
         hmac.new(signing_key, msg, hashlib.sha256).digest()
     ).decode("ascii")
-    if WATERMARK_MARKER not in marked_bytes:
-        return False
-    idx = marked_bytes.rfind(WATERMARK_MARKER)
-    trailer = marked_bytes[idx:].decode("utf-8", errors="ignore")
-    for token in trailer.split():
-        if token.startswith("hmac="):
-            return hmac.compare_digest(token.split("=", 1)[1].strip(), expected)
+    # Path 1: trailer.
+    if WATERMARK_MARKER in marked_bytes:
+        idx = marked_bytes.rfind(WATERMARK_MARKER)
+        trailer = marked_bytes[idx:].decode("utf-8", errors="ignore")
+        for token in trailer.split():
+            if token.startswith("hmac="):
+                if hmac.compare_digest(
+                    token.split("=", 1)[1].strip(), expected
+                ):
+                    return True
+    # Path 2: pypdf-embedded metadata (forensics tool path).
+    if _verify_via_pypdf(
+        marked_bytes=marked_bytes, expected_hmac_b64=expected,
+    ):
+        return True
     return False
+
+
+def _verify_via_pypdf(*, marked_bytes: bytes, expected_hmac_b64: str) -> bool:
+    """Probe the PDF /Info dictionary for the HMAC field we embed when
+    pypdf is available at stamp time. Returns False on any error
+    (file isn't a PDF, pypdf not installed, /Info missing, etc.)."""
+    try:
+        import io
+        import pypdf
+    except ImportError:
+        return False
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(marked_bytes))
+        info = reader.metadata or {}
+    except Exception:
+        return False
+    hmac_field = info.get("/DarwinWatermarkHmac") or info.get(
+        "/Darwinwatermarkhmac"
+    )
+    if not hmac_field:
+        return False
+    return hmac.compare_digest(str(hmac_field), expected_hmac_b64)
