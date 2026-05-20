@@ -81,6 +81,16 @@ class Quotas:
     # for prod so a sustained breach doesn't fan out hourly.
     dedup_window_seconds: float = 60.0
 
+    # Spread-spend smear detection (doc 10 §"deception detection"). A
+    # Darwin trying to dodge the per-action cap by issuing many small
+    # debits shows up as a *count* spike with low *variance* — total
+    # spend is unchanged, so spend_velocity may not fire. This detector
+    # catches the pattern directly: more than N debits in the past hour
+    # where the average is below the per-action floor.
+    spread_spend_count_per_hour_warn: int = 30
+    spread_spend_count_per_hour_critical: int = 80
+    spread_spend_amount_floor_usdc: float = 1.0
+
 
 # -- alerts ---------------------------------------------------------------
 @dataclass(frozen=True)
@@ -241,6 +251,59 @@ def detect_heartbeat_health(s: DarwinSignals, q: Quotas) -> Alert | None:
     return None
 
 
+def detect_spread_spend(s: DarwinSignals, q: Quotas) -> Alert | None:
+    """Spread-spend / smear evasion (doc 10).
+
+    Pattern: a Darwin (or an injected prompt) issues many small debits
+    well below the per-action cap to dodge the per-action gate. The
+    aggregate cost may not trip spend_velocity (each call is cheap), but
+    the *count* of small debits is the signal.
+
+    We count debits in the past hour whose amount is below the floor.
+    Above ``count_per_hour_warn`` → WARN; above ``..._critical`` →
+    CRITICAL with suggested_level=3 (pause)."""
+    cutoff = s.now - 3_600.0
+    small_count = 0
+    small_total = 0.0
+    for mv in s.movements:
+        debit = mv.get("debit")
+        if not debit:
+            continue
+        if float(debit.get("ts", 0.0)) < cutoff:
+            continue
+        amount = float(debit.get("amount_usdc", 0.0))
+        if amount <= q.spread_spend_amount_floor_usdc:
+            small_count += 1
+            small_total += amount
+    if small_count >= q.spread_spend_count_per_hour_critical:
+        return _alert(
+            s.darwin_id,
+            "spread_spend",
+            Severity.CRITICAL,
+            {
+                "small_debits_per_hour": small_count,
+                "small_debit_total_usdc": small_total,
+                "threshold": q.spread_spend_count_per_hour_critical,
+                "amount_floor_usdc": q.spread_spend_amount_floor_usdc,
+            },
+            s.now,
+        )
+    if small_count >= q.spread_spend_count_per_hour_warn:
+        return _alert(
+            s.darwin_id,
+            "spread_spend",
+            Severity.WARN,
+            {
+                "small_debits_per_hour": small_count,
+                "small_debit_total_usdc": small_total,
+                "threshold": q.spread_spend_count_per_hour_warn,
+                "amount_floor_usdc": q.spread_spend_amount_floor_usdc,
+            },
+            s.now,
+        )
+    return None
+
+
 def detect_escalation_rate(s: DarwinSignals, q: Quotas) -> Alert | None:
     cutoff = s.now - 3_600.0
     recent = sum(1 for ts in s.ticket_opened_ts if ts >= cutoff)
@@ -267,6 +330,7 @@ _DETECTORS: tuple[Callable[[DarwinSignals, Quotas], Alert | None], ...] = (
     detect_spend_velocity,
     detect_failure_rate,
     detect_heartbeat_health,
+    detect_spread_spend,
     detect_escalation_rate,
 )
 
