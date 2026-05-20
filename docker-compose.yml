@@ -1,0 +1,129 @@
+# Darwin platform — local dev stack (docs/engineering/08 + 13 + 16 + 17).
+#
+# Provider-neutral: every service runs on any cloud (or Talos/k3s/bare
+# metal). One ``docker compose up`` brings the whole platform up locally —
+# supervisor + Postgres + LiteLLM proxy + Prometheus + Jaeger.
+#
+# Layout:
+#   supervisor (8000)    Our FastAPI / Supervisor; persists to /data/state.db
+#   postgres   (5432)    Future home for the Postgres-backed persistence
+#                        layer (the supervisor currently uses SQLite — the
+#                        service is here so the swap is a one-flag change).
+#   litellm    (4000)    Real LLM gateway (doc 13). Reads provider keys
+#                        from ./docker/.env (NOT checked in).
+#   prometheus (9090)    Scrapes supervisor:8000/metrics every 15s.
+#   jaeger     (16686 UI / 4317-4318 OTLP) Receives OpenTelemetry spans.
+#
+# Volumes carry restart-survivable state — kill compose, restart, audit
+# chain + tokens + billing + lineage + tickets + alerts are still there.
+
+services:
+  supervisor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: darwin-platform:dev
+    container_name: darwin-supervisor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - supervisor-data:/data
+      # Optional: seed the token store from a file. Copy
+      # ./docker/tokens.example.json to ./docker/tokens.json AND
+      # uncomment the mount + --auth-tokens flag below to enable
+      # bearer-auth in dev. Without this, the supervisor runs
+      # auth-disabled (TRUSTS EVERY CALLER — do not expose publicly).
+      # - ./docker/tokens.json:/run/secrets/tokens.json:ro
+    command:
+      - python
+      - -m
+      - darwin_platform
+      - serve
+      - --host=0.0.0.0
+      - --port=8000
+      - --db=/data/state.db
+      # - --auth-tokens=/run/secrets/tokens.json
+    environment:
+      # OpenTelemetry pickup — the platform's `tracing` module uses the
+      # OTel API, which respects these env vars when a real SDK exporter
+      # is configured. (Configuring the exporter is a follow-up; the
+      # supervisor itself runs fine without it.)
+      OTEL_SERVICE_NAME: darwin-supervisor
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: darwin-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: darwin
+      POSTGRES_PASSWORD: dev_only_password
+      POSTGRES_DB: darwin
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U darwin -d darwin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: darwin-litellm
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./docker/litellm.config.yaml:/app/config.yaml:ro
+    env_file:
+      # Provider API keys live here, never in the repo. Create
+      # ./docker/.env from ./docker/.env.example and fill in real keys.
+      # Marked optional so `docker compose up` doesn't fail when the
+      # file is missing (litellm will just refuse calls without keys).
+      - path: ./docker/.env
+        required: false
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: darwin-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: darwin-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+
+volumes:
+  supervisor-data:
+  postgres-data:
+  prometheus-data:

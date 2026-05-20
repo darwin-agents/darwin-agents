@@ -1,0 +1,58 @@
+# LiteLLM proxy config (docs/engineering/13).
+#
+# Maps the genome's capability tiers (fast / reasoning / coding / etc.) to
+# real provider models. The supervisor's LiteLLMTransport sends requests
+# tier-by-tier; LiteLLM resolves the chain and routes to the cheapest /
+# fastest healthy upstream. Provider API keys come from ./docker/.env.
+#
+# This is a STARTING config — the model_list entries should be tuned to
+# the platform's actual contracts. The price_table is what LiteLLM uses
+# for per-call cost extraction (which the supervisor's billing layer
+# attributes platform revenue from).
+
+model_list:
+  # tier=fast — snap judgments, classification, routing
+  - model_name: tier-fast
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: tier-fast
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # tier=reasoning — the planner; the default thinking tier
+  - model_name: tier-reasoning
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: tier-reasoning
+    litellm_params:
+      model: openai/gpt-5.5
+      api_key: os.environ/OPENAI_API_KEY
+
+  # tier=coding — self-modification; expensive, gated hard
+  - model_name: tier-coding
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # tier=embedding — episodic memory + retrieval
+  - model_name: tier-embedding
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  routing_strategy: latency-based-routing
+  fallbacks:
+    # Degrade rather than fail outright. doc 13 §"Failover".
+    - tier-reasoning: ["tier-fast"]
+    - tier-coding: ["tier-reasoning"]
+
+general_settings:
+  # No master key in dev — relies on docker-compose network isolation. A
+  # real deployment puts LiteLLM behind an auth proxy (or sets
+  # master_key) and provisions per-Darwin virtual keys via the LiteLLM
+  # API.
+  master_key: dev_only_master_key

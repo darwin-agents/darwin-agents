@@ -1,0 +1,13 @@
+[
+  {
+    "token": "owner-dev-token",
+    "scopes": ["owner"],
+    "subject": "alice@example.com",
+    "owned_darwins": []
+  },
+  {
+    "token": "ops-dev-token",
+    "scopes": ["platform_operator"],
+    "subject": "ops@darwin.local"
+  }
+]

@@ -1,0 +1,45 @@
+# Build artifacts + caches — exclude so docker build's COPY is cheap
+.git/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+**/*.pyc
+
+# Editor / OS detritus
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local dev state — never bake into the image
+*.db
+*.db-wal
+*.db-shm
+data/
+tmp/
+build/
+dist/
+*.egg-info/
+
+# Tests are not needed in the runtime image. CI runs them BEFORE building.
+tests/
+
+# Docs aren't shipped in the image; they live in source control.
+docs/
+
+# Marketing / overview content
+**/marketing/
+**/overview/
+
+# Docker config files — don't recurse into ourselves
+docker-compose*.yml
+
+# Secrets — must NEVER end up in an image. Pull these in via secrets
+# managers or k8s Secret mounts at runtime, not at build time.
+**/*.env
+**/*.pem
+**/*.key
+**/secrets.*
+**/tokens.json

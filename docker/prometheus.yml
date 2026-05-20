@@ -1,0 +1,26 @@
+# Prometheus scrape config for the local dev stack.
+#
+# The supervisor exposes /metrics in Prometheus text format (see
+# darwin_platform.api._render_metrics). Scrape it every 15s; one-process
+# deployment so no service discovery needed yet — a real production
+# install would target the supervisor's K8s service via kubernetes_sd.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: dev
+    service: darwin-platform
+
+scrape_configs:
+  - job_name: darwin-supervisor
+    static_configs:
+      - targets:
+          - supervisor:8000
+    metrics_path: /metrics
+
+  # Prometheus' own metrics — handy for confirming the scrape is alive.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
