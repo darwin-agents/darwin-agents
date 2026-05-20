@@ -105,7 +105,10 @@ spec:
           {{- end }}
           readinessProbe:
             httpGet:
-              path: /healthz
+              # With HA on, readiness == leader. The Service excludes
+              # followers via this probe so writes always hit whoever
+              # holds the lock. Without HA, /healthz suffices.
+              path: {{ if $haEnabled }}/readyz{{ else }}/healthz{{ end }}
               port: http
             initialDelaySeconds: 3
             periodSeconds: 10
