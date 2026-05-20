@@ -11,6 +11,7 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Added
 
+- docs(engineering): add testing strategy, configuration reference, cross-cutting contracts, post-mortem template, and evolution tuning guide (docs 26–30)
 - docs(engineering): add data model reference, security threat model, and operational runbook (docs 23–25)
 - feat(platform): CLI for multichain wallet, sanctions providers, and sinks
 - feat(platform): REST routes for signing rotation and Path-C proposals
@@ -134,6 +135,9 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Documentation
 
+- docs: refresh README intro, layout, and links to new reference docs
+- docs(deploy): add operator runbook for provider enablement and incidents
+- docs(engineering): add testing strategy and configuration reference (docs 26–27)
 - docs(engineering): add phase-two multi-tenant build plan
 - docs: update phase-one build plan and README license attribution
 - docs: add CHANGELOG from conventional commit history
@@ -150,6 +154,9 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Tests
 
+- test(k8s): cover K8sDarwinDriver, manifests, and supervisor k8s spawn mode
+- test(adapters): extend chain SDK and fiat ramp coverage for new extras
+- test(orchestrator): cover Path-C proposal flow through propose and apply nodes
 - test(supervisor): cover cross-pollination archive wiring
 - test(security): red-team adversarial scenarios for doc-10 defences
 - test(neurons): cover round-3 catalog neurons and loader validation
@@ -173,6 +180,13 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Build & deploy
 
+- build(docker): bundle solana, stellar, stripe, and pdfwatermark in default image
+- build(deps): add k8s, solana, stellar, stripe, and pdfwatermark extras
+- deploy(grafana): add Darwin platform operations dashboard
+- deploy(helm): add K8s driver mode, egress proxy, RBAC, and Kata RuntimeClass
+- deploy(helm): wire provider secrets into deployment env vars
+- deploy(helm): add providers values for sanctions, notifications, and fiat
+- ci(helm): validate provider integration template rendering
 - build: set package version to 0.0.1 for pre-release tracking
 - chore: add proprietary LICENSE for Specimen Labs, Inc.
 - build(docker): install web3 and hvac extras in default image
