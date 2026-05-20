@@ -25,6 +25,12 @@ from .operator_audit import (
     OperatorAuditError,
     OperatorAuditLog,
 )
+from .persistence import (
+    PersistenceStore,
+    PersistentBillingService,
+    PersistentOperatorAuditLog,
+    PersistentTokenStore,
+)
 from .escalation import (
     EscalationRouter,
     LogNotificationSink,
@@ -71,6 +77,10 @@ __all__ = [
     "OperatorAuditEntry",
     "OperatorAuditError",
     "OperatorAuditLog",
+    "PersistenceStore",
+    "PersistentBillingService",
+    "PersistentOperatorAuditLog",
+    "PersistentTokenStore",
     "EscalationRouter",
     "RoutedTicket",
     "TicketStatus",
