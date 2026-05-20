@@ -1,4 +1,4 @@
-"""SQLite-backed persistence for the platform's durable state.
+"""Persistence for the platform's durable state — SQLite or Postgres.
 
 Doc 08 calls out the audit log as "permanent and hash-chained — we do not
 delete audit entries even when a Darwin dies." The in-memory implementations
@@ -6,25 +6,36 @@ in :mod:`darwin_platform.operator_audit`, :mod:`darwin_platform.billing`,
 and :mod:`darwin_platform.auth` are convenient for tests but die with the
 process, which contradicts that promise.
 
-This module wraps each of those collection types with a SQLite-backed
-variant that:
+This module wraps each of those collection types with a persistent variant
+that:
 
 - **Reads through to memory** on init: existing rows are loaded so all
   query paths run against an in-process snapshot for fast lookups, just
   like the in-memory implementations.
-- **Writes through to SQLite** on every mutation: the database is the
-  durable source of truth. Process crashes between writes lose at most
-  one in-flight call's work; restart loads the persisted state and
+- **Writes through to the backend** on every mutation: the database is
+  the durable source of truth. Process crashes between writes lose at
+  most one in-flight call's work; restart loads the persisted state and
   carries on.
 - **Preserves chain integrity**. The persistent audit log loads its
   rows in seq order; ``verify()`` walks the same chain it would in
   memory.
 
-SQLite was chosen because it ships in the stdlib, gives real ACID
-guarantees per-row, and runs against a single file (one Supervisor =
-one DB file). Production deployers can swap the persistent classes for
-Postgres-backed variants behind the same interfaces without touching
-the Supervisor.
+**Two backends:**
+
+- **SQLite** (default, stdlib only). Single file, WAL journal. Right
+  for one-process deployments — restart-survivable, no external
+  service. Pass a file path to :class:`PersistenceStore`.
+- **Postgres** (opt-in, requires the ``[postgres]`` extra → ``psycopg``).
+  Right for multi-replica deployments (when the leader-election layer
+  lands), production-grade backups, and the doc-08 §"Postgres"
+  reference. Pass a ``postgresql://`` or ``postgres://`` DSN.
+
+Both backends sit behind the same :class:`_Backend` adapter so the
+``PersistentXxx`` classes don't care which is wired in. The SQL is the
+same minus a couple of type-flavor differences (REAL ↔ DOUBLE PRECISION,
+AUTOINCREMENT ↔ BIGSERIAL) handled by template substitution. Placeholders
+are ``?`` everywhere; the Postgres backend translates to ``%s`` at execute
+time.
 """
 
 from __future__ import annotations
@@ -59,14 +70,15 @@ from .operator_audit import (
 )
 
 
+# -- schema (template; backends substitute the type flavors) ---------------
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_entries (
     seq         INTEGER PRIMARY KEY,
-    ts          REAL    NOT NULL,
+    ts          {real}  NOT NULL,
     actor       TEXT    NOT NULL,
     action      TEXT    NOT NULL,
     darwin_id   TEXT,
-    metadata    TEXT    NOT NULL,  -- canonical JSON
+    metadata    TEXT    NOT NULL,
     prev_hash   TEXT    NOT NULL,
     entry_hash  TEXT    NOT NULL
 );
@@ -77,29 +89,29 @@ CREATE INDEX IF NOT EXISTS audit_ts_idx        ON audit_entries(ts);
 
 CREATE TABLE IF NOT EXISTS tokens (
     token          TEXT PRIMARY KEY,
-    scopes         TEXT NOT NULL,   -- JSON array
-    owned_darwins  TEXT NOT NULL,   -- JSON array
+    scopes         TEXT NOT NULL,
+    owned_darwins  TEXT NOT NULL,
     subject        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS billing_ledgers (
     darwin_id                       TEXT PRIMARY KEY,
-    metered_gross_usdc              REAL NOT NULL DEFAULT 0,
-    metered_provider_cost_usdc      REAL NOT NULL DEFAULT 0,
-    metered_platform_revenue_usdc   REAL NOT NULL DEFAULT 0,
-    metered_events                  INTEGER NOT NULL DEFAULT 0,
-    harvests_gross_usdc             REAL NOT NULL DEFAULT 0,
-    harvests_net_usdc               REAL NOT NULL DEFAULT 0,
-    harvests_fee_usdc               REAL NOT NULL DEFAULT 0,
-    harvest_events                  INTEGER NOT NULL DEFAULT 0,
-    harvest_history                 TEXT NOT NULL DEFAULT '[]'  -- JSON list
+    metered_gross_usdc              {real}    NOT NULL DEFAULT 0,
+    metered_provider_cost_usdc      {real}    NOT NULL DEFAULT 0,
+    metered_platform_revenue_usdc   {real}    NOT NULL DEFAULT 0,
+    metered_events                  INTEGER   NOT NULL DEFAULT 0,
+    harvests_gross_usdc             {real}    NOT NULL DEFAULT 0,
+    harvests_net_usdc               {real}    NOT NULL DEFAULT 0,
+    harvests_fee_usdc               {real}    NOT NULL DEFAULT 0,
+    harvest_events                  INTEGER   NOT NULL DEFAULT 0,
+    harvest_history                 TEXT      NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS lineage_edges (
-    parent_id     TEXT NOT NULL,
-    child_id      TEXT NOT NULL,
-    spawned_at    REAL NOT NULL,
-    budget_usdc   REAL NOT NULL,
+    parent_id     TEXT  NOT NULL,
+    child_id      TEXT  NOT NULL,
+    spawned_at    {real} NOT NULL,
+    budget_usdc   {real} NOT NULL,
     PRIMARY KEY (parent_id, child_id)
 );
 CREATE INDEX IF NOT EXISTS lineage_child_idx ON lineage_edges(child_id);
@@ -109,67 +121,210 @@ CREATE TABLE IF NOT EXISTS routed_tickets (
     darwin_id            TEXT NOT NULL,
     neuron               TEXT NOT NULL,
     ticket_class         TEXT NOT NULL,
-    opened_ts            REAL NOT NULL,
-    deadline_ts          REAL NOT NULL,
-    detail               TEXT NOT NULL,    -- JSON
-    status               TEXT NOT NULL,    -- open | responded | expired
+    opened_ts            {real} NOT NULL,
+    deadline_ts          {real} NOT NULL,
+    detail               TEXT NOT NULL,
+    status               TEXT NOT NULL,
     response_decision    TEXT,
-    response_data        TEXT,             -- JSON
-    responded_ts         REAL,
-    notification_sent_ts REAL,
+    response_data        TEXT,
+    responded_ts         {real},
+    notification_sent_ts {real},
     tick                 INTEGER
 );
 CREATE INDEX IF NOT EXISTS routed_tickets_darwin_idx ON routed_tickets(darwin_id);
 
 CREATE TABLE IF NOT EXISTS monitor_alerts (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    darwin_id         TEXT NOT NULL,
-    kind              TEXT NOT NULL,
-    severity          TEXT NOT NULL,
+    id                {auto_id_pk},
+    darwin_id         TEXT  NOT NULL,
+    kind              TEXT  NOT NULL,
+    severity          TEXT  NOT NULL,
     suggested_level   INTEGER NOT NULL,
-    detail            TEXT NOT NULL,    -- JSON
-    ts                REAL NOT NULL
+    detail            TEXT NOT NULL,
+    ts                {real} NOT NULL
 );
 CREATE INDEX IF NOT EXISTS monitor_alerts_darwin_idx ON monitor_alerts(darwin_id);
 CREATE INDEX IF NOT EXISTS monitor_alerts_ts_idx     ON monitor_alerts(ts);
 """
 
 
-def _connect(path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
-    # WAL gives concurrent readers + a single writer; the supervisor's
-    # async drive loop is single-writer per process so this is appropriate.
-    conn.execute("PRAGMA journal_mode=WAL")
-    # Foreign keys not used here but enable for future expansion.
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.row_factory = sqlite3.Row
-    return conn
+# -- backend abstraction --------------------------------------------------
+class _Backend:
+    """sqlite3.Connection-shaped surface over either SQLite or Postgres.
+
+    The PersistentXxx classes call ``execute`` / ``executemany`` /
+    ``executescript`` and use ``with backend: ...`` for transactions, the
+    same way the original SQLite-only code did. Backends translate where
+    needed (``?`` → ``%s`` for Postgres; flavor-specific DDL).
+    """
+
+    kind: str = ""
+    real_type: str = "REAL"
+    auto_id_pk: str = "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+    def schema(self) -> str:
+        return _SCHEMA.format(real=self.real_type, auto_id_pk=self.auto_id_pk)
+
+    # Subclasses implement:
+    def execute(self, sql: str, params: tuple = ()) -> Any: ...
+    def executemany(self, sql: str, params_seq: Iterable[tuple]) -> None: ...
+    def executescript(self, script: str) -> None: ...
+    def __enter__(self): ...
+    def __exit__(self, exc_type, exc, tb): ...
+    def close(self) -> None: ...
 
 
+class _SqliteBackend(_Backend):
+    """The classic. WAL journal + foreign-keys on; one file, no daemon."""
+
+    kind = "sqlite"
+    real_type = "REAL"
+    auto_id_pk = "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self._path))
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.row_factory = sqlite3.Row
+
+    def execute(self, sql, params=()):
+        return self._conn.execute(sql, params)
+
+    def executemany(self, sql, params_seq):
+        self._conn.executemany(sql, params_seq)
+
+    def executescript(self, script):
+        self._conn.executescript(script)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def close(self):
+        self._conn.close()
+
+
+class _PostgresBackend(_Backend):
+    """psycopg-backed. Multi-replica future-proofs the supervisor; for
+    now the same single-writer constraint applies (Postgres just lets us
+    survive a pod replacement without losing the audit chain on a PVC
+    that didn't get backed up). DSN forms: ``postgresql://...`` or
+    ``postgres://...``."""
+
+    kind = "postgres"
+    real_type = "DOUBLE PRECISION"
+    auto_id_pk = "BIGSERIAL PRIMARY KEY"
+
+    def __init__(self, dsn: str) -> None:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as exc:  # pragma: no cover - install hint
+            raise ImportError(
+                "Postgres persistence requires the [postgres] extra: "
+                "`pip install darwin-dna[postgres]`"
+            ) from exc
+        self._dsn = dsn
+        # autocommit=True so SELECTs don't leave a long-lived implicit
+        # transaction open (psycopg's default off-mode does, and close()
+        # would then roll back any pending writes that ran in nested
+        # ``conn.transaction()`` savepoints). Single statements commit
+        # immediately; multi-statement atomicity is opt-in via the
+        # ``with self._backend:`` transaction wrapper.
+        self._conn = psycopg.connect(
+            dsn, autocommit=True, row_factory=dict_row
+        )
+        # Ruff doesn't see these used — they're held by the connection.
+        del psycopg, dict_row
+
+    @staticmethod
+    def _adapt(sql: str) -> str:
+        # All our SQL uses ``?`` placeholders. Translate to psycopg's
+        # ``%s`` at execute time. No SQL in this module contains ``?``
+        # in string literals (Postgres doesn't allow that anyway), so a
+        # straight replace is safe.
+        return sql.replace("?", "%s")
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor()
+        cur.execute(self._adapt(sql), tuple(params))
+        return cur
+
+    def executemany(self, sql, params_seq):
+        with self._conn.cursor() as cur:
+            cur.executemany(self._adapt(sql), [tuple(p) for p in params_seq])
+
+    def executescript(self, script):
+        # Postgres doesn't have an executescript shortcut. Split on
+        # semicolon at statement boundaries (no SQL in this module
+        # embeds a literal ``;`` inside a string, which would break
+        # naive splitting). No explicit commit — the caller's
+        # ``with backend:`` transaction handles that.
+        with self._conn.cursor() as cur:
+            for raw in script.split(";"):
+                stmt = raw.strip()
+                if stmt:
+                    cur.execute(self._adapt(stmt))
+
+    def __enter__(self):
+        # psycopg 3.3 changed ``with conn:`` to close the connection on
+        # exit (was just commit/rollback in earlier versions). Use the
+        # explicit ``conn.transaction()`` context manager instead — that
+        # commits/rolls back without touching the connection lifecycle.
+        # Nested transactions become savepoints; safe for re-entry.
+        self._tx = self._conn.transaction()
+        self._tx.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._tx.__exit__(exc_type, exc, tb)
+
+    def close(self):
+        self._conn.close()
+
+
+def _open_backend(spec: str | Path) -> _Backend:
+    """Pick a backend from the connection spec. ``postgres://`` or
+    ``postgresql://`` → Postgres; anything else → SQLite (file path)."""
+    s = str(spec)
+    if s.startswith(("postgresql://", "postgres://")):
+        return _PostgresBackend(s)
+    return _SqliteBackend(s)
+
+
+# -- the store + persistent collections -----------------------------------
 class PersistenceStore:
-    """One handle that owns the SQLite connection and exposes the three
+    """One handle that owns the backend connection and exposes the
     persistent collections used by the supervisor + API layer.
 
     Construct once per process and pass the relevant sub-objects to
     :class:`Supervisor` and :func:`build_app`. Calling :meth:`close`
-    closes the underlying SQLite connection; future writes will fail."""
+    closes the underlying connection; future writes will fail."""
 
-    def __init__(self, path: str | Path, *, clock=time.time) -> None:
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = _connect(self._path)
-        with self._conn:
-            self._conn.executescript(_SCHEMA)
+    def __init__(self, spec: str | Path, *, clock=time.time) -> None:
+        self._spec = spec
+        self._backend = _open_backend(spec)
+        with self._backend:
+            self._backend.executescript(self._backend.schema())
         self._clock = clock
-        self._audit = PersistentOperatorAuditLog(self._conn, clock=clock)
-        self._tokens = PersistentTokenStore(self._conn)
+        self._audit = PersistentOperatorAuditLog(self._backend, clock=clock)
+        self._tokens = PersistentTokenStore(self._backend)
         self._billing = PersistentBillingService(
-            self._conn, BillingPolicy(), clock=clock
+            self._backend, BillingPolicy(), clock=clock
         )
 
     @property
-    def path(self) -> Path:
-        return self._path
+    def spec(self) -> str | Path:
+        return self._spec
+
+    @property
+    def backend_kind(self) -> str:
+        """Either ``"sqlite"`` or ``"postgres"``. Useful for /healthz."""
+        return self._backend.kind
 
     @property
     def audit_log(self) -> "PersistentOperatorAuditLog":
@@ -184,14 +339,14 @@ class PersistenceStore:
         return self._billing
 
     @property
-    def connection(self) -> sqlite3.Connection:
+    def connection(self) -> _Backend:
         """Exposed for the supervisor to construct persistent variants
         that need additional ctor args (sink, quotas, clock) — keeps the
-        SQLite handle in one place."""
-        return self._conn
+        backend handle in one place."""
+        return self._backend
 
     def lineage_registry(self) -> "PersistentLineageRegistry":
-        return PersistentLineageRegistry(self._conn)
+        return PersistentLineageRegistry(self._backend)
 
     def escalation_router(
         self,
@@ -199,7 +354,9 @@ class PersistenceStore:
         sink: NotificationSink | None = None,
         clock=time.time,
     ) -> "PersistentEscalationRouter":
-        return PersistentEscalationRouter(self._conn, sink=sink, clock=clock)
+        return PersistentEscalationRouter(
+            self._backend, sink=sink, clock=clock
+        )
 
     def monitor(
         self,
@@ -209,29 +366,27 @@ class PersistenceStore:
         clock=time.time,
     ) -> "PersistentMonitor":
         return PersistentMonitor(
-            self._conn, quotas=quotas, sink=sink, clock=clock
+            self._backend, quotas=quotas, sink=sink, clock=clock
         )
 
     def close(self) -> None:
         try:
-            self._conn.close()
+            self._backend.close()
         except Exception:
             pass
 
 
 # -- audit log ------------------------------------------------------------
 class PersistentOperatorAuditLog(OperatorAuditLog):
-    """SQLite-backed variant. Loads existing rows on construction so the
+    """Backend-backed variant. Loads existing rows on construction so the
     in-memory chain matches the database; appends to both on
     :meth:`record`. ``verify()`` runs against the in-memory mirror — both
     are kept in lockstep by the write-through path."""
 
-    def __init__(self, conn: sqlite3.Connection, *, clock=time.time) -> None:
+    def __init__(self, backend: _Backend, *, clock=time.time) -> None:
         super().__init__(clock=clock)
-        self._conn = conn
-        # Load existing entries in seq order so the parent class's chain
-        # is correct and tip_hash points at the persisted tip.
-        rows = list(conn.execute(
+        self._backend = backend
+        rows = list(backend.execute(
             "SELECT seq, ts, actor, action, darwin_id, metadata, "
             "prev_hash, entry_hash FROM audit_entries ORDER BY seq ASC"
         ))
@@ -266,8 +421,8 @@ class PersistentOperatorAuditLog(OperatorAuditLog):
             metadata=metadata, ts=ts,
         )
         try:
-            with self._conn:
-                self._conn.execute(
+            with self._backend:
+                self._backend.execute(
                     "INSERT INTO audit_entries(seq, ts, actor, action, "
                     "darwin_id, metadata, prev_hash, entry_hash) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -278,7 +433,7 @@ class PersistentOperatorAuditLog(OperatorAuditLog):
                         entry.prev_hash, entry.entry_hash,
                     ),
                 )
-        except sqlite3.Error as exc:
+        except Exception as exc:
             # The in-memory chain has the entry; the DB does not. That
             # would silently break the invariant "verify() == DB walk".
             # Refuse to leave the system in that state: pop the entry
@@ -292,15 +447,15 @@ class PersistentOperatorAuditLog(OperatorAuditLog):
 
 # -- token store ----------------------------------------------------------
 class PersistentTokenStore:
-    """SQLite-backed token store. Implements :class:`TokenStore` and
+    """Backend-backed token store. Implements :class:`TokenStore` and
     supports the same ``issue`` / ``revoke`` API as
     :class:`InMemoryTokenStore`. Loads existing tokens on construction
     into an in-memory mirror; writes go to both."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
         self._cache: dict[str, AuthContext] = {}
-        for r in conn.execute(
+        for r in backend.execute(
             "SELECT token, scopes, owned_darwins, subject FROM tokens"
         ):
             try:
@@ -345,12 +500,14 @@ class PersistentTokenStore:
 
     def revoke(self, token: str) -> None:
         self._cache.pop(token, None)
-        with self._conn:
-            self._conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
+        with self._backend:
+            self._backend.execute(
+                "DELETE FROM tokens WHERE token = ?", (token,)
+            )
 
     def _persist(self, ctx: AuthContext) -> None:
-        with self._conn:
-            self._conn.execute(
+        with self._backend:
+            self._backend.execute(
                 "INSERT INTO tokens(token, scopes, owned_darwins, subject) "
                 "VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(token) DO UPDATE SET "
@@ -368,19 +525,19 @@ class PersistentTokenStore:
 
 # -- billing service ------------------------------------------------------
 class PersistentBillingService(BillingService):
-    """SQLite-backed billing service. Loads ledgers on init; flushes the
-    affected ledger to SQLite after every record_metered / record_harvest."""
+    """Backend-backed billing service. Loads ledgers on init; flushes the
+    affected ledger to the DB after every record_metered / record_harvest."""
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        backend: _Backend,
         policy: BillingPolicy | None = None,
         *,
         clock=time.time,
     ) -> None:
         super().__init__(policy, clock=clock)
-        self._conn = conn
-        for r in conn.execute(
+        self._backend = backend
+        for r in backend.execute(
             "SELECT darwin_id, metered_gross_usdc, metered_provider_cost_usdc, "
             "metered_platform_revenue_usdc, metered_events, "
             "harvests_gross_usdc, harvests_net_usdc, harvests_fee_usdc, "
@@ -433,8 +590,8 @@ class PersistentBillingService(BillingService):
         led = self._ledgers.get(darwin_id)
         if led is None:
             return
-        with self._conn:
-            self._conn.execute(
+        with self._backend:
+            self._backend.execute(
                 "INSERT INTO billing_ledgers(darwin_id, metered_gross_usdc, "
                 "metered_provider_cost_usdc, metered_platform_revenue_usdc, "
                 "metered_events, harvests_gross_usdc, harvests_net_usdc, "
@@ -472,14 +629,14 @@ from .supervisor import LineageEdge, LineageRegistry  # noqa: E402
 
 
 class PersistentLineageRegistry(LineageRegistry):
-    """SQLite-backed lineage registry. The edges table survives restarts;
+    """Backend-backed lineage registry. The edges table survives restarts;
     on init we replay it into the in-memory mirror so query paths stay
     fast. ``add`` is write-through."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, backend: _Backend) -> None:
         super().__init__()
-        self._conn = conn
-        for r in conn.execute(
+        self._backend = backend
+        for r in backend.execute(
             "SELECT parent_id, child_id, spawned_at, budget_usdc "
             "FROM lineage_edges ORDER BY spawned_at ASC"
         ):
@@ -489,20 +646,19 @@ class PersistentLineageRegistry(LineageRegistry):
                 spawned_at=float(r["spawned_at"]),
                 budget_usdc=float(r["budget_usdc"]),
             )
-            # Use the parent's add() so the in-memory indexes also populate.
             super().add(edge)
 
     def add(self, edge: LineageEdge) -> None:
-        # Dedup is decided by the in-memory layer (super().add).
         before = len(self._edges)
         super().add(edge)
         if len(self._edges) == before:
             return  # was a duplicate; do not re-persist
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO lineage_edges"
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO lineage_edges"
                 "(parent_id, child_id, spawned_at, budget_usdc) "
-                "VALUES (?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (parent_id, child_id) DO NOTHING",
                 (
                     edge.parent_id, edge.child_id,
                     float(edge.spawned_at), float(edge.budget_usdc),
@@ -512,23 +668,23 @@ class PersistentLineageRegistry(LineageRegistry):
 
 # -- escalation router ----------------------------------------------------
 class PersistentEscalationRouter(EscalationRouter):
-    """SQLite-backed escalation router. Loads existing tickets on init so a
-    restart preserves both open and resolved ticket views; ``register`` and
-    ``mark_responded`` write-through. Notification side-effects are NOT
-    replayed on reload — the sink record is one-shot; we restore the
+    """Backend-backed escalation router. Loads existing tickets on init so
+    a restart preserves both open and resolved ticket views; ``register``
+    and ``mark_responded`` write-through. Notification side-effects are
+    NOT replayed on reload — the sink record is one-shot; we restore the
     ``notification_sent_ts`` from the row so the dashboard knows when the
     notification originally fired."""
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        backend: _Backend,
         *,
         sink: NotificationSink | None = None,
         clock=time.time,
     ) -> None:
         super().__init__(sink=sink, clock=clock)
-        self._conn = conn
-        for r in conn.execute(
+        self._backend = backend
+        for r in backend.execute(
             "SELECT ticket_id, darwin_id, neuron, ticket_class, opened_ts, "
             "deadline_ts, detail, status, response_decision, response_data, "
             "responded_ts, notification_sent_ts, tick FROM routed_tickets"
@@ -547,8 +703,6 @@ class PersistentEscalationRouter(EscalationRouter):
             try:
                 klass = TicketClass(r["ticket_class"])
             except ValueError:
-                # Unknown class on reload: bucket as INFO (the lenient
-                # default the live path also uses).
                 klass = TicketClass.INFO
             try:
                 status = TicketStatus(r["status"])
@@ -576,8 +730,6 @@ class PersistentEscalationRouter(EscalationRouter):
         tid = payload.get("ticket")
         existed = tid in self._tickets if tid else False
         tk = super().register(payload)
-        # ``register`` is idempotent on ticket id; only the FIRST sighting
-        # creates a new row.
         if existed:
             return tk
         self._persist_ticket(tk)
@@ -595,8 +747,8 @@ class PersistentEscalationRouter(EscalationRouter):
         return tk
 
     def _persist_ticket(self, tk: RoutedTicket) -> None:
-        with self._conn:
-            self._conn.execute(
+        with self._backend:
+            self._backend.execute(
                 "INSERT INTO routed_tickets("
                 "ticket_id, darwin_id, neuron, ticket_class, opened_ts, "
                 "deadline_ts, detail, status, response_decision, "
@@ -625,22 +777,23 @@ class PersistentEscalationRouter(EscalationRouter):
 
 # -- monitor --------------------------------------------------------------
 class PersistentMonitor(Monitor):
-    """SQLite-backed monitor. Alerts are write-through on emit so dashboards
-    and compliance reviewers see the same series across restarts. Tick
-    freshness bookkeeping is in-process only — heartbeat health is meaningful
-    only relative to the running process's wall-clock."""
+    """Backend-backed monitor. Alerts are write-through on emit so
+    dashboards + compliance reviewers see the same series across
+    restarts. Tick freshness bookkeeping stays in-process — heartbeat
+    health is meaningful only relative to the running process's
+    wall-clock."""
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        backend: _Backend,
         *,
         quotas: Quotas | None = None,
         sink: AlertSink | None = None,
         clock=time.time,
     ) -> None:
         super().__init__(quotas=quotas, sink=sink, clock=clock)
-        self._conn = conn
-        for r in conn.execute(
+        self._backend = backend
+        for r in backend.execute(
             "SELECT darwin_id, kind, severity, suggested_level, detail, ts "
             "FROM monitor_alerts ORDER BY ts ASC"
         ):
@@ -666,8 +819,8 @@ class PersistentMonitor(Monitor):
         fired = super().check(signals)
         if not fired:
             return fired
-        with self._conn:
-            self._conn.executemany(
+        with self._backend:
+            self._backend.executemany(
                 "INSERT INTO monitor_alerts"
                 "(darwin_id, kind, severity, suggested_level, detail, ts) "
                 "VALUES (?, ?, ?, ?, ?, ?)",

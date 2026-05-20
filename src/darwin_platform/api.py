@@ -697,7 +697,8 @@ def build_app(
         return {
             "status": "ok",
             "persistence": (
-                "sqlite" if sup._persistence is not None  # noqa: SLF001
+                sup._persistence.backend_kind  # noqa: SLF001
+                if sup._persistence is not None  # noqa: SLF001
                 else "memory"
             ),
             "uptime_seconds": time.time() - app_started_ts,
