@@ -227,10 +227,13 @@ async def test_supervisor_browser_factory_replaces_fake():
     def browser_factory(wallet):
         return stub
 
-    # browser_cache_enabled=False so the stub is the direct substrate;
-    # the wrapping behaviour is exercised in test_browser_cache.py.
+    # browser_cache_enabled=False + resource_throttle_enabled=False so the
+    # stub is the direct substrate; wrapping behaviour is exercised in
+    # test_browser_cache.py and test_resource_throttle.py.
     sup = Supervisor(
-        browser_factory=browser_factory, browser_cache_enabled=False,
+        browser_factory=browser_factory,
+        browser_cache_enabled=False,
+        resource_throttle_enabled=False,
     )
     status = await sup.spawn(opening_usdc=50.0)
     darwin_id = status.darwin_id
@@ -250,7 +253,7 @@ async def test_supervisor_x402_factory_sets_stack_client():
     def x402_factory(wallet):
         return stub
 
-    sup = Supervisor(x402_factory=x402_factory)
+    sup = Supervisor(x402_factory=x402_factory, resource_throttle_enabled=False)
     status = await sup.spawn(opening_usdc=50.0)
     darwin_id = status.darwin_id
 
@@ -269,7 +272,7 @@ async def test_supervisor_sandbox_factory_replaces_fake():
     def sandbox_factory(wallet):
         return stub
 
-    sup = Supervisor(sandbox_factory=sandbox_factory)
+    sup = Supervisor(sandbox_factory=sandbox_factory, resource_throttle_enabled=False)
     status = await sup.spawn(opening_usdc=50.0)
     darwin_id = status.darwin_id
 
@@ -297,6 +300,7 @@ async def test_supervisor_all_factories_together():
         x402_factory=lambda wallet: x,
         sandbox_factory=lambda wallet: s,
         browser_cache_enabled=False,
+        resource_throttle_enabled=False,
     )
     status = await sup.spawn(opening_usdc=50.0)
     darwin_id = status.darwin_id

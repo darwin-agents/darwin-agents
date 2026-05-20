@@ -118,3 +118,82 @@ async def test_no_persistence_means_no_lifecycle(tmp_path):
     status = await sup.spawn(opening_usdc=50.0)
     assert sup._lifecycle is None
     await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_lossless_resume_keeps_same_id_and_audit_chain(tmp_path):
+    """The doc-08 §HA promise: a resumed Darwin keeps its original id
+    AND its audit chain continues from the previous tip — not a fresh
+    chain. The manifest is re-mintable via the platform signing key
+    that was also persisted."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status_a = await sup_a.spawn(opening_usdc=50.0)
+    original_id = status_a.darwin_id
+    # Read the audit chain tip from before the restart.
+    handle_a = sup_a._darwins[original_id]
+    pre_records = handle_a.runtime.audit.read_records()
+    pre_tip_hash = pre_records[-1]["hash"]
+    pre_len = len(pre_records)
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    # Restart.
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    # The SAME id is back — not a fresh genesis.
+    assert original_id in sup_b._darwins
+    handle_b = sup_b._darwins[original_id]
+    # The audit chain continues — the first records match the prior tip.
+    post_records = handle_b.runtime.audit.read_records()
+    assert len(post_records) >= pre_len
+    # The prefix is byte-equal: every record we wrote before the restart
+    # is present in the resumed chain.
+    for i in range(pre_len):
+        assert post_records[i]["hash"] == pre_records[i]["hash"]
+    # The pre-restart tip hash is the prev_hash of whatever record came
+    # next (the resume event), confirming linkage.
+    if len(post_records) > pre_len:
+        assert post_records[pre_len]["prev_hash"] == pre_tip_hash
+
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_audit_records_lossless_flag(tmp_path):
+    """The platform's operator audit records the lossless=True meta on
+    resume so a compliance reviewer can distinguish lossless resumes
+    from lossy fallbacks."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    await sup_a.spawn(opening_usdc=50.0)
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    resume_entries = sup_b._audit.entries(action="resume")
+    assert len(resume_entries) == 1
+    assert resume_entries[0].metadata["lossless"] is True
+
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_signing_key_persists_across_restart(tmp_path):
+    """The platform signing key is persisted so manifests signed before
+    the restart still verify after."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    pem_a = sup_a.signing_public_key_pem()
+    await sup_a.shutdown(kill_running=True)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    pem_b = sup_b.signing_public_key_pem()
+    assert pem_a == pem_b
+
+    await sup_b.shutdown(kill_running=True)
+    sup_b._persistence.close()
