@@ -130,6 +130,10 @@ def build_app(
     async def lifespan(app_: FastAPI):
         # The supervisor is bound below so we can also support build_app()
         # being called with an explicit instance — keep this thin.
+        # Start leader election on app startup so /readyz reports correctly
+        # before the first probe and the drive loops only run if this pod
+        # is the leader (HA Postgres deployments).
+        await app_.state.supervisor.ensure_leader_started()
         try:
             yield
         finally:
@@ -704,6 +708,29 @@ def build_app(
             "uptime_seconds": time.time() - app_started_ts,
             "darwins": len(sup.list_ids()),
         }
+
+    # -- readiness probe (HA-aware) --------------------------------------
+    # ``/healthz`` is liveness — alive at all. ``/readyz`` is readiness —
+    # the leader pod is ready, followers are NOT. k8s ``readinessProbe``
+    # targets this so the Service routes API traffic only to the leader.
+    # On single-replica deployments (NoLeaderElection), every probe
+    # returns 200 since ``is_leader`` is always True.
+    @app.get("/readyz")
+    async def readyz(request: Request) -> Response:
+        sup = _sup(request)
+        # Start the election on first call so single-replica callers
+        # don't need to know the lifecycle.
+        await sup.ensure_leader_started()
+        if sup.is_leader:
+            return Response(
+                content='{"status":"ok","leader":true}',
+                media_type="application/json",
+            )
+        return Response(
+            content='{"status":"follower","leader":false}',
+            media_type="application/json",
+            status_code=503,
+        )
 
     # -- Prometheus metrics (unauthenticated; same posture as /healthz) --
     # Doc 08 §Observability: the platform emits OpenTelemetry traces (we
