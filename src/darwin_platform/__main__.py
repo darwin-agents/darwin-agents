@@ -48,10 +48,25 @@ def _serve(args: argparse.Namespace) -> int:
 
     from .api import build_app
     from .auth import InMemoryTokenStore
+    from .leadership import PostgresAdvisoryLockElection
     from .supervisor import Supervisor
+
+    leader_election = None
+    if args.leader_election:
+        if not (args.db and args.db.startswith(("postgres://", "postgresql://"))):
+            print(
+                "--leader-election requires --db to be a postgres:// DSN",
+                file=sys.stderr,
+            )
+            return 2
+        kwargs = {"dsn": args.db}
+        if args.leader_lock_key:
+            kwargs["lock_key"] = int(args.leader_lock_key)
+        leader_election = PostgresAdvisoryLockElection(**kwargs)
 
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
+        leader_election=leader_election,
     )
 
     token_store = None
@@ -122,6 +137,20 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--log-level", default="info",
         choices=["critical", "error", "warning", "info", "debug", "trace"],
+    )
+    serve.add_argument(
+        "--leader-election", action="store_true",
+        help=(
+            "Enable HA leader election via Postgres advisory locks. "
+            "Requires --db to be a postgres:// DSN. Exactly one pod "
+            "holds the lock and drives Darwins; others stay warm + "
+            "report /readyz=503 until they win."
+        ),
+    )
+    serve.add_argument(
+        "--leader-lock-key", default=None,
+        help="Override the default lock key (BIGINT). Used to isolate "
+        "platform releases sharing one Postgres instance.",
     )
     serve.set_defaults(func=_serve)
 
