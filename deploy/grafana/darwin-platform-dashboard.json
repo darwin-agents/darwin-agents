@@ -1,0 +1,256 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "title": "Darwin Platform — Supervisor",
+  "tags": ["darwin", "platform"],
+  "uid": "darwin-platform",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Fleet — Darwins by state",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_darwins", "legendFormat": "{{state}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"steps": [{"color": "green"}]}
+        }
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "title": "Audit chain — entries",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_audit_entries_total", "legendFormat": "entries"}
+      ],
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "id": 3,
+      "title": "Open escalations",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_escalations_open", "legendFormat": "open"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 5},
+              {"color": "red", "value": 20}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0}
+    },
+    {
+      "id": 4,
+      "title": "Uptime",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_uptime_seconds", "legendFormat": "seconds"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0}
+    },
+
+    {
+      "id": 10,
+      "title": "Alerts by severity (rate, last hour)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {
+          "expr": "increase(darwin_platform_alerts_total[1h])",
+          "legendFormat": "{{severity}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6}
+    },
+    {
+      "id": 11,
+      "title": "Sanctions refusals (cumulative)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_sanctions_refusals_total", "legendFormat": "refusals"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6}
+    },
+
+    {
+      "id": 20,
+      "title": "Resource throttles installed",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_throttle_installed", "legendFormat": "{{kind}}"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14}
+    },
+    {
+      "id": 21,
+      "title": "Throttle usage today",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_throttle_used_today", "legendFormat": "{{kind}}"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14}
+    },
+
+    {
+      "id": 30,
+      "title": "Browser sessions (cumulative)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_browser_sessions_total", "legendFormat": "sessions"}
+      ],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22}
+    },
+    {
+      "id": 31,
+      "title": "Browser cost (USDC)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_browser_cost_usdc", "legendFormat": "cost"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22}
+    },
+    {
+      "id": 32,
+      "title": "Cached signatures (promoted)",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_browser_cache_promoted", "legendFormat": "promoted"}
+      ],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22}
+    },
+
+    {
+      "id": 40,
+      "title": "LLM circuit breakers (state)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_llm_circuit_breaker_models", "legendFormat": "{{state}}"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 30}
+    },
+    {
+      "id": 41,
+      "title": "Resume events (cumulative)",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_resume_events_total", "legendFormat": "resumes"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 30}
+    },
+
+    {
+      "id": 50,
+      "title": "Vault — watermarked entries",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_vault_watermarked_total", "legendFormat": "watermarked"}
+      ],
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 38}
+    },
+    {
+      "id": 51,
+      "title": "Vault — total entries",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_vault_entries_total", "legendFormat": "entries"}
+      ],
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 38}
+    },
+    {
+      "id": 52,
+      "title": "Harvest rule fires (cumulative)",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_harvest_rule_fires_total", "legendFormat": "fires"}
+      ],
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 38}
+    },
+    {
+      "id": 53,
+      "title": "Lineage edges",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_lineage_edges_total", "legendFormat": "edges"}
+      ],
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 38}
+    },
+
+    {
+      "id": 60,
+      "title": "Platform revenue (USDC, cumulative)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_billing_revenue_usdc", "legendFormat": "revenue"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 46}
+    },
+    {
+      "id": 61,
+      "title": "Harvest fees (USDC, cumulative)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "targets": [
+        {"expr": "darwin_platform_billing_harvest_fees_usdc", "legendFormat": "fees"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 46}
+    }
+  ]
+}
