@@ -82,6 +82,14 @@ class ResourceThrottleRequest(BaseModel):
     max_daily_calls: int = Field(ge=0)
 
 
+class RotateSigningKeyRequest(BaseModel):
+    drain_window_seconds: float | None = Field(default=None, gt=0)
+
+
+class RejectProposalRequest(BaseModel):
+    reason: str = "operator rejected"
+
+
 class HarvestRuleRequest(BaseModel):
     destination: str = Field(min_length=1)
     trigger_balance_usdc: float = Field(gt=0)
@@ -531,6 +539,70 @@ def build_app(
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         return {"throttles": [r.to_json() for r in rows]}
+
+    # -- platform signing key rotation (doc 02) ----------------------------
+    @app.post("/platform/signing/rotate")
+    async def rotate_signing_key(
+        request: Request,
+        req: RotateSigningKeyRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            summary = _sup(request).rotate_signing_key(
+                drain_window_seconds=req.drain_window_seconds,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        return summary
+
+    # -- Path-C: Darwin-generated neuron proposals (doc 04 phase 3) -------
+    @app.get("/darwins/{darwin_id}/proposals")
+    async def list_neuron_proposals(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return _sup(request).list_neuron_proposals(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.post("/platform/darwins/{darwin_id}/proposals/{name}/admit")
+    async def admit_neuron_proposal(
+        darwin_id: str,
+        name: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).admit_neuron_proposal(
+                darwin_id, name, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/platform/darwins/{darwin_id}/proposals/{name}/reject")
+    async def reject_neuron_proposal(
+        darwin_id: str,
+        name: str,
+        request: Request,
+        req: RejectProposalRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).reject_neuron_proposal(
+                darwin_id, name, reason=req.reason, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
 
     # -- harvest rules (doc 05: scheduled profit withdrawal) ---------------
     @app.post("/darwins/{darwin_id}/harvest_rules", status_code=201)
