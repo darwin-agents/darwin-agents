@@ -154,12 +154,30 @@ injecting the corresponding environment variables via `extraEnv` or
 | `BROWSERBASE_URL`    | `--browserbase-url`   | Browserbase WebSocket endpoint                            |
 | `BROWSERBASE_API_KEY`| `--browserbase-api-key` | Browserbase API key                                     |
 | `E2B_API_KEY`        | `--e2b-api-key`       | E2B API key for the MicroVM sandbox (code-running neurons) |
+| `DARWIN_SOLANA_RPC_URL` / `DARWIN_SOLANA_WALLET_KEY` | `--solana-rpc-url` / `--solana-wallet-key` | Solana fallback chain (doc 17). Enable with `--chain-networks=base,solana`. |
+| `DARWIN_STELLAR_HORIZON_URL` / `DARWIN_STELLAR_SECRET` | `--stellar-horizon-url` / `--stellar-secret` | Stellar fallback chain. Enable with `--chain-networks=base,stellar`. |
+| `STRIPE_API_KEY`     | (consumed by Supervisor's fiat ramp) | Stripe Connect deposits + payouts (doc 17). |
+| `MOONPAY_API_KEY`    | (consumed by Supervisor's fiat ramp) | MoonPay HTTP API for international ramps. |
+| `DARWIN_SANCTIONS_API_KEY` | `--sanctions-api-key` | Chainalysis / TRM screening provider key (set `--sanctions-provider chainalysis|trm`). |
+| `DARWIN_SLACK_WEBHOOK_URL` | `--slack-webhook-url` | Slack escalation notifications. |
+| `DARWIN_ESCALATION_WEBHOOK_URL` | `--escalation-webhook-url` | Generic JSON-POST escalation webhook. |
+| `DARWIN_ALERT_WEBHOOK_URL` | `--alert-webhook-url` | Generic JSON-POST monitor alerts. |
+| `DARWIN_PAGERDUTY_ROUTING_KEY` | `--pagerduty-routing-key` | PagerDuty Events v2 routing key. |
 
 When `DARWIN_RPC_URL` + `DARWIN_WALLET_KEY` are both set, the x402
 HTTP client is wired automatically — neurons with `web.operate` /
 `web.publish` / `web.signup` capability tags receive a pre-funded HTTP
 client that settles HTTP 402 responses against the Darwin's wallet
 transparently.
+
+### SDK extras bundled with the image
+
+The default `darwin-platform` image installs every optional adapter
+SDK (`solana`, `solders`, `stellar-sdk`, `stripe`, `pypdf`, etc.) so a
+chart consumer never needs a custom build to enable a provider —
+flipping the right env var or values key is enough. The slim path
+(genome + supervisor only, no real adapters) is the test posture, not
+the production posture.
 
 ### Example: secret-per-adapter via envFrom
 
