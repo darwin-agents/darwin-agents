@@ -44,3 +44,46 @@ jobs:
         # The genome's deprecation-warnings-as-errors filter is in
         # pyproject; CI honours it.
         run: uv run pytest -m "not slow" --maxfail=3
+
+  postgres:
+    name: pytest (postgres persistence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Service container — GitHub-hosted runner spins it up alongside the
+    # job. The supervisor's persistence layer detects "postgresql://" and
+    # uses the [postgres] extra (psycopg).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: darwin
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: darwin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U darwin -d darwin"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install deps (with [postgres])
+        run: uv sync --all-extras --dev
+
+      - name: Run postgres-backed tests
+        env:
+          DARWIN_POSTGRES_TEST_DSN: postgresql://darwin:test@127.0.0.1:5432/darwin
+        run: uv run pytest tests/test_persistence_postgres.py -v
