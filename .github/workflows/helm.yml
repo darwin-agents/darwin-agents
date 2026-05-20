@@ -1,0 +1,84 @@
+# Helm chart CI — `helm lint` + `helm template` over multiple value
+# fixtures so chart breakage is caught in PRs instead of at install time.
+#
+# Renders against:
+#   - default values.yaml (dev-shape: auth off, ingress off, single
+#     replica with persistence PVC).
+#   - tests/values-prod.yaml (production-shape: auth on with
+#     existingSecret reference, ingress + TLS + ServiceMonitor +
+#     tracing + tight egress NetworkPolicy).
+
+name: helm
+
+on:
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm.yml"
+  pull_request:
+    branches: [main, "release/**"]
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: helm lint
+        run: helm lint deploy/helm/darwin-platform
+
+      - name: helm template (default values)
+        run: |
+          helm template darwin deploy/helm/darwin-platform > /tmp/default.yaml
+          # Sanity: every default install renders at least Deployment +
+          # Service + PVC + ServiceAccount.
+          for kind in Deployment Service PersistentVolumeClaim ServiceAccount NetworkPolicy; do
+            grep -q "^kind: ${kind}$" /tmp/default.yaml \
+              || { echo "missing ${kind} in default render"; exit 1; }
+          done
+
+      - name: helm template (production values fixture)
+        run: |
+          helm template darwin deploy/helm/darwin-platform \
+            -f deploy/helm/darwin-platform/tests/values-prod.yaml \
+            > /tmp/prod.yaml
+          # Production fixture exercises every optional template. Note:
+          # the Secret is NOT rendered when auth.existingSecret is set
+          # (the operator manages the Secret out-of-band) — Ingress +
+          # ServiceMonitor + NetworkPolicy are the prod-specific kinds.
+          for kind in Deployment Service PersistentVolumeClaim ServiceAccount NetworkPolicy Ingress ServiceMonitor; do
+            grep -q "^kind: ${kind}$" /tmp/prod.yaml \
+              || { echo "missing ${kind} in prod render"; exit 1; }
+          done
+
+      - name: helm template (inline-secret values)
+        run: |
+          # Exercise the Secret-rendering path with auth.enabled=true and
+          # no existingSecret — the chart should produce a Secret with
+          # tokens.json stringData.
+          helm template darwin deploy/helm/darwin-platform \
+            --set auth.enabled=true \
+            --set 'auth.tokens[0].token=alice' \
+            --set 'auth.tokens[0].scopes[0]=owner' \
+            > /tmp/inline.yaml
+          grep -q "^kind: Secret$" /tmp/inline.yaml \
+            || { echo "missing Secret when auth.tokens is set"; exit 1; }
+          grep -q "tokens.json:" /tmp/inline.yaml \
+            || { echo "Secret missing tokens.json key"; exit 1; }
