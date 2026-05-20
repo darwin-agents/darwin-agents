@@ -74,11 +74,23 @@ class QuarantineRequest(BaseModel):
 class WalletPolicyRequest(BaseModel):
     per_action_cap_usdc: float | None = Field(default=None, ge=0)
     per_day_cap_usdc: float | None = Field(default=None, ge=0)
+    per_lifetime_cap_usdc: float | None = Field(default=None, ge=0)
 
 
 # -- app factory ------------------------------------------------------------
-def build_app(supervisor: Supervisor | None = None) -> FastAPI:
+def build_app(
+    supervisor: Supervisor | None = None,
+    *,
+    token_store: TokenStore | None = None,
+) -> FastAPI:
     """Build a FastAPI app bound to ``supervisor`` (or a fresh one).
+
+    Auth (doc 08-adjacent): ``token_store`` enables bearer-token auth.
+    When ``None``, every request gets a permissive
+    :func:`disabled_context` — fine for in-process tests + localhost dev,
+    unsafe for any real exposure. Real deployments construct an
+    :class:`InMemoryTokenStore` (or a Postgres-backed equivalent) and pass
+    it in.
 
     Tests use this directly with an ASGI client; the module-level ``app``
     below is the default singleton for the standard uvicorn entry point.
@@ -101,13 +113,54 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.supervisor = sup
+    app.state.token_store = token_store
 
     def _sup(request: Request) -> Supervisor:
         return request.app.state.supervisor
 
+    # -- auth dependency --------------------------------------------------
+    def get_auth(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> AuthContext:
+        store: TokenStore | None = request.app.state.token_store
+        if store is None:
+            # No store configured → permissive mode (the existing in-process
+            # tests rely on this). Documented in build_app's docstring.
+            return disabled_context()
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(
+                401,
+                "missing bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        token = authorization[len("Bearer ") :].strip()
+        ctx = store.lookup(token)
+        if ctx is None:
+            raise HTTPException(
+                401, "invalid token", headers={"WWW-Authenticate": "Bearer"}
+            )
+        return ctx
+
+    def _require_scope(ctx: AuthContext, scope: str) -> None:
+        if not ctx.has_scope(scope):
+            raise HTTPException(403, f"requires scope: {scope}")
+
+    def _require_owns(ctx: AuthContext, darwin_id: str) -> None:
+        if not ctx.owns(darwin_id):
+            raise HTTPException(403, f"forbidden: not your darwin: {darwin_id}")
+
     # -- spawn / status ----------------------------------------------------
     @app.post("/darwins", status_code=201)
-    async def spawn(req: SpawnRequest, request: Request) -> dict[str, Any]:
+    async def spawn(
+        req: SpawnRequest,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        # Either an owner spawning their own Darwin or a platform operator
+        # provisioning on behalf of one — either way the OWNER scope check
+        # passes (operator implies owner).
+        _require_scope(ctx, OWNER)
         try:
             status = await _sup(request).spawn(
                 opening_usdc=req.opening_usdc,
@@ -116,15 +169,33 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
             )
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
+        # Grant the caller ownership of the newly minted id so subsequent
+        # owner-scope calls succeed without an out-of-band grant.
+        store: TokenStore | None = request.app.state.token_store
+        if store is not None and ctx.token:
+            store.grant(ctx.token, status.darwin_id)
         return asdict(status)
 
     @app.get("/darwins")
-    async def list_darwins(request: Request) -> dict[str, Any]:
+    async def list_darwins(
+        request: Request, ctx: AuthContext = Depends(get_auth)
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
         sup = _sup(request)
-        return {"darwins": sup.list_ids()}
+        # Platform operators see the whole fleet; owners see only their own.
+        if ctx.has_scope(PLATFORM_OPERATOR):
+            return {"darwins": sup.list_ids()}
+        own = [d for d in sup.list_ids() if ctx.owns(d)]
+        return {"darwins": own}
 
     @app.get("/darwins/{darwin_id}")
-    async def status(darwin_id: str, request: Request) -> dict[str, Any]:
+    async def status(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             return asdict(await _sup(request).status(darwin_id))
         except UnknownDarwin as exc:
@@ -136,7 +207,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         darwin_id: str,
         request: Request,
         req: PauseRequest = Body(default=PauseRequest()),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, str]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             await _sup(request).pause(darwin_id, reason=req.reason)
         except UnknownDarwin as exc:
@@ -146,7 +220,13 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         return {"status": "pausing"}
 
     @app.post("/darwins/{darwin_id}/resume")
-    async def resume(darwin_id: str, request: Request) -> dict[str, str]:
+    async def resume(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, str]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             await _sup(request).resume(darwin_id)
         except UnknownDarwin as exc:
@@ -160,7 +240,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         darwin_id: str,
         request: Request,
         req: KillRequest = Body(default=KillRequest()),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, str]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             await _sup(request).kill(darwin_id, reason=req.reason)
         except UnknownDarwin as exc:
@@ -169,7 +252,13 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
 
     # -- force reproduction -----------------------------------------------
     @app.post("/darwins/{darwin_id}/reproduce/force")
-    async def reproduce_force(darwin_id: str, request: Request) -> dict[str, str]:
+    async def reproduce_force(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, str]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             await _sup(request).force_reproduce(darwin_id)
         except UnknownDarwin as exc:
@@ -185,7 +274,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         escalation_id: str,
         req: EscalationResponseRequest,
         request: Request,
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, str]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             await _sup(request).respond_escalation(
                 darwin_id,
@@ -204,7 +296,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         darwin_id: str,
         request: Request,
         include_resolved: bool = Query(False),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             tickets = await _sup(request).open_escalations(
                 darwin_id, include_resolved=include_resolved
@@ -219,8 +314,13 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
 
     @app.get("/darwins/{darwin_id}/escalations/{escalation_id}")
     async def get_escalation(
-        darwin_id: str, escalation_id: str, request: Request
+        darwin_id: str,
+        escalation_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             return await _sup(request).get_escalation(darwin_id, escalation_id)
         except UnknownDarwin as exc:
@@ -230,7 +330,13 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
 
     # -- lineage / ledger / events ----------------------------------------
     @app.get("/darwins/{darwin_id}/lineage")
-    async def lineage(darwin_id: str, request: Request) -> dict[str, Any]:
+    async def lineage(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             return await _sup(request).lineage(darwin_id)
         except UnknownDarwin as exc:
@@ -242,7 +348,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         request: Request,
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             return await _sup(request).ledger(darwin_id, limit=limit, offset=offset)
         except UnknownDarwin as exc:
@@ -254,7 +363,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         request: Request,
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         try:
             return await _sup(request).events(darwin_id, limit=limit, offset=offset)
         except UnknownDarwin as exc:
@@ -276,7 +388,10 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         min_severity: str | None = Query(None),
         since: float | None = Query(None),
         limit: int | None = Query(None, ge=1, le=10_000),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
         sev = _parse_severity(min_severity)
         try:
             rows = await _sup(request).alerts(
@@ -292,7 +407,9 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         min_severity: str | None = Query(None),
         since: float | None = Query(None),
         limit: int | None = Query(None, ge=1, le=10_000),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         sev = _parse_severity(min_severity)
         rows = await _sup(request).fleet_alerts(
             min_severity=sev, since=since, limit=limit
@@ -302,8 +419,12 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
     # -- internal: quarantine (doc 08 + doc 09 level 4) -------------------
     @app.post("/platform/darwins/{darwin_id}/quarantine")
     async def quarantine_darwin(
-        darwin_id: str, request: Request, req: QuarantineRequest
+        darwin_id: str,
+        request: Request,
+        req: QuarantineRequest,
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, str]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         try:
             await _sup(request).quarantine(
                 darwin_id, reason=req.reason, operator=req.operator
@@ -319,7 +440,9 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
         darwin_id: str,
         request: Request,
         operator: str = Query("platform"),
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, str]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         try:
             await _sup(request).unquarantine(darwin_id, operator=operator)
         except UnknownDarwin as exc:
@@ -329,21 +452,35 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
     # -- internal: wallet policy (doc 08 POST /platform/wallets/.../policy)
     @app.post("/platform/wallets/{darwin_id}/policy")
     async def set_wallet_policy(
-        darwin_id: str, request: Request, req: WalletPolicyRequest
+        darwin_id: str,
+        request: Request,
+        req: WalletPolicyRequest,
+        ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         try:
-            return await _sup(request).set_wallet_policy(
-                darwin_id,
-                per_action_cap_usdc=req.per_action_cap_usdc,
-                per_day_cap_usdc=req.per_day_cap_usdc,
-            )
+            kwargs = {
+                "per_action_cap_usdc": req.per_action_cap_usdc,
+                "per_day_cap_usdc": req.per_day_cap_usdc,
+            }
+            # per_lifetime_cap_usdc is added in the slice-2 threading; the
+            # request model carries it, but pass through only when set so
+            # the Supervisor signature doesn't have to know yet.
+            if getattr(req, "per_lifetime_cap_usdc", None) is not None:
+                kwargs["per_lifetime_cap_usdc"] = req.per_lifetime_cap_usdc
+            return await _sup(request).set_wallet_policy(darwin_id, **kwargs)
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
 
     @app.get("/platform/wallets/{darwin_id}/policy")
-    async def get_wallet_policy(darwin_id: str, request: Request) -> dict[str, Any]:
+    async def get_wallet_policy(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         try:
             return await _sup(request).get_wallet_policy(darwin_id)
         except UnknownDarwin as exc:
@@ -353,13 +490,20 @@ def build_app(supervisor: Supervisor | None = None) -> FastAPI:
 
     # -- internal: signing public key (doc 08; HSM-backed in production) --
     @app.get("/platform/signing/public_key")
-    async def signing_public_key(request: Request) -> dict[str, str]:
+    async def signing_public_key(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, str]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         pem = _sup(request).signing_public_key_pem().decode("ascii")
         return {"format": "PEM", "public_key": pem}
 
     # -- snapshot (ops-side; not in doc 08) -------------------------------
     @app.get("/platform/snapshot")
-    async def snapshot_endpoint(request: Request) -> dict[str, Any]:
+    async def snapshot_endpoint(
+        request: Request, ctx: AuthContext = Depends(get_auth)
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
         return build_snapshot(_sup(request))
 
     return app

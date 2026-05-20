@@ -11,6 +11,14 @@ behind the same Supervisor surface. Escalation router, anomaly detection,
 billing, and the Next.js dashboard are out of scope here.
 """
 
+from .auth import (
+    OWNER,
+    PLATFORM_OPERATOR,
+    AuthContext,
+    InMemoryTokenStore,
+    TokenStore,
+    disabled_context,
+)
 from .escalation import (
     EscalationRouter,
     LogNotificationSink,
@@ -45,6 +53,12 @@ __all__ = [
     "QuarantineState",
     "SupervisorError",
     "UnknownDarwin",
+    "AuthContext",
+    "TokenStore",
+    "InMemoryTokenStore",
+    "OWNER",
+    "PLATFORM_OPERATOR",
+    "disabled_context",
     "EscalationRouter",
     "RoutedTicket",
     "TicketStatus",
