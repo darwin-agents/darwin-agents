@@ -21,7 +21,7 @@ from darwin_dna._untrusted import (
 from darwin_dna.neurons import NeuronResult
 
 _PROMPT = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[3]
     / "src/darwin_dna/orchestrator_skeleton/prompts/planner_system.txt"
 )
 
