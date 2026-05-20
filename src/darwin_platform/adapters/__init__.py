@@ -12,7 +12,10 @@ Currently implemented:
     billing into the Darwin's wallet.
 """
 
+from .browser import BrowserClient, BrowserUseClient
+from .hvac_vault import HvacVaultClient
 from .litellm_transport import LiteLLMTransport, TierMapping
+from .sandbox import E2BSandbox, SandboxClient
 from .vault_backend import (
     InMemoryVaultClient,
     RealVaultBackend,
@@ -20,6 +23,12 @@ from .vault_backend import (
     VaultError,
 )
 from .wallet import ChainClient, RealWallet, WalletError
+from .web3_chain import (
+    USDC_BASE_MAINNET,
+    USDC_BASE_SEPOLIA,
+    Web3ChainClient,
+)
+from .x402 import HTTPClient, X402Error, X402PaymentClient
 
 __all__ = [
     "LiteLLMTransport",
@@ -27,8 +36,19 @@ __all__ = [
     "ChainClient",
     "RealWallet",
     "WalletError",
+    "Web3ChainClient",
+    "USDC_BASE_MAINNET",
+    "USDC_BASE_SEPOLIA",
     "VaultClient",
     "VaultError",
     "RealVaultBackend",
     "InMemoryVaultClient",
+    "HvacVaultClient",
+    "BrowserClient",
+    "BrowserUseClient",
+    "SandboxClient",
+    "E2BSandbox",
+    "HTTPClient",
+    "X402Error",
+    "X402PaymentClient",
 ]
