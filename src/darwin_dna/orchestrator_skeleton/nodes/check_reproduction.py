@@ -39,7 +39,14 @@ def run(state, ctx):
     enough_surplus = surplus > hp.min_profit_for_reproduction_usdc
     healthy = score.score > 0.0
 
-    state.reproduce = bool(enough_profit and enough_surplus and healthy)
+    natural = bool(enough_profit and enough_surplus and healthy)
+    # Platform-set force bypass (doc 08 force_reproduce / doc 02 amendment).
+    # Forced reproduction still requires enough surplus to fund the child —
+    # the fitness/profit gate is bypassed, the solvency floor is not. A
+    # forced event with zero surplus would mint a child with a zero budget,
+    # which the platform should not be requesting.
+    forced = bool(state.force_reproduce and enough_surplus)
+    state.reproduce = natural or forced
 
     ctx.audit.log_event(
         "check_reproduction",
@@ -47,6 +54,7 @@ def run(state, ctx):
             "fitness": round(score.score, 6),
             "profit_since_reproduction": round(profit, 6),
             "reproduce": state.reproduce,
+            "forced": forced,
         },
     )
     state.tick += 1

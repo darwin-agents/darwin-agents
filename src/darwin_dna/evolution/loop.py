@@ -166,6 +166,13 @@ class DarwinRuntime:
             self.state = OrchestratorState()
             self.resumed = False
 
+        # Platform-staged amendment for the next reproduction (doc 02 §amendment,
+        # doc 09 platform-operator path). One-shot — consumed by ``_reproduce``
+        # and cleared after. Not in OrchestratorState because the platform sets
+        # this from outside the genome via :meth:`install_amendment`; the
+        # genome's perceive/plan/dispatch cycle never reads or writes it.
+        self._pending_amendment: tuple[bytes, str] | None = None
+
         ctx = OrchestratorContext(
             darwin_id=identity.darwin_id,
             kill_switch=self.kill,
@@ -291,6 +298,9 @@ class DarwinRuntime:
                 if self.state.reproduce:
                     self._reproduce()
                     self.state.reproduce = False
+                    # Consume the platform-set force flag too so a second
+                    # heartbeat doesn't re-trigger off the same request.
+                    self.state.force_reproduce = False
 
                 self._maybe_anchor()
 
@@ -319,6 +329,20 @@ class DarwinRuntime:
             self.audit.anchor(self._p.anchor_store, day)
             self._anchored_day = day
 
+    def install_amendment(self, blob: bytes, name: str) -> None:
+        """Stage a platform-supplied amendment layer for the NEXT reproduction
+        (docs/engineering/02 §amendment). One-shot: consumed by the upcoming
+        ``_reproduce``, then cleared. Called by the platform supervisor; the
+        genome's own cycle never invokes this."""
+        if not isinstance(blob, (bytes, bytearray)):
+            raise TypeError("amendment blob must be bytes")
+        if not name or not isinstance(name, str):
+            raise ValueError("amendment name must be a non-empty string")
+        self._pending_amendment = (bytes(blob), name)
+
+    def has_pending_amendment(self) -> bool:
+        return self._pending_amendment is not None
+
     def _reproduce(self) -> None:
         profit = self.state.balance_usdc - self.state.profit_baseline_usdc
         # Drain the staging ground: the strongest-evidence runtime lessons get
@@ -326,6 +350,10 @@ class DarwinRuntime:
         # drain() also clears it — semantic memory is windowed per generation,
         # exactly like the profit baseline and the counter-pressures below.
         staged_semantic = [s.model_dump() for s in self.semantic.drain()]
+        amendment = self._pending_amendment
+        # Clear BEFORE the call so an exception mid-reproduction doesn't leave
+        # the amendment staged for a second attempt.
+        self._pending_amendment = None
         result = reproduce(
             parent_identity=self.identity,
             inherited_layer_blobs=self._p.layer_blobs,
@@ -343,6 +371,7 @@ class DarwinRuntime:
             spawner=self._p.spawner,
             audit=self.audit,
             clock=self._clock,
+            amendment=amendment,
         )
         # The spawner debited the parent treasury; rebase the profit baseline
         # so the next reproduction measures fresh profit, not the surplus we

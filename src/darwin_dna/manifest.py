@@ -36,6 +36,15 @@ class ManifestError(Exception):
     blobs. Boot must be refused."""
 
 
+# By convention every platform-supplied amendment layer (doc 02) names
+# itself with this prefix. The trust root excludes amendment-named layers
+# from the layer-count cap (they are sanctioned platform additions, each
+# individually signed). The per-layer signature remains the real defense:
+# a junk layer named "layer_amendment_evil" would still fail to verify
+# unless the platform itself signed it.
+AMENDMENT_LAYER_PREFIX = "layer_amendment"
+
+
 class LayerEntry(BaseModel):
     model_config = {"frozen": True}
 
@@ -138,11 +147,25 @@ def verify_manifest(
     # carries *fewer* than generation+1 — never more. Contiguity (checked
     # above) plus the per-layer lineage-bound signatures (checked below) keep
     # the chain just as tamper/replay-proof; the count is only an upper bound.
-    if len(layers) > manifest.identity.generation + 1:
+    #
+    # Amendment layers (doc 02 §amendment, doc 09): a forced reproduction
+    # carrying a platform amendment adds an extra signed layer between the
+    # inherited stack and the freshly distilled lessons. By convention the
+    # amendment's name starts with ``layer_amendment``. Those layers do not
+    # count toward the cap — they are sanctioned platform additions, each
+    # individually signed by the platform key (verified below), so the per-
+    # layer signature is the actual trust barrier here. A junk extra layer
+    # without the prefix is still rejected by the count; a junk extra layer
+    # WITH the prefix would still fail the per-layer signature check unless
+    # the platform itself signed it.
+    non_amendment = sum(
+        1 for e in layers if not e.name.startswith(AMENDMENT_LAYER_PREFIX)
+    )
+    if non_amendment > manifest.identity.generation + 1:
         raise ManifestError(
             f"generation {manifest.identity.generation} carries "
-            f"{len(layers)} layers, more than the {manifest.identity.generation + 1} "
-            f"its reproduction history allows"
+            f"{non_amendment} non-amendment layers, more than the "
+            f"{manifest.identity.generation + 1} its reproduction history allows"
         )
 
     # 3. No extra blobs, no missing blobs. An attacker who slips an extra

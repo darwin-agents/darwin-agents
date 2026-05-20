@@ -128,12 +128,29 @@ def reproduce(
     spawner: ChildSpawner,
     audit: Any,
     clock=None,
+    amendment: tuple[bytes, str] | None = None,
 ) -> ReproductionResult:
     """Run the event. Raises on any trust-root failure (the child must verify
-    or it does not get spawned)."""
+    or it does not get spawned).
+
+    ``amendment`` (docs/engineering/02 §amendment, doc 09 platform-operator
+    control): an optional ``(blob, name)`` the platform supplies for a
+    forced constitutional update. When provided, the amendment is inserted
+    between the parent's inherited layers and the freshly distilled lessons
+    layer, so the child's layer stack is
+    ``[parent_layers..., amendment, lessons]``. Like every other layer it is
+    re-sealed under the child's identity by the platform signer and
+    re-verified through the trust root before the child is spawned. The
+    amendment is dramatic — it is the mechanism the platform uses to ship
+    a critical rule update; the parent typically dies after a successful
+    amendment reproduction (the supervisor handles that)."""
     audit_id = audit.log_intent(
         "reproduction.begin",
-        {"parent": parent_identity.darwin_id, "generation": parent_identity.generation},
+        {
+            "parent": parent_identity.darwin_id,
+            "generation": parent_identity.generation,
+            "amendment": amendment[1] if amendment is not None else None,
+        },
     )
 
     # DISTILL — legible, constitution-safe lessons (raises if not).
@@ -159,6 +176,12 @@ def reproduce(
         (inherited_layer_names[i], inherited_layer_blobs[i])
         for i in sorted(inherited_layer_blobs)
     ]
+    # Amendment goes between the inherited stack and the freshly distilled
+    # lessons (doc 02). The platform supplied + signed the blob; we re-seal
+    # it under the child's identity below, with every other layer.
+    if amendment is not None:
+        amend_blob, amend_name = amendment
+        ordered.append((amend_name, amend_blob))
     ordered.append((f"layer_{child_generation}_lessons", new_blob))
 
     # COMPACT — past the generation soft cap, fold the oldest layers into one
@@ -239,7 +262,8 @@ def reproduce(
     audit.log_outcome(
         audit_id, "ok",
         {"child": child.darwin_id, "budget_usdc": budget,
-         "new_lessons": len(new_lessons)},
+         "new_lessons": len(new_lessons),
+         "amendment": amendment[1] if amendment is not None else None},
     )
     return ReproductionResult(
         child_id=child.darwin_id,

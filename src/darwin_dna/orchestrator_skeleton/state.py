@@ -73,6 +73,11 @@ class OrchestratorState(BaseModel):
     profit_baseline_usdc: float = 0.0  # balance at last reproduction
     starting_capital_usdc: float = 0.0
     reproduce: bool = False
+    # Platform-set force flag (doc 08 POST /darwins/{id}/reproduce/force;
+    # doc 02 forced amendment reproduction). When True, ``check_reproduction``
+    # bypasses the fitness + profit gate and lets reproduction fire on the
+    # next loop boundary. Consumed (reset to False) after firing.
+    force_reproduce: bool = False
     fitness: float | None = None
 
     # diagnostics — recent node trail for the dashboard / tests
