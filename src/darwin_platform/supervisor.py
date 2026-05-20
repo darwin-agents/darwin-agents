@@ -41,6 +41,13 @@ from darwin_fakes.fake_platform import SigningService
 
 from .billing import BillingPolicy, BillingService
 from .browser_cache import BrowserCacheService, CachedBrowserSubstrate
+from .adapters.fiat import (
+    FiatDepositReceipt,
+    FiatQuote,
+    FiatRamp,
+    FiatRampError,
+    FiatWithdrawReceipt,
+)
 from .cross_pollination import (
     CrossPollinationArchive,
     CrossPollinationError,
@@ -287,6 +294,7 @@ class Supervisor:
         browser_cache_service: BrowserCacheService | None = None,
         cross_pollination_archive: CrossPollinationArchive | None = None,
         cross_pollination_per_scope_limit: int = 3,
+        fiat_ramp: FiatRamp | None = None,
         resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
@@ -495,6 +503,11 @@ class Supervisor:
         self._cross_pollination_per_scope_limit = max(
             1, int(cross_pollination_per_scope_limit)
         )
+        # Fiat ramp (doc 17). When configured, owners can deposit USD
+        # against a Darwin's wallet and withdraw the harvested USDC
+        # via the same provider. Default None means the platform is
+        # crypto-only — owners pre-fund Darwins manually.
+        self._fiat_ramp: FiatRamp | None = fiat_ramp
         # Non-LLM resource throttles (doc 09 level 2). The LLM tier
         # throttle lives on the genome's LLMRouter; sandbox / browser /
         # egress live here because their substrates are platform-side.
@@ -2206,6 +2219,122 @@ class Supervisor:
                           "scopes": list(seen_scopes)},
             )
 
+    # -- fiat ramp (doc 17) ------------------------------------------------
+    def fiat_deposit_quote(
+        self,
+        *,
+        amount_usd: float,
+        payment_method: str,
+        actor: str = "anonymous",
+    ) -> FiatQuote:
+        if self._fiat_ramp is None:
+            raise SupervisorError("fiat ramp is not configured")
+        try:
+            quote = self._fiat_ramp.deposit_quote(
+                amount_usd=amount_usd, payment_method=payment_method,
+            )
+        except FiatRampError as exc:
+            raise SupervisorError(str(exc)) from exc
+        self._audit.record(
+            actor=actor,
+            action="fiat_deposit_quote",
+            darwin_id=None,
+            metadata={
+                "amount_usd": float(amount_usd),
+                "provider": quote.provider,
+                "quote_id": quote.quote_id,
+            },
+        )
+        return quote
+
+    def fiat_confirm_deposit(
+        self,
+        *,
+        quote_id: str,
+        destination_darwin_id: str | None = None,
+        actor: str = "anonymous",
+    ) -> FiatDepositReceipt:
+        if self._fiat_ramp is None:
+            raise SupervisorError("fiat ramp is not configured")
+        if (
+            destination_darwin_id is not None
+            and destination_darwin_id not in self._darwins
+        ):
+            raise UnknownDarwin(destination_darwin_id)
+        try:
+            receipt = self._fiat_ramp.confirm_deposit(
+                quote_id=quote_id,
+                destination_darwin_id=destination_darwin_id,
+            )
+        except FiatRampError as exc:
+            raise SupervisorError(str(exc)) from exc
+        # Credit the Darwin's wallet with the deposited USDC (the ramp
+        # has already moved the user's USD; the platform now reflects
+        # that USDC inside the Darwin's accounting).
+        if destination_darwin_id is not None:
+            h = self._darwins[destination_darwin_id]
+            try:
+                h.stack.wallet.credit(
+                    receipt.amount_usdc,
+                    f"fiat:{receipt.provider}:{receipt.provider_tx_id}",
+                )
+            except Exception as exc:
+                raise SupervisorError(
+                    f"wallet refused credit after fiat deposit: {exc}"
+                ) from exc
+        self._audit.record(
+            actor=actor,
+            action="fiat_confirm_deposit",
+            darwin_id=destination_darwin_id,
+            metadata={
+                "provider": receipt.provider,
+                "quote_id": receipt.quote_id,
+                "provider_tx_id": receipt.provider_tx_id,
+                "amount_usd": receipt.amount_usd,
+                "amount_usdc": receipt.amount_usdc,
+                "fee_usd": receipt.fee_usd,
+            },
+        )
+        return receipt
+
+    def fiat_withdraw(
+        self,
+        *,
+        amount_usdc: float,
+        destination: str,
+        actor: str = "anonymous",
+    ) -> FiatWithdrawReceipt:
+        """Operator-driven payout. The Darwin's harvest already moved
+        USDC off the wallet via the on-chain path; this records the
+        ramp's fiat leg. For a direct Darwin → owner-bank withdrawal,
+        operators use this AFTER a successful harvest."""
+        if self._fiat_ramp is None:
+            raise SupervisorError("fiat ramp is not configured")
+        try:
+            receipt = self._fiat_ramp.withdraw(
+                amount_usdc=amount_usdc, destination=destination,
+            )
+        except FiatRampError as exc:
+            raise SupervisorError(str(exc)) from exc
+        self._audit.record(
+            actor=actor,
+            action="fiat_withdraw",
+            darwin_id=None,
+            metadata={
+                "provider": receipt.provider,
+                "provider_tx_id": receipt.provider_tx_id,
+                "amount_usdc": receipt.amount_usdc,
+                "amount_usd": receipt.amount_usd,
+                "fee_usd": receipt.fee_usd,
+                "destination": destination,
+            },
+        )
+        return receipt
+
+    @property
+    def fiat_ramp(self) -> FiatRamp | None:
+        return self._fiat_ramp
+
     # -- platform signing key rotation (doc 02) ---------------------------
     def rotate_signing_key(
         self,
@@ -2298,6 +2427,70 @@ class Supervisor:
             metadata={"name": name, "reason": reason},
         )
         return {"rejected": name, "reason": reason}
+
+    def _inject_cross_pollination(
+        self,
+        *,
+        child_id: str,
+        child_runtime,
+        parent_id: str,
+    ) -> None:
+        """Pull vetted sibling lessons from the archive + stage them in
+        the child's semantic memory at boot. The child's planner reads
+        from semantic memory at every heartbeat (via the staging+drain
+        protocol in doc 03), so this is the cheapest place to inject
+        external knowledge."""
+        if self._cross_pollination is None:
+            return
+        # Build the ancestry exclusion set so a child doesn't ingest
+        # its own ancestors' lessons (those came in via the inherited
+        # layer stack directly).
+        try:
+            ancestors = self._lineage_registry.ancestry_of(child_id)
+        except Exception:
+            ancestors = []
+        excluding = set(ancestors) | {child_id, parent_id}
+        # The scopes we ingest for: every capability tag in the child's
+        # founding catalog. The archive is per-scope, so the child only
+        # gets lessons relevant to capabilities it actually has.
+        try:
+            scopes: set[str] = set()
+            for neuron in child_runtime.catalog.values():
+                scopes |= set(getattr(neuron, "capability_tags", set()))
+        except Exception:
+            return
+        injected = 0
+        seen_scopes: list[str] = []
+        for scope in sorted(scopes):
+            lessons = self._cross_pollination.retrieve(
+                scope=scope, excluding_darwin_ids=excluding,
+                limit=self._cross_pollination_per_scope_limit,
+            )
+            for lesson in lessons:
+                try:
+                    child_runtime.semantic.stage(
+                        kind=lesson.kind,
+                        scope=lesson.scope,
+                        statement=lesson.statement,
+                        payload={
+                            "source_darwin_id": lesson.source_darwin_id,
+                            "via": "cross_pollination",
+                            "evidence_count": lesson.evidence_count,
+                        },
+                        ts=float(self._clock()),
+                    )
+                    injected += 1
+                except Exception:
+                    continue
+            if lessons:
+                seen_scopes.append(scope)
+        if injected > 0:
+            self._audit.record(
+                actor="platform.cross_pollination",
+                action="cross_pollination_inject",
+                darwin_id=child_id,
+                metadata={"injected": injected, "scopes": seen_scopes},
+            )
 
     def fetch_cross_pollination(
         self,
@@ -2597,6 +2790,16 @@ class Supervisor:
                     )
                     if callable(setter):
                         setter(self._sanctions)
+                # Cross-pollination read-side (doc 06 phase 3). Inject
+                # vetted sibling lessons into the child's semantic
+                # memory so the planner's "have I seen this pattern
+                # before?" lookups benefit from what unrelated siblings
+                # already learned. Bounded per scope; ancestry-excluded
+                # so a child doesn't double-count its parent's lessons.
+                self._inject_cross_pollination(
+                    child_id=child_id, child_runtime=child_runtime,
+                    parent_id=parent.darwin_id,
+                )
             except Exception:
                 # A child whose DNA fails to verify is the platform's
                 # problem, not the parent's — log nothing here (caller has
