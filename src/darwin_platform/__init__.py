@@ -25,6 +25,11 @@ from .operator_audit import (
     OperatorAuditError,
     OperatorAuditLog,
 )
+from .leadership import (
+    LeaderElection,
+    NoLeaderElection,
+    PostgresAdvisoryLockElection,
+)
 from .persistence import (
     PersistenceStore,
     PersistentBillingService,
@@ -81,6 +86,9 @@ __all__ = [
     "PersistentBillingService",
     "PersistentOperatorAuditLog",
     "PersistentTokenStore",
+    "LeaderElection",
+    "NoLeaderElection",
+    "PostgresAdvisoryLockElection",
     "EscalationRouter",
     "RoutedTicket",
     "TicketStatus",
