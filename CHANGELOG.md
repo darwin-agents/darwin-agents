@@ -11,7 +11,19 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 ### Added
 
-- docs(engineering): add testing strategy, configuration reference, cross-cutting contracts, post-mortem template, and evolution tuning guide (docs 26–30)
+- feat(platform): embed PDF watermarks in /Info metadata via pypdf
+- feat(platform): add per-Darwin orchestrator entrypoint and control API
+- feat(platform): add outbound egress proxy with allowlist enforcement
+- feat(platform): add `--driver=k8s` CLI flags for K8sDarwinDriver wiring
+- feat(supervisor): delegate spawn to K8sDarwinDriver when k8s_driver is set
+- feat(platform): REST endpoints for fiat ramp and cross-pollination inject tests
+- feat(supervisor): fiat ramp ops and cross-pollination lesson injection on spawn
+- feat(platform): wire Solana and Stellar SDK clients in multichain CLI path
+- feat(adapters): add Solana and Stellar SDK chain client builders
+- feat(platform): add K8sDarwinDriver and per-Darwin manifest builders
+- feat(platform): add DarwinDriver protocol for in-process and K8s lifecycles
+- feat(orchestrator): admit Path-C neuron proposals through mutation pipeline
+- docs(engineering): add testing strategy and configuration reference (docs 26–27)
 - docs(engineering): add data model reference, security threat model, and operational runbook (docs 23–25)
 - feat(platform): CLI for multichain wallet, sanctions providers, and sinks
 - feat(platform): REST routes for signing rotation and Path-C proposals
@@ -137,7 +149,6 @@ Nothing has been tagged or released on GitHub yet. The first release will be **0
 
 - docs: refresh README intro, layout, and links to new reference docs
 - docs(deploy): add operator runbook for provider enablement and incidents
-- docs(engineering): add testing strategy and configuration reference (docs 26–27)
 - docs(engineering): add phase-two multi-tenant build plan
 - docs: update phase-one build plan and README license attribution
 - docs: add CHANGELOG from conventional commit history
