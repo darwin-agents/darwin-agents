@@ -78,7 +78,6 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
-          {{- if or $usePostgres .Values.tracing.endpoint .Values.extraEnv }}
           env:
             {{- if $usePostgres }}
             - name: DATABASE_URL
@@ -99,10 +98,79 @@ spec:
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: {{ .Values.tracing.protocol | quote }}
             {{- end }}
+            {{- $sanctions := .Values.providers.sanctions }}
+            {{- if $sanctions.existingSecret }}
+            - name: DARWIN_SANCTIONS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $sanctions.existingSecret }}
+                  key: sanctions-api-key
+                  optional: true
+            {{- else if $sanctions.apiKey }}
+            - name: DARWIN_SANCTIONS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "darwin-platform.fullname" . }}-providers
+                  key: sanctions-api-key
+            {{- end }}
+            {{- $notif := .Values.providers.notifications }}
+            {{- if $notif.existingSecret }}
+            {{- range $envname := list "DARWIN_SLACK_WEBHOOK_URL" "DARWIN_ESCALATION_WEBHOOK_URL" "DARWIN_ALERT_WEBHOOK_URL" "DARWIN_PAGERDUTY_ROUTING_KEY" }}
+            - name: {{ $envname }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $notif.existingSecret }}
+                  key: {{ $envname | lower }}
+                  optional: true
+            {{- end }}
+            {{- else if or $notif.slackWebhookUrl $notif.escalationWebhookUrl $notif.alertWebhookUrl $notif.pagerdutyRoutingKey }}
+            {{- range $envname, $present := dict
+                "DARWIN_SLACK_WEBHOOK_URL" $notif.slackWebhookUrl
+                "DARWIN_ESCALATION_WEBHOOK_URL" $notif.escalationWebhookUrl
+                "DARWIN_ALERT_WEBHOOK_URL" $notif.alertWebhookUrl
+                "DARWIN_PAGERDUTY_ROUTING_KEY" $notif.pagerdutyRoutingKey }}
+            {{- if $present }}
+            - name: {{ $envname }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "darwin-platform.fullname" $ }}-providers
+                  key: {{ $envname | lower }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- $fiat := .Values.providers.fiat }}
+            {{- if $fiat.existingSecret }}
+            - name: STRIPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fiat.existingSecret }}
+                  key: stripe-api-key
+                  optional: true
+            - name: MOONPAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fiat.existingSecret }}
+                  key: moonpay-api-key
+                  optional: true
+            {{- else if or $fiat.stripeApiKey $fiat.moonpayApiKey }}
+            {{- if $fiat.stripeApiKey }}
+            - name: STRIPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "darwin-platform.fullname" . }}-providers
+                  key: stripe-api-key
+            {{- end }}
+            {{- if $fiat.moonpayApiKey }}
+            - name: MOONPAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "darwin-platform.fullname" . }}-providers
+                  key: moonpay-api-key
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- end }}
           readinessProbe:
             httpGet:
               # With HA on, readiness == leader. The Service excludes
