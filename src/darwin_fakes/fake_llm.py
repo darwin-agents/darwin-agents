@@ -84,4 +84,29 @@ class FakeLLM:
             h = hashlib.sha256(str(request).encode()).hexdigest()[:6]
             return {"text": f"proceed per strategy prior ({h})", "cost_usdc": cost}
 
+        if task == "research_synthesis":
+            query = str(request.get("query", ""))
+            results = list(request.get("results", []))
+            return {
+                "text": (
+                    f"Summary of {len(results)} result(s) for {query!r}: "
+                    + (results[0].get("title", "no title") if results else "no findings")
+                ),
+                "cost_usdc": cost,
+            }
+
+        if task == "analytics_synthesis":
+            scope = str(request.get("scope", ""))
+            metrics = dict(request.get("raw_metrics", {}))
+            # Synthetic ROI: revenue minus cost over cost, or 0 if either is
+            # missing. Deterministic so the sim stays bit-for-bit reproducible.
+            rev = float(metrics.get("revenue_usdc", 0.0))
+            cst = float(metrics.get("cost_usdc", 0.0))
+            roi = (rev - cst) / cst if cst > 0 else 0.0
+            return {
+                "text": f"{scope}: revenue=${rev:.2f}, cost=${cst:.2f}, roi={roi:.2f}",
+                "roi": roi,
+                "cost_usdc": cost,
+            }
+
         return {"text": "", "cost_usdc": cost}

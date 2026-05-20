@@ -89,6 +89,10 @@ class FakeStack:
         # to exercise the 402 path inject a stub via stack.x402_client before
         # calling stack.platform().
         self.x402_client = None
+        # Sandbox substrate (doc 14). Default is the deterministic FakeSandbox
+        # so the 90-day sim never touches a real e2b microVM. Tests that want
+        # to drive the real adapter inject a stub via stack.sandbox.
+        self.sandbox = FakeSandbox()
         self.manifest, self.layer_blobs, self.layer_names, self.identity = (
             mint_genesis(self.signer, birth_ts=clock())
         )
@@ -113,6 +117,7 @@ class FakeStack:
             spawner=self.spawner,
             browser=self.browser,
             x402_client=self.x402_client,
+            sandbox=self.sandbox,
         )
 
 

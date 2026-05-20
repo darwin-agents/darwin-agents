@@ -39,6 +39,11 @@ class FakeWallet:
         self._per_action_cap: float = HARD_CAPS.per_action_usdc
         self._per_day_cap: float = HARD_CAPS.per_day_usdc
         self._per_lifetime_cap: float = HARD_CAPS.per_lifetime_usdc
+        # Optional sanctions screener (doc 17). Default None preserves
+        # legacy behaviour (the 90-day sim's recipients are all symbolic
+        # like "blog.example/affiliate"). The platform installs one at
+        # spawn time via :meth:`set_sanctions_screener`.
+        self._sanctions = None
 
     def _day(self) -> str:
         import time
@@ -116,6 +121,13 @@ class FakeWallet:
             raise WalletError(
                 f"insufficient funds: ${amount:.2f} > ${self._balance:.2f}"
             )
+        if self._sanctions is not None:
+            verdict = self._sanctions.check(str(to))
+            if not verdict.allowed:
+                raise WalletError(
+                    f"sanctions:{verdict.source} refused recipient "
+                    f"{to!r}: {verdict.reason or 'screening refused'}"
+                )
         self._balance -= amount
         self._spent_today += amount
         self._spent_lifetime += amount
@@ -244,6 +256,13 @@ class FakeWallet:
             raise WalletError(
                 f"harvest of ${gross:.2f} exceeds balance ${self._balance:.2f}"
             )
+        if self._sanctions is not None:
+            verdict = self._sanctions.check(str(destination))
+            if not verdict.allowed:
+                raise WalletError(
+                    f"sanctions:{verdict.source} refused harvest destination "
+                    f"{destination!r}: {verdict.reason or 'refused'}"
+                )
         self._balance -= gross
         ts = float(self._clock())
         net_row = {
@@ -274,6 +293,13 @@ class FakeWallet:
             "destination": destination,
             "ts": ts,
         }
+
+    # -- runtime-installable sanctions screener (doc 17) -------------------
+    def set_sanctions_screener(self, screener) -> None:
+        """Install (or replace) the screener at runtime. Used by the
+        Supervisor at spawn time so a single fleet-wide screener reaches
+        every Darwin's wallet without per-test wiring."""
+        self._sanctions = screener
 
     # -- platform reproduction transfer (omnibus move, not a neuron spend) --
     def transfer_out_for_child(self, amount_usdc: float) -> None:

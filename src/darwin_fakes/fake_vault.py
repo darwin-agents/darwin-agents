@@ -20,6 +20,12 @@ class FakeVault:
     def get(self, key: str) -> str | None:
         return self._kv.get(key)
 
+    def delete(self, key: str) -> None:
+        """Used by the platform-side vault admin (KYC retention purge,
+        owner-driven deletes). Idempotent — deleting a missing key is a
+        no-op rather than a raise, matching real KV semantics."""
+        self._kv.pop(key, None)
+
 
 class MemoryOwnerGrantStore:
     """One-time owner-approval tokens. The platform ``grant``s a token when an
