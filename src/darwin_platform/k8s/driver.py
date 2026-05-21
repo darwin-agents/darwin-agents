@@ -26,7 +26,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from ..driver import DarwinDriver, DarwinNotFound, DarwinSnapshot, DarwinSpec, DriverError
+from ..runtime.driver import (
+    DarwinDriver,
+    DarwinNotFound,
+    DarwinSnapshot,
+    DarwinSpec,
+    DriverError,
+)
 from .manifests import (
     CONTROL_API_PORT,
     DarwinManifestBundle,

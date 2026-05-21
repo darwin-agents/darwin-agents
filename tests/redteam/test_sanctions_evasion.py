@@ -7,7 +7,7 @@ to normalise both before comparison.
 
 from __future__ import annotations
 
-from darwin_platform.sanctions import LocalDenylistScreener
+from darwin_platform.payments.sanctions import LocalDenylistScreener
 
 
 def test_redteam_sanctions_case_evasion_blocked():

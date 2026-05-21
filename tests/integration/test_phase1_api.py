@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from darwin_platform.api import build_app
-from darwin_platform.supervisor import LineageEdge, Supervisor
+from darwin_platform.runtime.supervisor import LineageEdge, Supervisor
 
 
 @pytest.fixture

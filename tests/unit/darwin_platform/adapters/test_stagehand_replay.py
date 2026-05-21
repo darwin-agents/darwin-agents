@@ -9,7 +9,7 @@ from darwin_platform.adapters.stagehand import (
     InMemoryStagehandClient,
     StagehandReplayClient,
 )
-from darwin_platform.browser_cache import (
+from darwin_platform.infra.browser_cache import (
     BrowserCacheService,
     CachedBrowserSubstrate,
 )

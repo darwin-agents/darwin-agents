@@ -19,12 +19,12 @@ import pytest
 from darwin_dna.evolution import boot
 from darwin_dna.machinery.eval_harness import BehaviorDelta
 from darwin_dna.machinery.patch_validator import FileChange, Patch
-from darwin_platform.eval_runner import EvalRequest, EvalRunner
-from darwin_platform.patch_staging import (
+from darwin_platform.evolution.eval_runner import EvalRequest, EvalRunner
+from darwin_platform.evolution.patch_staging import (
     PatchStagingService,
     StagingQuota,
 )
-from darwin_platform.supervisor import Supervisor
+from darwin_platform.runtime.supervisor import Supervisor
 
 
 @pytest.mark.asyncio
@@ -61,7 +61,7 @@ async def test_lineage_tree_endpoint_shape():
 async def test_lineage_tree_with_synthetic_descendant():
     """Add a lineage edge directly so the tree query returns it (the
     full reproduction event is exercised in test_self_modification)."""
-    from darwin_platform.supervisor import LineageEdge
+    from darwin_platform.runtime.supervisor import LineageEdge
 
     sup = Supervisor(heartbeat_seconds=0.001)
     status = await sup.spawn(opening_usdc=1000.0, actor="test")
@@ -88,7 +88,7 @@ async def test_lineage_tree_with_synthetic_descendant():
 
 @pytest.mark.asyncio
 async def test_lineage_tree_unknown_darwin_raises():
-    from darwin_platform.supervisor import UnknownDarwin
+    from darwin_platform.runtime.supervisor import UnknownDarwin
 
     sup = Supervisor(heartbeat_seconds=0.001)
     try:
@@ -155,7 +155,7 @@ async def test_evaluate_mutation_via_staging_records_via_in_audit():
         audit_sink_resolver=lambda _id: sink,
     )
     # The hook the supervisor would install:
-    from darwin_platform.supervisor import _GenomeStagingHook  # noqa: SLF001
+    from darwin_platform.runtime.supervisor import _GenomeStagingHook  # noqa: SLF001
     hook = _GenomeStagingHook(runner=runner, darwin_id="d-1")
 
     ctx = types.SimpleNamespace(
@@ -222,7 +222,7 @@ async def test_publishing_endpoints_wired_onto_neuron():
 async def test_signer_injection_takes_precedence():
     """An injected signer (Phase 1 HSM path) bypasses the persistence
     seed + the FakeSigningService default."""
-    from darwin_platform.signing_service import LocalEd25519Signer
+    from darwin_platform.security.signing_service import LocalEd25519Signer
 
     custom = LocalEd25519Signer()
     sup = Supervisor(heartbeat_seconds=0.001, signer=custom)

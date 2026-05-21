@@ -182,7 +182,7 @@ async def test_x402_absent_when_platform_has_none():
 
 @pytest.mark.asyncio
 async def test_supervisor_wallet_factory_replaces_fake():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     stub = _StubWallet()
 
@@ -201,7 +201,7 @@ async def test_supervisor_wallet_factory_replaces_fake():
 
 @pytest.mark.asyncio
 async def test_supervisor_vault_factory_replaces_fake():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     stub = _StubVault()
 
@@ -220,7 +220,7 @@ async def test_supervisor_vault_factory_replaces_fake():
 
 @pytest.mark.asyncio
 async def test_supervisor_browser_factory_replaces_fake():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     stub = _StubBrowser()
 
@@ -246,7 +246,7 @@ async def test_supervisor_browser_factory_replaces_fake():
 
 @pytest.mark.asyncio
 async def test_supervisor_x402_factory_sets_stack_client():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     stub = _StubX402()
 
@@ -265,7 +265,7 @@ async def test_supervisor_x402_factory_sets_stack_client():
 
 @pytest.mark.asyncio
 async def test_supervisor_sandbox_factory_replaces_fake():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     stub = _StubSandbox()
 
@@ -285,7 +285,7 @@ async def test_supervisor_sandbox_factory_replaces_fake():
 @pytest.mark.asyncio
 async def test_supervisor_all_factories_together():
     """All five factories applied together; each stub is the live component."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     w = _StubWallet()
     v = _StubVault()

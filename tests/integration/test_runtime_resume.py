@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from darwin_platform.supervisor import Supervisor
+from darwin_platform.runtime.supervisor import Supervisor
 
 
 @pytest.mark.asyncio

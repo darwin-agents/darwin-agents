@@ -36,8 +36,8 @@ from darwin_dna.neurons._base import (
 )
 from darwin_dna.strategies import StrategyAction, StrategySpec
 from darwin_fakes import make_platform
-from darwin_platform.patch_staging import PatchStagingService
-from darwin_platform.supervisor import Supervisor
+from darwin_platform.evolution.patch_staging import PatchStagingService
+from darwin_platform.runtime.supervisor import Supervisor
 
 from .assertions import (
     CriterionResult,

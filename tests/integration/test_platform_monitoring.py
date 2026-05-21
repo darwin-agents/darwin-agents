@@ -21,7 +21,7 @@ from darwin_platform import (
     Supervisor,
     run_detectors,
 )
-from darwin_platform.monitoring import (
+from darwin_platform.observability.monitoring import (
     detect_escalation_rate,
     detect_failure_rate,
     detect_heartbeat_health,

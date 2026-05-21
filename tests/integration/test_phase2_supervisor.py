@@ -10,26 +10,26 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.drift_detector import DailyProfile, DriftDetector
-from darwin_platform.kyc import KYCService, StubKYCProvider
-from darwin_platform.merkle_anchor import (
+from darwin_platform.observability.drift_detector import DailyProfile, DriftDetector
+from darwin_platform.security.kyc import KYCService, StubKYCProvider
+from darwin_platform.observability.merkle_anchor import (
     MerkleAnchorPublisher,
     StubAnchorBackend,
 )
-from darwin_platform.namespace_provisioner import (
+from darwin_platform.tenancy.namespace_provisioner import (
     NamespaceProvisioner,
     StubK8sBackend,
     StubOrganismDbBackend,
     StubVaultNamespaceBackend,
 )
-from darwin_platform.omnibus_wallet import OmnibusWallet
-from darwin_platform.supervisor import Supervisor
+from darwin_platform.payments.omnibus_wallet import OmnibusWallet
+from darwin_platform.runtime.supervisor import Supervisor
 
 
 @pytest.fixture
 def _omnibus_chain():
     """In-process chain stub for the omnibus."""
-    from tests.unit.darwin_platform.core.test_omnibus_wallet import _Chain
+    from tests.unit.darwin_platform.payments.test_omnibus_wallet import _Chain
     return _Chain(balance=10_000.0)
 
 

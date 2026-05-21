@@ -13,13 +13,13 @@ from darwin_platform.__main__ import (
     _build_sanctions,
     build_parser,
 )
-from darwin_platform.sanctions import (
+from darwin_platform.payments.sanctions import (
     CachedScreener,
     ChainalysisScreener,
     LocalDenylistScreener,
     TRMScreener,
 )
-from darwin_platform.sinks import (
+from darwin_platform.observability.sinks import (
     FanOutAlertSink,
     FanOutNotificationSink,
     GenericWebhookAlertSink,

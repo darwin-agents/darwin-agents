@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from darwin_platform.adapters.browser import BrowserUseClient
-from darwin_platform.browser_cache import (
+from darwin_platform.infra.browser_cache import (
     BrowserCacheService,
     CachedBrowserSubstrate,
 )

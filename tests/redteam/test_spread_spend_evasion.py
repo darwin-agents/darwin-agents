@@ -8,7 +8,7 @@ spend_velocity is quiet.
 
 from __future__ import annotations
 
-from darwin_platform.monitoring import (
+from darwin_platform.observability.monitoring import (
     DarwinSignals,
     Quotas,
     Severity,

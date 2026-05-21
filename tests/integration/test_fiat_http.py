@@ -13,7 +13,7 @@ async def test_fiat_quote_no_ramp_returns_409():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     app = build_app(sup)
@@ -33,7 +33,7 @@ async def test_fiat_quote_with_ramp_returns_quote():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(fiat_ramp=StubFiatRamp())
     app = build_app(sup)
@@ -55,7 +55,7 @@ async def test_fiat_confirm_credits_darwin_wallet():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     ramp = StubFiatRamp()
     sup = Supervisor(fiat_ramp=ramp)
@@ -89,7 +89,7 @@ async def test_fiat_confirm_unknown_darwin_returns_404():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     ramp = StubFiatRamp()
     sup = Supervisor(fiat_ramp=ramp)
@@ -117,7 +117,7 @@ async def test_fiat_withdraw_route():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(fiat_ramp=StubFiatRamp())
     app = build_app(sup)
@@ -138,7 +138,7 @@ async def test_fiat_routes_audit_logged():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(fiat_ramp=StubFiatRamp())
     app = build_app(sup)

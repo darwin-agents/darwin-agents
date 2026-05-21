@@ -250,7 +250,7 @@ def _build_sanctions(args: argparse.Namespace):
                 file=sys.stderr,
             )
             sys.exit(2)
-        from .sanctions import CachedScreener, ChainalysisScreener
+        from .payments.sanctions import CachedScreener, ChainalysisScreener
         return CachedScreener(ChainalysisScreener(api_key=api_key))
     if provider == "trm":
         if not api_key:
@@ -259,13 +259,13 @@ def _build_sanctions(args: argparse.Namespace):
                 file=sys.stderr,
             )
             sys.exit(2)
-        from .sanctions import CachedScreener, TRMScreener
+        from .payments.sanctions import CachedScreener, TRMScreener
         return CachedScreener(TRMScreener(api_key=api_key))
     # provider == "local" (default)
     denylist_path = getattr(args, "sanctions_denylist", None)
     if not denylist_path:
         return None
-    from .sanctions import LocalDenylistScreener
+    from .payments.sanctions import LocalDenylistScreener
     try:
         data = json.loads(Path(denylist_path).expanduser().read_text())
     except Exception as exc:  # pragma: no cover
@@ -291,16 +291,16 @@ def _build_notification_sink(args: argparse.Namespace):
     )
     sinks: list = []
     if slack_url:
-        from .sinks import SlackWebhookNotificationSink
+        from .observability.sinks import SlackWebhookNotificationSink
         sinks.append(SlackWebhookNotificationSink(webhook_url=slack_url))
     if webhook_url:
-        from .sinks import GenericWebhookNotificationSink
+        from .observability.sinks import GenericWebhookNotificationSink
         sinks.append(GenericWebhookNotificationSink(url=webhook_url))
     if not sinks:
         return None
     if len(sinks) == 1:
         return sinks[0]
-    from .sinks import FanOutNotificationSink
+    from .observability.sinks import FanOutNotificationSink
     return FanOutNotificationSink(sinks)
 
 
@@ -314,16 +314,16 @@ def _build_alert_sink(args: argparse.Namespace):
     )
     sinks: list = []
     if webhook_url:
-        from .sinks import GenericWebhookAlertSink
+        from .observability.sinks import GenericWebhookAlertSink
         sinks.append(GenericWebhookAlertSink(url=webhook_url))
     if pd_routing:
-        from .sinks import PagerDutyAlertSink
+        from .observability.sinks import PagerDutyAlertSink
         sinks.append(PagerDutyAlertSink(routing_key=pd_routing))
     if not sinks:
         return None
     if len(sinks) == 1:
         return sinks[0]
-    from .sinks import FanOutAlertSink
+    from .observability.sinks import FanOutAlertSink
     return FanOutAlertSink(sinks)
 
 
@@ -381,9 +381,9 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
 
     from .api import build_app
-    from .auth import InMemoryTokenStore
-    from .leadership import PostgresAdvisoryLockElection
-    from .supervisor import Supervisor
+    from .runtime.leadership import PostgresAdvisoryLockElection
+    from .runtime.supervisor import Supervisor
+    from .security.auth import InMemoryTokenStore
 
     leader_election = None
     if args.leader_election:
@@ -453,7 +453,7 @@ def _serve(args: argparse.Namespace) -> int:
 def _signing_key(args: argparse.Namespace) -> int:
     """Print the platform's signing public key. Useful for ops verification
     that a manifest was signed by the right HSM-equivalent identity."""
-    from .supervisor import Supervisor
+    from .runtime.supervisor import Supervisor
 
     sup = Supervisor(persistence_path=args.db if args.db else None)
     print(sup.signing_public_key_pem().decode("ascii"))

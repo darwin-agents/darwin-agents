@@ -8,7 +8,7 @@ clean blob (removal). Both must produce a hard refusal from ``verify``.
 
 from __future__ import annotations
 
-from darwin_platform.watermark import HmacWatermarker, WATERMARK_MARKER, verify
+from darwin_platform.security.watermark import HmacWatermarker, WATERMARK_MARKER, verify
 
 
 def test_redteam_watermark_forgery_via_wrong_key_detectable():

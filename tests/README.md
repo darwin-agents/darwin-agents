@@ -21,10 +21,15 @@ tests/
 │   │   ├── neurons/                # per-neuron unit tests
 │   │   ├── test_signature.py       # genome signing
 │   │   └── test_untrusted.py       # fence wrapping
-│   └── darwin_platform/
-│       ├── core/                   # supervisor, persistence, sanctions, sinks,
-│       │                           #   watermark, vault_admin, throttles, leadership,
-│       │                           #   cross-pollination archive, etc.
+│   └── darwin_platform/            # mirrors src/darwin_platform/ bounded contexts
+│       ├── runtime/                # supervisor, persistence, leadership
+│       ├── tenancy/                # provisioning, vault_admin, namespace, cross-pollination
+│       ├── payments/               # billing, omnibus, stripe ramp, harvest, sanctions
+│       ├── security/               # auth, kyc, signing, key rotation, watermark
+│       ├── observability/          # monitoring, drift, merkle anchor, audit, sinks
+│       ├── escalations/            # escalation router, FCM push
+│       ├── evolution/              # patch staging, eval runner
+│       ├── infra/                  # throttles, egress proxy, browser cache
 │       ├── adapters/               # wallet, vault, browser, fiat, multichain,
 │       │                           #   litellm, stagehand, real-SDK wrappers
 │       └── k8s/                    # driver + manifests

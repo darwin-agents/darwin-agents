@@ -9,7 +9,7 @@ forgery fails verification.
 
 from __future__ import annotations
 
-from darwin_platform.cross_pollination import (
+from darwin_platform.tenancy.cross_pollination import (
     CrossPollinationArchive,
     PollinationLesson,
     verify_lesson,

@@ -33,18 +33,18 @@ except ImportError as exc:  # pragma: no cover
         "`pip install darwin-dna[platform]`"
     ) from exc
 
-from .auth import (
+from .observability.monitoring import Severity
+from .observability.snapshot import snapshot as build_snapshot
+from .runtime.supervisor import Supervisor, SupervisorError, UnknownDarwin
+from .security.auth import (
     OWNER,
     PLATFORM_OPERATOR,
     AuthContext,
     TokenStore,
     disabled_context,
 )
-from .monitoring import Severity
-from .snapshot import snapshot as build_snapshot
-from .provisioning import ProvisioningError
-from .supervisor import Supervisor, SupervisorError, UnknownDarwin
-from .vault_admin import VaultAdminError
+from .tenancy.provisioning import ProvisioningError
+from .tenancy.vault_admin import VaultAdminError
 
 
 # -- request/response models ------------------------------------------------

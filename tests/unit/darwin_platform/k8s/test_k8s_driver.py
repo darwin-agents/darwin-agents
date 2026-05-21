@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from darwin_platform.driver import DarwinNotFound, DarwinSnapshot, DarwinSpec, DriverError
+from darwin_platform.runtime.driver import DarwinNotFound, DarwinSnapshot, DarwinSpec, DriverError
 from darwin_platform.k8s.driver import K8sDarwinDriver
 from darwin_platform.k8s.manifests import DarwinPodConfig
 

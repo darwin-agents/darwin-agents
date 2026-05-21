@@ -19,7 +19,7 @@ fastapi = pytest.importorskip("fastapi")
 httpx = pytest.importorskip("httpx")
 
 from darwin_platform.api import build_app  # noqa: E402
-from darwin_platform.supervisor import Supervisor  # noqa: E402
+from darwin_platform.runtime.supervisor import Supervisor  # noqa: E402
 
 
 async def _wait_until(

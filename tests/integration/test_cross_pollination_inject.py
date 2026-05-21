@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.cross_pollination import CrossPollinationArchive
+from darwin_platform.tenancy.cross_pollination import CrossPollinationArchive
 
 
 @pytest.mark.asyncio
 async def test_inject_helper_skips_when_no_archive():
     """If no archive is configured, the inject helper is a no-op."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -28,7 +28,7 @@ async def test_inject_helper_skips_when_no_archive():
 @pytest.mark.asyncio
 async def test_inject_stages_lessons_for_known_scopes():
     """Lessons in scopes the child's catalog has → staged."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     archive = CrossPollinationArchive(signing_key=b"k")
     archive.deposit(
@@ -61,7 +61,7 @@ async def test_inject_stages_lessons_for_known_scopes():
 async def test_inject_excludes_ancestry():
     """A child must not ingest lessons from its own ancestry — those
     come in via the inherited layer stack directly."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     archive = CrossPollinationArchive(signing_key=b"k")
     # Sibling vs ancestor.
@@ -93,7 +93,7 @@ async def test_inject_excludes_ancestry():
 
 @pytest.mark.asyncio
 async def test_inject_writes_audit_when_lessons_found():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     archive = CrossPollinationArchive(signing_key=b"k")
     archive.deposit(

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.cross_pollination import CrossPollinationArchive
-from darwin_platform.supervisor import Supervisor
+from darwin_platform.tenancy.cross_pollination import CrossPollinationArchive
+from darwin_platform.runtime.supervisor import Supervisor
 
 
 @pytest.mark.asyncio

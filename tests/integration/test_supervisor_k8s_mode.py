@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.driver import DarwinSnapshot, DarwinSpec
-from darwin_platform.supervisor import Supervisor
+from darwin_platform.runtime.driver import DarwinSnapshot, DarwinSpec
+from darwin_platform.runtime.supervisor import Supervisor
 
 
 class _FakeK8sDriver:
