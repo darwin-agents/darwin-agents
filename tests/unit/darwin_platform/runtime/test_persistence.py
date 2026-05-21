@@ -3,7 +3,7 @@
 Doc 08: "The audit log is permanent and hash-chained — we do not delete
 audit entries even when a Darwin dies." The in-memory implementations
 satisfy that within one process; the SQLite-backed variants in
-:mod:`darwin_platform.persistence` survive process restarts.
+:mod:`darwin_platform.runtime.persistence` survive process restarts.
 
 These tests:
 - Audit log: write entries, close, reopen, verify chain + tip_hash

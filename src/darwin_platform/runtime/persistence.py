@@ -48,26 +48,26 @@ from typing import Any, Iterable
 
 from darwin_dna.constitution import TicketClass
 
-from .auth import AuthContext
-from .billing import BillingLedger, BillingPolicy, BillingService
-from .escalation import (
+from ..escalations.escalation import (
     EscalationRouter,
     NotificationSink,
     RoutedTicket,
     TicketStatus,
 )
-from .monitoring import (
+from ..observability.monitoring import (
     Alert,
     AlertSink,
     Monitor,
     Quotas,
     Severity,
 )
-from .operator_audit import (
+from ..observability.operator_audit import (
     OperatorAuditEntry,
     OperatorAuditError,
     OperatorAuditLog,
 )
+from ..payments.billing import BillingLedger, BillingPolicy, BillingService
+from ..security.auth import AuthContext
 
 
 # -- schema (template; backends substitute the type flavors) ---------------

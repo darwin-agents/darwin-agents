@@ -39,57 +39,23 @@ from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_fakes import FakeStack, make_child_platform
 from darwin_fakes.fake_platform import SigningService
 
-from .billing import BillingPolicy, BillingService
-from .browser_cache import BrowserCacheService, CachedBrowserSubstrate
-from .adapters.fiat import (
+from ..adapters.fiat import (
     FiatDepositReceipt,
     FiatQuote,
     FiatRamp,
     FiatRampError,
     FiatWithdrawReceipt,
 )
-from .cross_pollination import (
-    CrossPollinationArchive,
-    CrossPollinationError,
-    PollinationLesson,
-)
-from .escalation import EscalationRouter, NotificationSink
-from .harvest_scheduler import HarvestRule, HarvestRuleError, HarvestScheduler
-from .drift_detector import DailyProfile, DriftAlert, DriftDetector
-from .eval_runner import EvalRequest, EvalRunner
-from .kyc import KYCService
-from .merkle_anchor import (
-    DarwinDailyRoot,
-    FleetAnchor,
-    MerkleAnchorPublisher,
-)
-from .monitoring import (
-    Alert,
-    AlertSink,
-    DarwinSignals,
-    Monitor,
-    Quotas,
-    Severity,
-)
-from .namespace_provisioner import NamespaceProvisioner, TenantNamespace
-from .omnibus_wallet import OmnibusWallet, ReconciliationResult
-from .operator_audit import OperatorAuditLog, to_dicts as _audit_to_dicts
-from .patch_staging import (
+from ..escalations.escalation import EscalationRouter, NotificationSink
+from ..evolution.eval_runner import EvalRequest, EvalRunner
+from ..evolution.patch_staging import (
     PatchStagingService,
     StagingQuota,
     StagingSandbox,
     StagingVerdict,
 )
-from .signing_service import PlatformSigner
-from .provisioning import (
-    ProvisioningBackend,
-    ProvisioningError,
-    ProvisioningQuotas,
-    ProvisioningService,
-    ResourceRecord,
-)
-from .sanctions import SanctionsScreener
-from .throttle import (
+from ..infra.browser_cache import BrowserCacheService, CachedBrowserSubstrate
+from ..infra.throttle import (
     THROTTLE_KIND_BROWSER,
     THROTTLE_KIND_EGRESS,
     THROTTLE_KIND_SANDBOX,
@@ -101,15 +67,56 @@ from .throttle import (
     ThrottledEgressClient,
     ThrottledSandboxSubstrate,
 )
-from .tracing import annotate_span_with_runtime, span
-from .vault_admin import (
+from ..observability.drift_detector import DailyProfile, DriftAlert, DriftDetector
+from ..observability.merkle_anchor import (
+    DarwinDailyRoot,
+    FleetAnchor,
+    MerkleAnchorPublisher,
+)
+from ..observability.monitoring import (
+    Alert,
+    AlertSink,
+    DarwinSignals,
+    Monitor,
+    Quotas,
+    Severity,
+)
+from ..observability.operator_audit import (
+    OperatorAuditLog,
+    to_dicts as _audit_to_dicts,
+)
+from ..observability.tracing import annotate_span_with_runtime, span
+from ..payments.billing import BillingPolicy, BillingService
+from ..payments.harvest_scheduler import (
+    HarvestRule,
+    HarvestRuleError,
+    HarvestScheduler,
+)
+from ..payments.omnibus_wallet import OmnibusWallet, ReconciliationResult
+from ..payments.sanctions import SanctionsScreener
+from ..security.kyc import KYCService
+from ..security.signing_service import PlatformSigner
+from ..security.watermark import HmacWatermarker, NoOpWatermarker, Watermarker
+from ..tenancy.cross_pollination import (
+    CrossPollinationArchive,
+    CrossPollinationError,
+    PollinationLesson,
+)
+from ..tenancy.namespace_provisioner import NamespaceProvisioner, TenantNamespace
+from ..tenancy.provisioning import (
+    ProvisioningBackend,
+    ProvisioningError,
+    ProvisioningQuotas,
+    ProvisioningService,
+    ResourceRecord,
+)
+from ..tenancy.vault_admin import (
     DEFAULT_SENSITIVE_TTL_SECONDS,
     VaultAdminError,
     VaultAdminService,
     VaultEntryRef,
     VaultRetentionService,
 )
-from .watermark import HmacWatermarker, NoOpWatermarker, Watermarker
 
 
 # -- errors ----------------------------------------------------------------
@@ -388,7 +395,7 @@ class Supervisor:
         # collections below can branch on whether persistence is configured.
         self._persistence = None
         if persistence_path is not None:
-            from .persistence import PersistenceStore
+            from .persistence import PersistenceStore  # sibling in runtime/
 
             self._persistence = PersistenceStore(persistence_path, clock=clock)
             # Apply the configured billing policy to the persistent service
@@ -2863,7 +2870,7 @@ class Supervisor:
             raise SupervisorError(
                 "key rotation requires persistence (--db) to be configured"
             )
-        from .key_rotation import KeyRotationService
+        from ..security.key_rotation import KeyRotationService
         svc = KeyRotationService(
             persistence=self._persistence,
             signer=self._signer,
