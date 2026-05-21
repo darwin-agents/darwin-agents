@@ -16,13 +16,13 @@ import time
 
 import pytest
 
-from darwin_platform.escalation import (
+from darwin_platform.escalations.escalation import (
     LogNotificationSink,  # for shape comparison
     RoutedTicket,
     TicketStatus,
 )
 from darwin_dna.constitution import TicketClass
-from darwin_platform.notification_fcm import (
+from darwin_platform.escalations.notification_fcm import (
     FCMNotificationSink,
     StubFCMTokenProvider,
     StubFCMTransport,
