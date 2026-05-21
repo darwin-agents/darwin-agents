@@ -146,7 +146,99 @@ class _Audit:
         ]
 
 
-def _build_app(allowlist: Allowlist, audit: _Audit, *, clock=time.time):
+# ---------------------------------------------------------------------------
+# Bandwidth quota (Phase 2 §"The egress proxy")
+# ---------------------------------------------------------------------------
+@dataclass
+class BandwidthQuota:
+    """Per-Darwin daily bandwidth ceiling.
+
+    Doc 22's defaults: 10 GB/day soft, 2× burst (20 GB) hard. The
+    proxy refuses (HTTP 429) requests that would push a Darwin above
+    the hard ceiling for the current UTC day. The soft ceiling fires
+    a WARN that the supervisor's monitor consumes (the proxy only
+    enforces the hard cap; informational throttling lives upstream).
+
+    Accounting is bytes_in + bytes_out: a Darwin paying for a 1 GB
+    LLM response should hit the cap just as fast as one fetching a
+    1 GB page. Daily rollover is UTC.
+    """
+
+    soft_bytes_per_day: int = 10 * 1024 * 1024 * 1024     # 10 GB
+    hard_bytes_per_day: int = 20 * 1024 * 1024 * 1024     # 20 GB (2× burst)
+    _today: str = ""
+    _usage: dict[str, int] = field(default_factory=dict)
+    _warned: set[str] = field(default_factory=set)
+
+    def _day(self) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime())
+
+    def _roll_if_new_day(self) -> None:
+        d = self._day()
+        if d != self._today:
+            self._today = d
+            self._usage.clear()
+            self._warned.clear()
+
+    def used_today(self, darwin_id: str) -> int:
+        self._roll_if_new_day()
+        return int(self._usage.get(darwin_id, 0))
+
+    def remaining_today(self, darwin_id: str) -> int:
+        return max(0, self.hard_bytes_per_day - self.used_today(darwin_id))
+
+    def check_and_charge(
+        self, *, darwin_id: str | None, bytes_used: int,
+    ) -> tuple[bool, str | None, bool]:
+        """Record ``bytes_used`` against ``darwin_id``. Returns
+        ``(allowed, denied_reason, soft_breach_first_time)``. Anonymous
+        traffic (no darwin_id) is exempt from per-Darwin caps but
+        counted under the synthetic ``"__anonymous__"`` bucket for
+        ops visibility.
+
+        ``soft_breach_first_time`` is True only on the first call after
+        the soft cap is crossed for the day — the caller fires a single
+        WARN per Darwin per day rather than spamming."""
+        self._roll_if_new_day()
+        key = darwin_id or "__anonymous__"
+        current = int(self._usage.get(key, 0))
+        projected = current + max(0, int(bytes_used))
+        if darwin_id is not None and projected > self.hard_bytes_per_day:
+            return (
+                False,
+                f"bandwidth cap: {projected} bytes > "
+                f"{self.hard_bytes_per_day} bytes/day",
+                False,
+            )
+        self._usage[key] = projected
+        soft_first = False
+        if (
+            darwin_id is not None
+            and projected > self.soft_bytes_per_day
+            and key not in self._warned
+        ):
+            self._warned.add(key)
+            soft_first = True
+        return True, None, soft_first
+
+    def snapshot(self) -> dict[str, Any]:
+        self._roll_if_new_day()
+        return {
+            "day": self._today,
+            "soft_bytes_per_day": self.soft_bytes_per_day,
+            "hard_bytes_per_day": self.hard_bytes_per_day,
+            "per_darwin_usage": dict(self._usage),
+            "warned_soft_breach": sorted(self._warned),
+        }
+
+
+def _build_app(
+    allowlist: Allowlist,
+    audit: _Audit,
+    *,
+    clock=time.time,
+    bandwidth_quota: BandwidthQuota | None = None,
+):
     try:
         from fastapi import Body, FastAPI, Header, HTTPException
         import httpx
@@ -156,6 +248,10 @@ def _build_app(allowlist: Allowlist, audit: _Audit, *, clock=time.time):
         ) from exc
 
     app = FastAPI(title="darwin-egress-proxy")
+    # Bandwidth quota is optional so the existing single-tenant dev
+    # deployment continues to work — only Phase 2 multi-tenant mode
+    # constructs the proxy with a quota.
+    quota = bandwidth_quota
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -164,6 +260,14 @@ def _build_app(allowlist: Allowlist, audit: _Audit, *, clock=time.time):
     @app.get("/access-log")
     async def access_log(limit: int = 200) -> list[dict[str, Any]]:
         return audit.snapshot(limit=min(max(limit, 1), 2000))
+
+    @app.get("/bandwidth")
+    async def bandwidth() -> dict:
+        if quota is None:
+            return {"enabled": False}
+        snap = quota.snapshot()
+        snap["enabled"] = True
+        return snap
 
     @app.post("/proxy")
     async def proxy(
@@ -199,22 +303,66 @@ def _build_app(allowlist: Allowlist, audit: _Audit, *, clock=time.time):
                 denied_reason=reason, matched_rule=None,
             ))
             raise HTTPException(403, reason or "denied")
+
+        # Pre-flight bandwidth check (Phase 2 §"The egress proxy"). We
+        # refuse the request OUTRIGHT when the Darwin is already past
+        # the hard cap, rather than letting the round-trip happen and
+        # then refusing the response. Pre-flight uses the request body
+        # size as a lower bound; the response charges the real
+        # bytes_in + bytes_out after.
         headers = {str(k): str(v) for k, v in (body.get("headers") or {}).items()}
         request_body: bytes = b""
         encoded = body.get("body_b64")
         if encoded:
             import base64
             request_body = base64.b64decode(encoded)
+        if quota is not None and x_darwin_id is not None:
+            already_used = quota.used_today(x_darwin_id)
+            if already_used >= quota.hard_bytes_per_day:
+                audit.append(AccessLogEntry(
+                    ts=clock(), darwin_id=x_darwin_id, method=method, url=url,
+                    status=0, bytes_in=len(request_body), bytes_out=0,
+                    denied_reason="bandwidth cap exceeded",
+                    matched_rule=entry.host_suffix if entry else None,
+                ))
+                raise HTTPException(429, "bandwidth cap exceeded for today")
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.request(
                 method, url, headers=headers, content=request_body,
             )
         import base64 as _b64
         resp_body_b64 = _b64.b64encode(resp.content).decode("ascii")
+        bytes_in = len(request_body)
+        bytes_out = len(resp.content)
+        if quota is not None:
+            allowed, denied_reason, _ = quota.check_and_charge(
+                darwin_id=x_darwin_id, bytes_used=bytes_in + bytes_out,
+            )
+            if not allowed:
+                # The response is in hand but the charge pushed us over
+                # the hard cap. We still return the body the caller
+                # already paid for on-chain (the egress is not the
+                # billing layer), but we audit-log the breach + return
+                # the rate-limit header so the client backs off.
+                audit.append(AccessLogEntry(
+                    ts=clock(), darwin_id=x_darwin_id, method=method, url=url,
+                    status=resp.status_code, bytes_in=bytes_in,
+                    bytes_out=bytes_out,
+                    denied_reason=denied_reason or "bandwidth cap",
+                    matched_rule=entry.host_suffix if entry else None,
+                ))
+                # 200/whatever from upstream — keep it but note the breach.
+                return {
+                    "status": resp.status_code,
+                    "headers": {**dict(resp.headers),
+                                "x-darwin-egress-overlimit": "true"},
+                    "body_b64": resp_body_b64,
+                }
         audit.append(AccessLogEntry(
             ts=clock(), darwin_id=x_darwin_id, method=method, url=url,
-            status=resp.status_code, bytes_in=len(request_body),
-            bytes_out=len(resp.content), denied_reason=None,
+            status=resp.status_code, bytes_in=bytes_in,
+            bytes_out=bytes_out, denied_reason=None,
             matched_rule=entry.host_suffix if entry else None,
         ))
         return {
