@@ -292,22 +292,22 @@ Phase 2 cannot launch to external users until:
 ```
 src/
   darwin_platform/
-    kyc.py                        NEW  — KYC provider integration (Persona/Onfido)
-    stripe_ramp.py                NEW  — Stripe fiat on-ramp: checkout sessions, webhooks
-    omnibus_wallet.py             NEW  — Platform omnibus wallet: fund, sweep, reconcile
-    egress_proxy.py               NEW  — Envoy sidecar config generator + blocklist sync
-    namespace_provisioner.py      NEW  — K8s namespace lifecycle: create, NetworkPolicy, teardown
-    drift_detector.py             NEW  — Behavior drift anomaly detection (rolling 7d profile)
-    merkle_anchor.py              NEW  — Daily Merkle root → public chain anchoring
-    notification_fcm.py           NEW  — FCM push notification sink (replaces LogNotificationSink)
-    supervisor.py                 MOD  — namespace provisioning on spawn, real wallet provision
-    api.py                        MOD  — data browser endpoint, billing statements, KYC status
-    auth.py                       MOD  — Clerk/WorkOS integration (replace in-memory tokens)
-    billing.py                    MOD  — daily reconciliation, monthly invoicing
-    monitoring.py                 MOD  — drift detector integration, tighter quotas
-    escalation.py                 MOD  — FCM sink wiring, ticket classification enrichment
-    adapters/wallet.py            MOD  — Coinbase CDP API for wallet provisioning
-    adapters/vault_backend.py     MOD  — Vault Enterprise namespace creation
+    security/kyc.py                       NEW  — KYC provider integration (Persona/Onfido)
+    payments/stripe_ramp.py               NEW  — Stripe fiat on-ramp: checkout sessions, webhooks
+    payments/omnibus_wallet.py            NEW  — Platform omnibus wallet: fund, sweep, reconcile
+    infra/egress_proxy.py                 MOD  — adds Phase 2 BandwidthQuota + /bandwidth endpoint
+    tenancy/namespace_provisioner.py      NEW  — K8s + Vault namespace + organism DB lifecycle
+    observability/drift_detector.py       NEW  — Behavior drift anomaly detection (rolling 7d profile)
+    observability/merkle_anchor.py        NEW  — Daily Merkle root → public chain anchoring
+    escalations/notification_fcm.py       NEW  — FCM push notification sink
+    runtime/supervisor.py                 MOD  — Phase 2 services injection + helper accessors
+    api.py                                MOD  — data browser endpoint, billing statements, KYC status
+    security/auth.py                      MOD  — Clerk/WorkOS integration (replace in-memory tokens)
+    payments/billing.py                   MOD  — daily reconciliation, monthly invoicing
+    observability/monitoring.py           MOD  — drift detector integration, tighter quotas
+    escalations/escalation.py             MOD  — FCM sink wiring, ticket classification enrichment
+    adapters/wallet.py                    MOD  — Coinbase CDP API for wallet provisioning
+    adapters/vault_backend.py             MOD  — Vault Enterprise namespace creation
 
   web/                            NEW  — Next.js dashboard
     app/

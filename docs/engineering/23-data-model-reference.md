@@ -9,7 +9,7 @@ Two classes of data exist, as specified in [`07-isolation-and-multi-tenancy.md`]
 
 ## Platform schema
 
-The schema lives in [`src/darwin_platform/persistence.py`](../../src/darwin_platform/persistence.py) as a template string substituting type flavors per backend (`REAL` for SQLite, `DOUBLE PRECISION` for Postgres; `INTEGER PRIMARY KEY AUTOINCREMENT` vs. `BIGSERIAL PRIMARY KEY`).
+The schema lives in [`src/darwin_platform/runtime/persistence.py`](../../src/darwin_platform/runtime/persistence.py) as a template string substituting type flavors per backend (`REAL` for SQLite, `DOUBLE PRECISION` for Postgres; `INTEGER PRIMARY KEY AUTOINCREMENT` vs. `BIGSERIAL PRIMARY KEY`).
 
 Current schema version: **2** (tracked in the `schema_version` table).
 

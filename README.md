@@ -402,7 +402,7 @@ Tests live in `tests/` and are organised by tier (see [`tests/README.md`](tests/
 tests/
 ├── unit/                  # tier 1 — single-module, fakes only
 │   ├── darwin_dna/{machinery,constitution,evolution,neurons,…}
-│   └── darwin_platform/{core,adapters,k8s}
+│   └── darwin_platform/{runtime,tenancy,payments,security,observability,escalations,evolution,infra,adapters,k8s}
 ├── property/              # tier 2 — hypothesis / property-based
 ├── redteam/               # tier 3 — adversarial, one file per threat class
 ├── integration/           # tier 4 — multi-module flows (boot, resume, HTTP, …)

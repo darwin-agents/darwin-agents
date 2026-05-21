@@ -172,3 +172,22 @@ We don't charge a monthly subscription. The platform earns money when the user e
 The whole platform emits OpenTelemetry traces. Every interesting event (spawn, kill, neuron dispatch, payment, escalation, mutation proposal, reproduction) is a span. Spans are tagged with `darwin_id`, `lineage_root_id`, `generation`, and per-event metadata. We use Honeycomb (or equivalent) to query.
 
 The audit log is structurally separate from traces. Traces are sampled and rotated; the audit log is permanent and hash-chained. We do not delete audit entries even when a Darwin dies; we retain them per the platform's data-retention policy (which is set by law in each jurisdiction we operate in).
+
+## Module layout
+
+The `src/darwin_platform/` package is organised as bounded contexts. Each subpackage owns one concern and re-exports its public types via `__init__.py`. New code should prefer the subpackage path (`from darwin_platform.payments import BillingService`) over the top-level facade — the facade re-exports a curated subset for convenience, the subpackages are the source of truth.
+
+| Subpackage      | Owns                                                                                                                             |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime/`      | Per-Darwin lifecycle: `Supervisor`, `Orchestrator`, `DarwinDriver` Protocol, persistence, leader election.                       |
+| `tenancy/`      | Multi-tenant isolation: `NamespaceProvisioner` (K8s + Vault + DB), `ProvisioningService`, `VaultAdminService`, cross-pollination. |
+| `payments/`     | Money flow: `BillingService`, `OmnibusWallet`, `StripeRampService`, `HarvestScheduler`, sanctions screeners.                     |
+| `security/`     | `auth` (bearer tokens + scopes), `KYCService`, `PlatformSigner` + `KMSSigningService`, key rotation, vault watermarking.         |
+| `observability/`| `tracing`, `Monitor` + detectors, `OperatorAuditLog`, `DriftDetector`, `MerkleAnchorPublisher`, `snapshot`, notification + alert sinks. |
+| `escalations/`  | `EscalationRouter`, `NotificationSink` Protocol, `FCMNotificationSink` for mobile push.                                          |
+| `evolution/`    | Phase-1 sandboxed patch staging: `PatchStagingService`, `EvalRunner`. (Not to be confused with `darwin_dna.evolution`, the genome's reproduction machinery.) |
+| `infra/`        | Substrate-level resource controls: `egress_proxy` + `BandwidthQuota`, `ThrottleService`, `BrowserCacheService`.                  |
+| `adapters/`     | External-system adapters: `wallet`, `vault`, `browser`, `sandbox`, `litellm_transport`, `x402`, fiat ramps, chain SDKs.          |
+| `k8s/`          | K8s manifest builders + `K8sDarwinDriver`.                                                                                       |
+
+`api.py` (HTTP routes) and `__main__.py` (CLI entry point) stay at the package root since they cross-cut every subpackage.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(platform): reorganise `darwin_platform` into bounded-context subpackages — `runtime/`, `tenancy/`, `payments/`, `security/`, `observability/`, `escalations/`, `evolution/`, `infra/` (plus existing `adapters/`, `k8s/`); update all 53 external import sites; mirror `tests/unit/darwin_platform/` to the same layout; new "Module layout" appendix in doc 08
+
 ### Added
 
 - feat(platform): KYC service + StubKYCProvider + PersonaKYCProvider skeleton; status cache, retention TTL, gated require_allowed (doc 22)

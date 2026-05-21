@@ -33,15 +33,15 @@ This doc is the concrete, file-by-file build plan for Phase 1. It leans on docs 
 
 | Component                            | Where                                      | What                                                                                                 |
 | ------------------------------------ | ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| **Real soma sandbox**                | `darwin_platform/soma_sandbox.py`          | Mount DNA read-only + soma read-write in an E2B microVM; apply patch in isolation before promotion   |
-| **Patch staging pipeline**           | `darwin_platform/patch_staging.py`         | Fresh sandbox → copy soma → apply diff → run evaluation harness → return pass/fail                   |
-| **Production eval runner**           | `darwin_platform/eval_runner.py`           | Replays N recent real situations (from audit log) through the patched soma; measures fitness delta   |
-| **DNA signing service (prod)**       | `darwin_platform/signing_service.py`       | HSM-backed (AWS KMS in Phase 1); signs new layers at reproduction; exposes `PlatformSigner` protocol |
-| **Lineage tree API + visualization** | `darwin_platform/api.py` extension         | `GET /darwins/{id}/lineage/tree` → JSON tree; minimal Next.js rendering                              |
-| **Real content publishing**          | `darwin_dna/neurons/content_publisher.py`  | Wire WordPress API via x402; measure real published-piece count                                      |
-| **Real analytics**                   | `darwin_dna/neurons/analytics_measurer.py` | Wire Google Analytics or affiliate network dashboard; measure real revenue                           |
-| **Mainnet wallet (small)**           | `darwin_platform/adapters/wallet.py`       | Base mainnet USDC; funded from our test pool ($50–100 per Darwin)                                    |
-| **Extended neuron wiring**           | See § below                                | `accounts.manager`, `infrastructure.provisioner` in real dispatch paths                              |
+| **Real soma sandbox**                | `darwin_platform/evolution/patch_staging.py` | Mount DNA read-only + soma read-write in an E2B microVM; apply patch in isolation before promotion   |
+| **Patch staging pipeline**           | `darwin_platform/evolution/patch_staging.py` | Fresh sandbox → copy soma → apply diff → run evaluation harness → return pass/fail                   |
+| **Production eval runner**           | `darwin_platform/evolution/eval_runner.py`   | Replays N recent real situations (from audit log) through the patched soma; measures fitness delta   |
+| **DNA signing service (prod)**       | `darwin_platform/security/signing_service.py` | HSM-backed (AWS KMS in Phase 1); signs new layers at reproduction; exposes `PlatformSigner` protocol |
+| **Lineage tree API + visualization** | `darwin_platform/api.py` extension           | `GET /darwins/{id}/lineage/tree` → JSON tree; minimal Next.js rendering                              |
+| **Real content publishing**          | `darwin_dna/neurons/content_publisher.py`    | Wire WordPress API via x402; measure real published-piece count                                      |
+| **Real analytics**                   | `darwin_dna/neurons/analytics_measurer.py`   | Wire Google Analytics or affiliate network dashboard; measure real revenue                           |
+| **Mainnet wallet (small)**           | `darwin_platform/adapters/wallet.py`         | Base mainnet USDC; funded from our test pool ($50–100 per Darwin)                                    |
+| **Extended neuron wiring**           | See § below                                  | `accounts.manager`, `infrastructure.provisioner` in real dispatch paths                              |
 
 ## The patch staging pipeline (detailed)
 
@@ -240,13 +240,16 @@ Per `docs/overview/06-roadmap-and-phases.md`:
 ```
 src/
   darwin_platform/
-    patch_staging.py              NEW  — sandbox-based patch staging + evaluation
-    eval_runner.py                NEW  — replays real audit entries through patched soma
-    signing_service.py            NEW  — KMS-backed PlatformSigner (AWS KMS / HSM)
-    supervisor.py                 MOD  — patch staging integration, mainnet wallet provisioning
+    evolution/
+      patch_staging.py            NEW  — sandbox-based patch staging + evaluation
+      eval_runner.py              NEW  — replays real audit entries through patched soma
+    security/
+      signing_service.py          NEW  — KMS-backed PlatformSigner (AWS KMS / HSM)
+    runtime/
+      supervisor.py               MOD  — patch staging integration, mainnet wallet provisioning
     api.py                        MOD  — /lineage/tree endpoint, staging status
     adapters/wallet.py            MOD  — mainnet mode, on-chain transfer confirmations
-    monitoring.py                 MOD  — cost governance metrics (LLM, neuron, daily spend)
+    observability/monitoring.py   MOD  — cost governance metrics (LLM, neuron, daily spend)
 
   darwin_dna/
     orchestrator_skeleton/
@@ -262,6 +265,9 @@ src/
       run_evolution.py            Entry: spawn, run until mutation OR reproduction, assert criteria
       assertions.py              Per-criterion checks (reusable in CI)
 ```
+
+Doc 08 §"Module layout" carries the canonical bounded-context map; the
+paths shown here use the same scheme.
 
 ## Timeline and sequencing
 

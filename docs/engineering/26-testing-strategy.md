@@ -45,7 +45,7 @@ flowchart TB
 - `tests/unit/darwin_dna/test_identity.py` — `uuid7` ordering, lineage extension
 - `tests/unit/darwin_dna/test_hyperparameters.py` — `HardCaps` / `Hyperparameters` validators
 
-**Coverage expectation:** Every public function in `darwin_dna/machinery/`, `darwin_dna/constitution/`, and `darwin_platform/` has at least one unit test. Hot-path modules (kill switch, audit, treasury, patch validator, spend limits, forbidden actions) have ≥ 10 test cases each.
+**Coverage expectation:** Every public function in `darwin_dna/machinery/`, `darwin_dna/constitution/`, and every `darwin_platform/` bounded context (`runtime/`, `tenancy/`, `payments/`, `security/`, `observability/`, `escalations/`, `evolution/`, `infra/`, `adapters/`, `k8s/`) has at least one unit test. Hot-path modules (kill switch, audit, treasury, patch validator, spend limits, forbidden actions) have ≥ 10 test cases each.
 
 **How to add:** Create a `tests/unit/<package>/<area>/test_<module>.py` file mirroring the source path. Import the module directly, construct it with fakes, assert the property.
 

@@ -157,7 +157,7 @@ These live in `src/darwin_dna/hyperparameters.py` and are **not** CLI-configurab
 
 ## Monitor quotas (platform-side)
 
-Configured in `src/darwin_platform/monitoring.py`. Currently code constants; will become per-fleet operator config in Phase 2.
+Configured in `src/darwin_platform/observability/monitoring.py`. Currently code constants; will become per-fleet operator config in Phase 2.
 
 | Quota | WARN | CRITICAL |
 | ----- | ---- | -------- |
