@@ -50,6 +50,13 @@ class AnalyticsMeasurer(BaseNeuron):
         ),
     ]
 
+    def __init__(self) -> None:
+        # Phase 1: the supervisor pins a real analytics endpoint here
+        # post-boot via ``default_endpoint``. The strategy can still
+        # override per-task; absence keeps Phase-0 behaviour.
+        super().__init__()
+        self.default_endpoint: str | None = None
+
     async def plan(self, task: Task, context: NeuronContext) -> Plan:
         scope = task.payload.get("scope", "site")
         return Plan(
@@ -67,7 +74,14 @@ class AnalyticsMeasurer(BaseNeuron):
 
     async def execute(self, plan: Plan, context: NeuronContext) -> NeuronResult:
         scope = plan.payload.get("scope", "site")
-        endpoint = plan.payload.get("endpoint", "")
+        # Endpoint resolution priority (Phase 1):
+        #   1. Per-task endpoint (the strategy's explicit override).
+        #   2. Platform default pinned by the supervisor (``default_endpoint``).
+        #   3. Empty → no-endpoint failure path (Phase-0 behaviour).
+        endpoint = (
+            plan.payload.get("endpoint", "")
+            or (getattr(self, "default_endpoint", None) or "")
+        )
         intent = context.audit.log_intent(
             "neuron.analytics.measurer",
             {"scope": scope, "window_days": plan.payload.get("window_days")},

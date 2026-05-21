@@ -1,4 +1,4 @@
-"""propose_mutation — the gated self-modification entry (docs/engineering/03).
+"""propose_mutation — the gated self-modification entry (docs/engineering/03, 21).
 
 A coding-tier model is asked for a patch (a unified diff) targeting the
 recurring failure. The patch is run through the in-DNA patch validator
@@ -6,6 +6,15 @@ recurring failure. The patch is run through the in-DNA patch validator
 kill-switch poll, the audit calls, or the treasury enforcement points is
 rejected here and archived as a negative lesson. The Darwin cannot rewrite the
 thing that judges its rewrites.
+
+The output carries BOTH a unified diff (audit-legible; replayable in the
+patch-staging sandbox) AND a structured ``BehaviorDelta`` (executable; what
+the Layer-0 harness compares as the candidate trajectory). The unified diff
+is what Phase 1's :class:`PatchStagingService` applies to the soma copy
+before running the sandboxed harness; the BehaviorDelta is what both paths
+score. A proposer that does not supply a diff still flows: a single-line
+default is fabricated so the patch-validator surface is exercised and the
+audit chain records a concrete artifact even when the model was terse.
 """
 
 from __future__ import annotations

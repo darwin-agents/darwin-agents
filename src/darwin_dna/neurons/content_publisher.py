@@ -54,6 +54,15 @@ class ContentPublisher(BaseNeuron):
         ),
     ]
 
+    def __init__(self) -> None:
+        # Phase 1: the supervisor pins per-channel real endpoints here
+        # post-boot via ``endpoint_overrides``. The strategy keeps
+        # naming channels symbolically; the platform owns the URLs +
+        # auth (carried by the x402 client). An empty dict preserves
+        # Phase-0 behaviour (the symbolic ``_DEFAULT_ENDPOINTS`` apply).
+        super().__init__()
+        self.endpoint_overrides: dict[str, str] = {}
+
     async def plan(self, task: Task, context: NeuronContext) -> Plan:
         channel = task.payload.get("channel", "wordpress")
         url_hint = task.payload.get("destination_url", "")
@@ -90,7 +99,17 @@ class ContentPublisher(BaseNeuron):
         # credentials wired into the genome. The platform's adapter knows
         # how to settle 402 responses against this Darwin's wallet.
         http = getattr(context, "http", None)
-        endpoint = plan.payload.get("destination_url", "") or _DEFAULT_ENDPOINTS.get(channel)
+        # Endpoint resolution priority (Phase 1):
+        #   1. Per-task destination_url (the strategy's explicit override).
+        #   2. Per-channel real endpoint pinned by the platform supervisor
+        #      via ``self.endpoint_overrides`` (real WordPress/etc URL).
+        #   3. The symbolic default — Phase-0 behaviour preserved.
+        overrides = getattr(self, "endpoint_overrides", {}) or {}
+        endpoint = (
+            plan.payload.get("destination_url", "")
+            or overrides.get(channel)
+            or _DEFAULT_ENDPOINTS.get(channel)
+        )
         if http is not None and endpoint:
             try:
                 resp = http.request(
