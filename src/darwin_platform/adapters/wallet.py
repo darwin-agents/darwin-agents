@@ -56,6 +56,41 @@ class ChainClient(Protocol):
         ...
 
 
+@runtime_checkable
+class ConfirmingChainClient(Protocol):
+    """Optional Phase 1 extension: chain clients that can wait for an
+    on-chain confirmation should implement this so :class:`RealWallet`
+    can block updating the local ledger until the transfer is final.
+
+    Implementations should *raise* on timeout or failed confirmation so
+    the wallet does not credit a transaction that was reorged out.
+    """
+
+    def address(self) -> str: ...
+    def balance_usdc(self) -> float: ...
+    def transfer(self, *, to: str, amount_usdc: float, memo: str) -> dict: ...
+    def wait_for_confirmation(
+        self, tx_hash: str, *, timeout_s: float = 60.0, min_confirmations: int = 1,
+    ) -> dict:
+        """Block until the tx is confirmed; return the receipt. Raise on
+        timeout / failure. ``min_confirmations`` defaults to 1 for fast
+        chains (Base, Arbitrum); production may bump to 6 for mainnet
+        Ethereum."""
+        ...
+
+
+# Known networks the adapter understands. Mainnet is gated by an explicit
+# constructor argument so a misconfigured factory cannot accidentally use
+# real-money credentials in a test path.
+NETWORK_BASE_SEPOLIA = "base-sepolia"
+NETWORK_BASE_MAINNET = "base-mainnet"
+NETWORK_ETH_MAINNET = "eth-mainnet"
+KNOWN_NETWORKS = frozenset({
+    NETWORK_BASE_SEPOLIA, NETWORK_BASE_MAINNET, NETWORK_ETH_MAINNET,
+})
+MAINNET_NETWORKS = frozenset({NETWORK_BASE_MAINNET, NETWORK_ETH_MAINNET})
+
+
 class RealWallet:
     """:class:`WalletPort`-conformant adapter that fronts a real chain. The
     bookkeeping (spent_today / spent_lifetime / recent_spend / movement
@@ -74,11 +109,29 @@ class RealWallet:
         *,
         clock,
         sanctions=None,
+        network: str = NETWORK_BASE_SEPOLIA,
+        wait_for_confirmation: bool = False,
+        confirmation_timeout_s: float = 60.0,
+        min_confirmations: int = 1,
     ) -> None:
         if not isinstance(chain, ChainClient):
             raise TypeError("RealWallet requires a ChainClient")
+        if network not in KNOWN_NETWORKS:
+            raise ValueError(
+                f"unknown network {network!r}; "
+                f"expected one of {sorted(KNOWN_NETWORKS)}"
+            )
         self._chain = chain
         self._clock = clock
+        # Phase 1: explicit mainnet awareness. A wallet on a mainnet
+        # network refuses transfers that haven't been confirmed when
+        # ``wait_for_confirmation`` is set — the platform must not credit
+        # the local ledger for a tx that could be reorged out.
+        self._network = network
+        self._is_mainnet = network in MAINNET_NETWORKS
+        self._wait_for_confirmation = bool(wait_for_confirmation)
+        self._confirmation_timeout_s = float(confirmation_timeout_s)
+        self._min_confirmations = max(1, int(min_confirmations))
         # Optional sanctions screener (doc 17). When set, every outbound
         # transfer is checked against the screener BEFORE the chain submit;
         # a refusal raises WalletError so the genome's treasury layer sees
@@ -128,6 +181,14 @@ class RealWallet:
 
     def address(self) -> str:
         return self._chain.address()
+
+    @property
+    def network(self) -> str:
+        return self._network
+
+    @property
+    def is_mainnet(self) -> bool:
+        return self._is_mainnet
 
     # -- WalletPort (write) -- platform-side caps + chain submit ----------
     def pay(self, *, to: str, amount_usdc: float, memo: str) -> dict:
@@ -182,6 +243,12 @@ class RealWallet:
             tx = self._chain.transfer(to=to, amount_usdc=amount, memo=memo)
         except Exception as exc:
             raise WalletError(f"chain transfer failed: {exc}") from exc
+        # Phase 1 mainnet safety (doc 21 §"Mainnet safety"): wait for the
+        # tx to confirm before crediting the local ledger. Skipped when
+        # the chain client doesn't expose ``wait_for_confirmation`` so
+        # testnet stubs and the in-memory FakeChainClient keep working.
+        tx_hash = tx.get("tx_hash", "") if isinstance(tx, dict) else ""
+        confirmation = self._confirm_if_required(tx_hash)
         self._spent_today += amount
         self._spent_lifetime += amount
         if amount > 0:
@@ -191,7 +258,36 @@ class RealWallet:
             "kind": kind, "ts": float(self._clock()),
         }
         self.ledger.append({"debit": row})
-        return {"tx_hash": tx.get("tx_hash", ""), **row}
+        out = {"tx_hash": tx_hash, **row}
+        if confirmation is not None:
+            out["confirmation"] = confirmation
+        return out
+
+    def _confirm_if_required(self, tx_hash: str) -> dict | None:
+        """Block until ``tx_hash`` confirms when mainnet-confirmation is
+        enabled and the chain client supports it. Returns the receipt
+        dict on success; raises :class:`WalletError` on timeout/failure.
+        Returns ``None`` when no waiting was requested or the chain
+        client doesn't honour the :class:`ConfirmingChainClient`
+        shape — silent no-op preserves backwards-compat with stubs."""
+        if not self._wait_for_confirmation or not tx_hash:
+            return None
+        waiter = getattr(self._chain, "wait_for_confirmation", None)
+        if not callable(waiter):
+            return None
+        try:
+            receipt = waiter(
+                tx_hash,
+                timeout_s=self._confirmation_timeout_s,
+                min_confirmations=self._min_confirmations,
+            )
+        except Exception as exc:
+            raise WalletError(
+                f"on-chain confirmation failed for {tx_hash}: {exc}"
+            ) from exc
+        if not isinstance(receipt, dict):
+            return {"raw": str(receipt)}
+        return receipt
 
     # -- credit (incoming revenue) ----------------------------------------
     def credit(self, amount_usdc: float, source: str) -> None:
