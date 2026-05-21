@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- feat(platform): KYC service + StubKYCProvider + PersonaKYCProvider skeleton; status cache, retention TTL, gated require_allowed (doc 22)
+- feat(platform): OmnibusWallet — platform-owned wallet with deposit/fund_child/sweep/withdraw + daily reconciliation (doc 22)
+- feat(platform): StripeRampService — high-level webhook-driven fiat deposit flow on top of adapters/fiat.py; KYC-gated + idempotent on provider_tx_id (doc 22)
+- feat(platform): NamespaceProvisioner — atomic K8s + Vault + organism-DB provisioning with rollback on partial failure; stub backends for tests (doc 22)
+- feat(platform): DriftDetector — 7-day rolling behavioural profile, 2σ INFO alerts, 3-day persistence WARN escalation (doc 22)
+- feat(platform): MerkleAnchorPublisher + StubAnchorBackend + ChainAnchorBackend — daily fleet root publishing for tamper-evidence (doc 22)
+- feat(platform): FCMNotificationSink — mobile push escalation delivery; never raises on transport failure (doc 22)
+- feat(platform): BandwidthQuota on egress_proxy — per-Darwin daily soft/hard caps + /bandwidth introspection endpoint (doc 22)
+- feat(supervisor): wire all five Phase 2 services as optional injected dependencies; helpers for collect_daily_merkle_roots, reconcile_omnibus, observe_drift (doc 22)
+- test: 60+ new unit + integration tests covering every Phase 2 module + supervisor wiring
+- feat(platform): PatchStagingService — sandboxed Phase 1 patch staging with in-process fallback, validator-outside-sandbox gate, quota enforcement, history (doc 21)
+- feat(platform): EvalRunner — replays per-Darwin audit tail through staging for real-situation eval (doc 21)
+- feat(platform): KMSSigningService + HvacTransitBackend + LocalEd25519Signer + build_signer factory — HSM-backed PlatformSigner with Ed25519 trust-root compatibility (doc 21)
+- feat(supervisor): wire patch-staging hook onto genome ctx, expose lineage_tree, accept injected signer + publishing/analytics endpoints (doc 21)
+- feat(orchestrator): evaluate_mutation routes through `ctx.patch_staging` when wired, records `via=staging` in outcome (doc 21)
+- feat(adapters): RealWallet gains `network`, `is_mainnet`, `wait_for_confirmation` mainnet safety + ConfirmingChainClient protocol (doc 21)
+- feat(neurons): content.publisher accepts `endpoint_overrides`; analytics.measurer accepts `default_endpoint` for platform-pinned real URLs (doc 21)
+- feat(api): `GET /darwins/{id}/lineage/tree`, `GET /platform/staging/status`, `GET /platform/staging/history` endpoints (doc 21)
+- feat(metrics): `darwin_daily_spend_usdc`, `darwin_llm_cost_usdc`, `darwin_neuron_dispatch_total`, `darwin_revenue_usdc`, plus staging quota/promotion gauges (doc 21)
+- feat(tools): `tools/evolution_test/` end-to-end Phase 1 harness with criterion-based assertion report (doc 21)
+- test: 40+ new tests across unit (patch_staging, eval_runner, signing_service, mainnet wallet) and integration (Phase 1 wiring, lineage tree endpoint, /metrics, evolution harness smoke)
+
 ## [0.0.1] - 2026-05-21
 
 First public pre-release: Layer 0 genome (`darwin_dna`), platform control plane
