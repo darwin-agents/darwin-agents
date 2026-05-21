@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.egress_proxy import BandwidthQuota
+from darwin_platform.infra.egress_proxy import BandwidthQuota
 
 
 def test_initial_usage_zero():

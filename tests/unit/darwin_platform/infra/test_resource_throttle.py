@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.throttle import (
+from darwin_platform.infra.throttle import (
     THROTTLE_KIND_BROWSER,
     THROTTLE_KIND_EGRESS,
     THROTTLE_KIND_SANDBOX,
@@ -154,7 +154,7 @@ def test_egress_wrapper_refuses_after_cap():
 
 @pytest.mark.asyncio
 async def test_supervisor_wraps_substrates():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -169,7 +169,7 @@ async def test_supervisor_wraps_substrates():
 
 @pytest.mark.asyncio
 async def test_supervisor_throttle_blocks_browser():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -188,7 +188,7 @@ async def test_supervisor_throttle_blocks_browser():
 
 @pytest.mark.asyncio
 async def test_supervisor_throttle_audits():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -214,7 +214,7 @@ async def test_http_set_get_clear():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -248,7 +248,7 @@ async def test_http_422_on_bad_kind():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)

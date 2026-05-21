@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from darwin_platform.browser_cache import (
+from darwin_platform.infra.browser_cache import (
     BrowserCacheService,
     BrowserSessionRecord,
     CachedBrowserSubstrate,
@@ -201,7 +201,7 @@ def test_stats_aggregates_per_darwin():
 
 @pytest.mark.asyncio
 async def test_supervisor_wraps_browser_substrate():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     # Disable the throttle wrapper so the outer wrapper is CachedBrowserSubstrate.
     sup = Supervisor(resource_throttle_enabled=False)
@@ -222,7 +222,7 @@ async def test_supervisor_wraps_browser_substrate():
 async def test_supervisor_browser_cache_can_be_disabled():
     """For tests that depend on raw FakeBrowser semantics."""
     from darwin_fakes import FakeBrowser
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(
         browser_cache_enabled=False, resource_throttle_enabled=False,
@@ -243,7 +243,7 @@ async def test_http_sessions_and_stats():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -273,7 +273,7 @@ async def test_http_404_unknown_darwin():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     app = build_app(sup)
