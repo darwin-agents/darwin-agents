@@ -433,6 +433,25 @@ def build_app(
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
 
+    @app.get("/darwins/{darwin_id}/lineage/tree")
+    async def lineage_tree(
+        darwin_id: str,
+        request: Request,
+        max_depth: int = Query(16, ge=1, le=128),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Phase 1 (doc 21 §"Lineage tree"): nested ancestors + descendants
+        for the minimal dashboard. ``max_depth`` bounds the descendant
+        recursion."""
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).lineage_tree(
+                darwin_id, max_depth=max_depth
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+
     @app.get("/darwins/{darwin_id}/ledger")
     async def ledger(
         darwin_id: str,
@@ -1104,6 +1123,27 @@ def build_app(
         )
         return {"entries": rows, "tip_hash": _sup(request).audit_log.tip_hash()}
 
+    # -- Phase 1 patch-staging status (doc 21) ----------------------------
+    @app.get("/platform/staging/status")
+    async def staging_status(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Snapshot of the staging service: quota usage + recent verdicts.
+        Used by the dashboard to show ops what mutation-evaluation
+        pressure looks like across the fleet."""
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return _sup(request).patch_staging.status()
+
+    @app.get("/platform/staging/history")
+    async def staging_history(
+        request: Request,
+        limit: int = Query(50, ge=1, le=500),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        rows = _sup(request).patch_staging.history(limit=limit)
+        return {"verdicts": [v.to_json() for v in rows], "total": len(rows)}
+
     # -- snapshot (ops-side; not in doc 08) -------------------------------
     @app.get("/platform/snapshot")
     async def snapshot_endpoint(
@@ -1434,6 +1474,125 @@ def _render_metrics(sup: Supervisor, started_ts: float) -> str:
         "Currently-installed recurring harvest rules.",
         [({}, float(installed_rules))],
     )
+
+    # -- Phase 1 cost-governance metrics (doc 21 §"Metering ...") --------
+    # Per-Darwin daily spend (sum of debits today, in USDC). The
+    # wallet's spent_today is authoritative; the platform reads through
+    # it for the dashboard.
+    daily_spend_samples: list[tuple[dict[str, str], float]] = []
+    llm_cost_samples: list[tuple[dict[str, str], float]] = []
+    neuron_cost_total: float = 0.0
+    revenue_samples: list[tuple[dict[str, str], float]] = []
+    for h in sup._darwins.values():  # noqa: SLF001
+        try:
+            spent = float(h.stack.wallet.spent_today_usdc())
+        except Exception:
+            spent = 0.0
+        daily_spend_samples.append(
+            ({"darwin_id": h.darwin_id}, float(spent))
+        )
+        # LLM cost: pull from the per-Darwin LLM router's running total
+        # when the transport exposes one; otherwise zero. The router's
+        # ``cost_today_usdc`` is the canonical genome-side counter.
+        llm_cost = 0.0
+        try:
+            llm_cost = float(
+                getattr(h.runtime.llm, "cost_today_usdc", lambda: 0.0)()
+            )
+        except Exception:
+            llm_cost = 0.0
+        llm_cost_samples.append(
+            ({"darwin_id": h.darwin_id}, llm_cost)
+        )
+        # Revenue: read the genome's last analytics ROI output from
+        # ``state.metrics`` when present. Best-effort; absence ⇒ 0.
+        revenue = 0.0
+        try:
+            metrics_blob = getattr(h.runtime.state, "metrics", {}) or {}
+            revenue = float(metrics_blob.get("revenue_usdc", 0.0))
+        except Exception:
+            revenue = 0.0
+        revenue_samples.append(
+            ({"darwin_id": h.darwin_id}, revenue)
+        )
+    metric(
+        "darwin_daily_spend_usdc",
+        "gauge",
+        "Per-Darwin spend recorded so far today (USDC). Alert if > $20/day.",
+        daily_spend_samples or [({}, 0.0)],
+    )
+    metric(
+        "darwin_llm_cost_usdc",
+        "gauge",
+        "Per-Darwin LLM token spend today (USDC, from the genome's router).",
+        llm_cost_samples or [({}, 0.0)],
+    )
+    # Neuron cost: aggregate count of distinct dispatches recorded on the
+    # audit chain (each ``intent:neuron.*`` is one dispatch). Phase 1 uses
+    # the chain rather than a per-neuron gauge so a restarted Darwin's
+    # historical dispatches are preserved.
+    for entry in sup.audit_log.entries(action="spawn"):
+        # Spawn entries are not dispatches; we filter by counting via the
+        # per-Darwin audit sinks below.
+        continue
+    for h in sup._darwins.values():  # noqa: SLF001
+        try:
+            rows = h.stack.audit_sink.read_all()
+        except Exception:
+            rows = []
+        for r in rows:
+            k = r.get("kind", "")
+            if isinstance(k, str) and k.startswith("intent:neuron."):
+                neuron_cost_total += 1.0
+    metric(
+        "darwin_neuron_dispatch_total",
+        "counter",
+        "Total neuron dispatches recorded on the genome audit chains.",
+        [({}, neuron_cost_total)],
+    )
+    metric(
+        "darwin_revenue_usdc",
+        "gauge",
+        "Per-Darwin observed revenue (USDC) from the latest analytics "
+        "measurement.",
+        revenue_samples or [({}, 0.0)],
+    )
+
+    # -- Phase 1 staging service metrics (doc 21) ------------------------
+    try:
+        staging_snap = sup.patch_staging.quota.snapshot()
+        metric(
+            "darwin_platform_staging_quota",
+            "gauge",
+            "Patch-staging concurrency: active vs. cap.",
+            [
+                ({"state": "active"}, float(staging_snap["active"])),
+                ({"state": "max"}, float(staging_snap["max_concurrent"])),
+            ],
+        )
+        metric(
+            "darwin_platform_staging_evaluations_total",
+            "counter",
+            "Patch-staging evaluations acquired (total).",
+            [({}, float(staging_snap["total_acquired"]))],
+        )
+        metric(
+            "darwin_platform_staging_quota_rejections_total",
+            "counter",
+            "Patch-staging acquires refused due to quota.",
+            [({}, float(staging_snap["total_rejected"]))],
+        )
+        staging_promotions = sum(
+            1 for v in sup.patch_staging.history() if v.promote
+        )
+        metric(
+            "darwin_platform_staging_promotions_total",
+            "counter",
+            "Patch-staging verdicts that promoted the candidate.",
+            [({}, float(staging_promotions))],
+        )
+    except Exception:
+        pass
 
     # -- process uptime --------------------------------------------------
     metric(

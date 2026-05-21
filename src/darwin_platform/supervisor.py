@@ -55,6 +55,14 @@ from .cross_pollination import (
 )
 from .escalation import EscalationRouter, NotificationSink
 from .harvest_scheduler import HarvestRule, HarvestRuleError, HarvestScheduler
+from .drift_detector import DailyProfile, DriftAlert, DriftDetector
+from .eval_runner import EvalRequest, EvalRunner
+from .kyc import KYCService
+from .merkle_anchor import (
+    DarwinDailyRoot,
+    FleetAnchor,
+    MerkleAnchorPublisher,
+)
 from .monitoring import (
     Alert,
     AlertSink,
@@ -63,7 +71,16 @@ from .monitoring import (
     Quotas,
     Severity,
 )
+from .namespace_provisioner import NamespaceProvisioner, TenantNamespace
+from .omnibus_wallet import OmnibusWallet, ReconciliationResult
 from .operator_audit import OperatorAuditLog, to_dicts as _audit_to_dicts
+from .patch_staging import (
+    PatchStagingService,
+    StagingQuota,
+    StagingSandbox,
+    StagingVerdict,
+)
+from .signing_service import PlatformSigner
 from .provisioning import (
     ProvisioningBackend,
     ProvisioningError,
@@ -213,6 +230,40 @@ class LineageRegistry:
         ]
 
 
+# -- Phase 1 hook: bridge from genome ctx to the platform staging service --
+class _GenomeStagingHook:
+    """Thin callable the supervisor pins on ``ctx.patch_staging``.
+
+    The genome's evaluate_mutation node calls
+    ``ctx.patch_staging.evaluate(patch=..., delta=..., failure_class=...,
+    recurrence=...)`` and treats the returned :class:`StagingVerdict` as
+    authoritative. Absence of the hook keeps the Phase-0 fallback path
+    (in-DNA harness) — the supervisor only attaches it once the
+    Phase-1 platform is wired."""
+
+    def __init__(self, *, runner: "EvalRunner", darwin_id: str) -> None:
+        self._runner = runner
+        self._darwin_id = darwin_id
+
+    def evaluate(
+        self,
+        *,
+        patch: Any,
+        delta: Any,
+        failure_class: str,
+        recurrence: int,
+    ) -> "StagingVerdict":
+        return self._runner.evaluate(
+            EvalRequest(
+                darwin_id=self._darwin_id,
+                patch=patch,
+                behavior_delta=delta,
+                failure_class=str(failure_class),
+                recurrence=int(recurrence),
+            )
+        )
+
+
 # -- per-Darwin handle -----------------------------------------------------
 @dataclass
 class _Handle:
@@ -299,6 +350,19 @@ class Supervisor:
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
         k8s_driver: Any | None = None,
+        signer: PlatformSigner | None = None,
+        patch_staging_sandbox_factory: (
+            Callable[[], StagingSandbox] | None
+        ) = None,
+        patch_staging_quota: StagingQuota | None = None,
+        patch_staging_timeout_s: float = 30.0,
+        publishing_endpoints: dict[str, str] | None = None,
+        analytics_endpoint: str | None = None,
+        kyc_service: KYCService | None = None,
+        omnibus_wallet: OmnibusWallet | None = None,
+        namespace_provisioner: NamespaceProvisioner | None = None,
+        drift_detector: DriftDetector | None = None,
+        merkle_anchor_publisher: MerkleAnchorPublisher | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -400,7 +464,14 @@ class Supervisor:
         # (or seeded into) the platform_signing_key row so manifests
         # signed before a process restart still verify after the restart.
         # This is the platform's HSM stand-in for HA failover.
-        if self._persistence is not None:
+        #
+        # Phase 1: when a Phase-1 HSM-backed ``signer`` is injected, it
+        # takes precedence — the HSM owns the key, so the persistence
+        # row is left untouched. The HA-resume path still works because
+        # the HSM's public key is the trust root.
+        if signer is not None:
+            self._signer = signer
+        elif self._persistence is not None:
             existing_key = self._persistence.load_signing_key()
             if existing_key is not None:
                 self._signer = SigningService.from_private_bytes(existing_key)
@@ -409,6 +480,45 @@ class Supervisor:
                 self._persistence.save_signing_key(self._signer.private_bytes())
         else:
             self._signer = SigningService()
+        # Phase 1 patch-staging pipeline (doc 21). The supervisor calls
+        # ``stage_and_evaluate`` between the genome's propose_mutation and
+        # apply_mutation nodes. When no sandbox factory is configured the
+        # service falls back to an in-process eval (same as Phase 0
+        # behaviour), so the wiring is non-breaking. The eval runner is a
+        # thin wrapper that resolves the per-Darwin audit sink before
+        # handing the request off to staging.
+        self._patch_staging = PatchStagingService(
+            sandbox_factory=patch_staging_sandbox_factory,
+            clock=clock,
+            quota=patch_staging_quota,
+            evaluation_timeout_s=patch_staging_timeout_s,
+        )
+        self._eval_runner = EvalRunner(
+            staging=self._patch_staging,
+            audit_sink_resolver=self._resolve_audit_sink_for,
+        )
+        # Phase 1 §"Real economic activity": real publishing destinations
+        # are configured fleet-wide; the supervisor reaches into the
+        # catalog post-boot and wires them onto the content.publisher
+        # neuron so the strategy doesn't have to know about platform-side
+        # URL configuration. Same pattern for analytics.
+        self._publishing_endpoints: dict[str, str] = dict(
+            publishing_endpoints or {}
+        )
+        self._analytics_endpoint: str | None = analytics_endpoint
+        # Phase 2 services. All optional: single-tenant dev keeps
+        # working with every one of these as None. When wired, the
+        # supervisor binds its audit recorder onto the ones that
+        # accept one so each call shows up on the operator audit log.
+        self._kyc_service: KYCService | None = kyc_service
+        self._omnibus_wallet: OmnibusWallet | None = omnibus_wallet
+        self._namespace_provisioner: NamespaceProvisioner | None = (
+            namespace_provisioner
+        )
+        self._drift_detector: DriftDetector | None = drift_detector
+        self._merkle_anchor: MerkleAnchorPublisher | None = (
+            merkle_anchor_publisher
+        )
         # Doc 08 §"Billing model". Revenue accrues from each metered wallet
         # debit (markup pass-through) and each harvest (fee on gross). The
         # genome doesn't know about billing — the supervisor sweeps the
@@ -864,6 +974,14 @@ class Supervisor:
                 # If the neuron isn't in this build, ignore — provisioning
                 # still works for HTTP-only operator-driven flows.
                 pass
+            # Phase 1: wire real publishing + analytics endpoints onto the
+            # neurons so the strategy doesn't carry per-channel URLs.
+            self._wire_phase1_endpoints(runtime)
+            # Phase 1: install the patch-staging hook on the genome's ctx
+            # so evaluate_mutation routes through the platform service.
+            # The genome's evaluate node calls ``ctx.patch_staging`` when
+            # present; absence falls back to the in-DNA harness.
+            self._install_patch_staging_hook(runtime)
             handle = _Handle(
                 darwin_id=runtime.identity.darwin_id,
                 stack=stack,
@@ -1232,6 +1350,126 @@ class Supervisor:
                     darwin_id=handle.darwin_id,
                     metadata={"rule_id": d.rule.id, "reason": str(exc)},
                 )
+
+    # -- Phase 1: patch staging + real endpoints (doc 21) ----------------
+    def _resolve_audit_sink_for(self, darwin_id: str) -> Any | None:
+        """Return the per-Darwin audit sink, or None when unknown. The
+        eval runner uses this to walk recent audit entries for scenario
+        synthesis."""
+        h = self._darwins.get(darwin_id)
+        if h is None:
+            return None
+        return h.stack.audit_sink
+
+    def _wire_phase1_endpoints(self, runtime: Any) -> None:
+        """Inject real publishing destinations + analytics endpoint onto
+        the relevant neurons after boot. Same pattern the supervisor uses
+        for the infrastructure.provisioner rebind. Best-effort: a missing
+        neuron in the catalog is a no-op (the build may not include it)."""
+        if not self._publishing_endpoints and not self._analytics_endpoint:
+            return
+        try:
+            cp = runtime.catalog.get("content.publisher")
+            if cp is not None and self._publishing_endpoints:
+                existing = getattr(cp, "endpoint_overrides", None) or {}
+                cp.endpoint_overrides = {
+                    **existing, **self._publishing_endpoints,
+                }
+        except Exception:
+            pass
+        try:
+            am = runtime.catalog.get("analytics.measurer")
+            if am is not None and self._analytics_endpoint:
+                am.default_endpoint = self._analytics_endpoint
+        except Exception:
+            pass
+
+    def _install_patch_staging_hook(self, runtime: Any) -> None:
+        """Expose the platform's staging service on the genome's ctx so
+        the evaluate_mutation node can dispatch into it. The genome
+        treats this attribute as optional; absence keeps Phase-0
+        behaviour (in-DNA harness only)."""
+        try:
+            ctx = runtime._ctx  # noqa: SLF001  — single owner
+        except Exception:
+            return
+        # The hook is a callable: signature mirrors the evaluator's
+        # request shape so the node can build it cheaply.
+        ctx.patch_staging = _GenomeStagingHook(
+            runner=self._eval_runner,
+            darwin_id=runtime.identity.darwin_id,
+        )
+
+    @property
+    def patch_staging(self) -> PatchStagingService:
+        """Read-only handle for ops/snapshots + tests."""
+        return self._patch_staging
+
+    @property
+    def eval_runner(self) -> EvalRunner:
+        return self._eval_runner
+
+    # -- Phase 2 service handles (doc 22) --------------------------------
+    @property
+    def kyc_service(self) -> KYCService | None:
+        return self._kyc_service
+
+    @property
+    def omnibus_wallet(self) -> OmnibusWallet | None:
+        return self._omnibus_wallet
+
+    @property
+    def namespace_provisioner(self) -> NamespaceProvisioner | None:
+        return self._namespace_provisioner
+
+    @property
+    def drift_detector(self) -> DriftDetector | None:
+        return self._drift_detector
+
+    @property
+    def merkle_anchor(self) -> MerkleAnchorPublisher | None:
+        return self._merkle_anchor
+
+    def collect_daily_merkle_roots(self, day_iso: str) -> list[DarwinDailyRoot]:
+        """Walk every alive Darwin and ask its audit logger for the
+        current Merkle root. The supervisor calls this once a day from
+        the platform-side cron before invoking
+        :meth:`MerkleAnchorPublisher.publish_daily`."""
+        out: list[DarwinDailyRoot] = []
+        for did, h in self._darwins.items():
+            try:
+                root = h.runtime.audit.merkle_root()
+            except Exception:
+                continue
+            out.append(DarwinDailyRoot(
+                darwin_id=did, day_iso=day_iso, root=root,
+            ))
+        return out
+
+    def reconcile_omnibus(self) -> ReconciliationResult | None:
+        """Daily reconciliation hook. Returns None when no omnibus is
+        wired (single-tenant dev). The result carries the discrepancy +
+        a pass/fail flag the ops monitor consumes."""
+        if self._omnibus_wallet is None:
+            return None
+        sum_wallets = 0.0
+        for h in self._darwins.values():
+            try:
+                sum_wallets += float(h.stack.wallet.balance_usdc())
+            except Exception:
+                continue
+        return self._omnibus_wallet.reconcile(
+            sum_of_darwin_wallets=sum_wallets,
+        )
+
+    def observe_drift(self, profile: DailyProfile) -> list[DriftAlert]:
+        """Feed a per-Darwin daily profile to the drift detector.
+        Returns the alerts produced (may be empty). Caller (the platform
+        cron) is responsible for building the profile from the day's
+        audit slice via :meth:`DailyProfile.from_audit_rows`."""
+        if self._drift_detector is None:
+            return []
+        return self._drift_detector.observe_day(profile)
 
     # -- vault admin (doc 16 §"Bidirectional shared vault") --------------
     def _resolve_vault_for(self, darwin_id: str) -> Any | None:
@@ -1935,6 +2173,100 @@ class Supervisor:
                 for e in self._lineage_registry.edges_touching(darwin_id)
             ],
         }
+
+    # -- lineage tree (Phase 1: doc 21 §"Lineage tree") -------------------
+    async def lineage_tree(
+        self,
+        darwin_id: str,
+        *,
+        max_depth: int = 16,
+    ) -> dict[str, Any]:
+        """Nested ancestors + descendants tree for the Phase-1 dashboard.
+
+        Returns a dict shaped::
+
+            {
+              "darwin_id": "...",
+              "generation": int,
+              "ancestors": [ {"darwin_id": ..., "generation": ...}, ... ],
+              "descendants": [
+                {"darwin_id": ..., "generation": ..., "budget_usdc": ...,
+                 "spawned_at": ..., "alive": bool, "children": [...]},
+                ...
+              ]
+            }
+
+        Walks the registry so killed Darwins still surface. ``max_depth``
+        bounds the descendant recursion so a pathological cycle (which
+        legitimate lineages never produce) cannot loop here either.
+        """
+        if (
+            darwin_id not in self._darwins
+            and not self._lineage_registry.has(darwin_id)
+        ):
+            raise UnknownDarwin(darwin_id)
+
+        # Self generation: from the runtime if alive, otherwise infer from
+        # ancestry length.
+        h = self._darwins.get(darwin_id)
+        self_generation: int
+        if h is not None:
+            self_generation = int(h.runtime.identity.generation)
+        else:
+            self_generation = len(
+                self._lineage_registry.ancestry_of(darwin_id)
+            )
+
+        # Ancestors: walk parent_of, surface lineage-edge metadata.
+        ancestors: list[dict[str, Any]] = []
+        cur = self._lineage_registry.parent_of(darwin_id)
+        depth = 0
+        seen: set[str] = {darwin_id}
+        while cur and cur not in seen and depth < max_depth:
+            ancestors.append({
+                "darwin_id": cur,
+                "alive": self._is_alive(cur),
+            })
+            seen.add(cur)
+            cur = self._lineage_registry.parent_of(cur)
+            depth += 1
+
+        # Descendants: recursive over children_of.
+        descendants = self._build_descendants(
+            darwin_id, depth=0, max_depth=max_depth,
+        )
+        return {
+            "darwin_id": darwin_id,
+            "generation": self_generation,
+            "ancestors": ancestors,
+            "descendants": descendants,
+        }
+
+    def _is_alive(self, darwin_id: str) -> bool:
+        h = self._darwins.get(darwin_id)
+        if h is None:
+            return False
+        return bool(h.runtime.state.alive) and not h.killed
+
+    def _build_descendants(
+        self, darwin_id: str, *, depth: int, max_depth: int,
+    ) -> list[dict[str, Any]]:
+        if depth >= max_depth:
+            return []
+        out: list[dict[str, Any]] = []
+        for edge in self._lineage_registry.edges_touching(darwin_id):
+            if edge.parent_id != darwin_id:
+                continue
+            out.append({
+                "darwin_id": edge.child_id,
+                "budget_usdc": float(edge.budget_usdc),
+                "spawned_at": float(edge.spawned_at),
+                "alive": self._is_alive(edge.child_id),
+                "children": self._build_descendants(
+                    edge.child_id, depth=depth + 1, max_depth=max_depth,
+                ),
+            })
+        return out
 
     # -- ledger (doc 08: GET /darwins/{id}/ledger) ------------------------
     async def ledger(
