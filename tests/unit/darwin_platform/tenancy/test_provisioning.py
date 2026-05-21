@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from darwin_platform.provisioning import (
+from darwin_platform.tenancy.provisioning import (
     InMemoryProvisioningBackend,
     ProvisioningError,
     ProvisioningQuotas,
@@ -204,7 +204,7 @@ def test_scoped_port_cannot_address_other_darwins():
 async def test_supervisor_wires_scoped_port():
     """After spawn, the genome's infrastructure.provisioner neuron should
     have its ProvisionPort rebound to the supervisor's scoped view."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -224,7 +224,7 @@ async def test_supervisor_wires_scoped_port():
 
 @pytest.mark.asyncio
 async def test_supervisor_deprovision_records_audit():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -248,7 +248,7 @@ async def test_supervisor_deprovision_records_audit():
 
 @pytest.mark.asyncio
 async def test_supervisor_unknown_darwin_raises():
-    from darwin_platform.supervisor import Supervisor, UnknownDarwin
+    from darwin_platform.runtime.supervisor import Supervisor, UnknownDarwin
 
     sup = Supervisor()
     with pytest.raises(UnknownDarwin):
@@ -266,7 +266,7 @@ async def test_http_list_and_deprovision():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -313,7 +313,7 @@ async def test_http_404_on_unknown_darwin():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     app = build_app(sup)
@@ -329,7 +329,7 @@ async def test_http_409_on_double_deprovision():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)

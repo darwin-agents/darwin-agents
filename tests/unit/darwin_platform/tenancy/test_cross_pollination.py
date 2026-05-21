@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.cross_pollination import (
+from darwin_platform.tenancy.cross_pollination import (
     CrossPollinationArchive,
     CrossPollinationError,
     PollinationLesson,

@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
-from .watermark import NoOpWatermarker, Watermarker
+from ..security.watermark import NoOpWatermarker, Watermarker
 
 
 # Doc 16: "retention 90 days after last use" for KYC and sensitive uploads.

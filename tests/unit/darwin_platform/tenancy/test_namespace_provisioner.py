@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.namespace_provisioner import (
+from darwin_platform.tenancy.namespace_provisioner import (
     NamespaceProvisioner,
     ProvisioningError,
     StubK8sBackend,

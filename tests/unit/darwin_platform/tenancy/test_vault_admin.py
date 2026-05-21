@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from darwin_platform.vault_admin import (
+from darwin_platform.tenancy.vault_admin import (
     DEFAULT_SENSITIVE_TTL_SECONDS,
     VaultAdminError,
     VaultAdminService,
@@ -214,7 +214,7 @@ def test_sweep_purges_expired_sensitive_entries():
 
 @pytest.mark.asyncio
 async def test_supervisor_vault_put_audits():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -233,7 +233,7 @@ async def test_supervisor_vault_put_audits():
 
 @pytest.mark.asyncio
 async def test_supervisor_vault_delete_audits():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -254,7 +254,7 @@ async def test_supervisor_vault_delete_audits():
 async def test_supervisor_retention_sweep_during_drive():
     """A short retention TTL + a tight sweep cadence + a few heartbeats
     should purge expired sensitive entries automatically."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     now = [1000.0]
     sup = Supervisor(
@@ -292,7 +292,7 @@ async def test_http_owner_write_list_delete_cycle():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)
@@ -343,7 +343,7 @@ async def test_http_sweep_operator_endpoint():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     now = [1000.0]
     sup = Supervisor(
@@ -370,7 +370,7 @@ async def test_http_404_unknown_darwin():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     app = build_app(sup)
@@ -389,7 +389,7 @@ async def test_http_422_on_bad_tier():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)

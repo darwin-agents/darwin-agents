@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from darwin_platform.provisioning import (
+from darwin_platform.tenancy.provisioning import (
     InMemoryProvisioningBackend,
     ProvisioningError,
     ProvisioningService,
