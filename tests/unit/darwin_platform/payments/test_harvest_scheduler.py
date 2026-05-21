@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.harvest_scheduler import (
+from darwin_platform.payments.harvest_scheduler import (
     HarvestRule,
     HarvestRuleError,
     HarvestScheduler,
@@ -121,7 +121,7 @@ def test_remove_rule():
 
 @pytest.mark.asyncio
 async def test_supervisor_add_and_list_rule():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=100.0)
@@ -145,7 +145,7 @@ async def test_supervisor_add_and_list_rule():
 
 @pytest.mark.asyncio
 async def test_supervisor_remove_rule_audits():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=100.0)
@@ -163,7 +163,7 @@ async def test_supervisor_remove_rule_audits():
 async def test_supervisor_drive_cycle_fires_rule():
     """A rule whose interval and trigger are met fires during the drive
     cycle and produces a harvest_rule_fired audit entry."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(heartbeat_seconds=0)
     # Make every cycle evaluate rules.
@@ -192,7 +192,7 @@ async def test_http_create_list_delete():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=200.0)
@@ -230,7 +230,7 @@ async def test_http_422_on_bad_trigger():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from darwin_platform.api import build_app
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=200.0)

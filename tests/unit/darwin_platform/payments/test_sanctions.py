@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from darwin_platform.sanctions import (
+from darwin_platform.payments.sanctions import (
     AllowAllScreener,
     CachedScreener,
     LocalDenylistScreener,
@@ -210,7 +210,7 @@ def test_real_wallet_set_screener_at_runtime():
 
 @pytest.mark.asyncio
 async def test_supervisor_installs_screener_on_spawn():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(
         sanctions_screener=LocalDenylistScreener(denylist={"0xdeadbeef"})
@@ -231,7 +231,7 @@ async def test_supervisor_installs_screener_on_spawn():
 async def test_supervisor_default_no_screener():
     """Default (no screener) preserves the 90-day sim's determinism —
     any address can be paid (subject to balance + caps)."""
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)

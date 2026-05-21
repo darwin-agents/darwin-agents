@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from darwin_platform.omnibus_wallet import (
+from darwin_platform.payments.omnibus_wallet import (
     OmnibusEntryKind,
     OmnibusError,
     OmnibusWallet,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.monitoring import (
+from darwin_platform.observability.monitoring import (
     DarwinSignals,
     Quotas,
     Severity,
@@ -97,7 +97,7 @@ def test_only_counts_below_floor():
 
 def test_monitor_dispatches_alert():
     """End-to-end: Monitor.check() with spread-spend signals fires."""
-    from darwin_platform.monitoring import Monitor
+    from darwin_platform.observability.monitoring import Monitor
 
     q = Quotas()
     m = Monitor(quotas=q, clock=lambda: 1000.0)

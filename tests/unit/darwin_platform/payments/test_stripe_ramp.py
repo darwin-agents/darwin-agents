@@ -13,14 +13,14 @@ from __future__ import annotations
 import pytest
 
 from darwin_platform.adapters.fiat import StubFiatRamp
-from darwin_platform.kyc import KYCService, KYCStatus, StubKYCProvider
-from darwin_platform.omnibus_wallet import OmnibusWallet
-from darwin_platform.stripe_ramp import StripeRampError, StripeRampService
+from darwin_platform.security.kyc import KYCService, KYCStatus, StubKYCProvider
+from darwin_platform.payments.omnibus_wallet import OmnibusWallet
+from darwin_platform.payments.stripe_ramp import StripeRampError, StripeRampService
 
 
 @pytest.fixture
 def _omnibus():
-    from tests.unit.darwin_platform.core.test_omnibus_wallet import _Chain
+    from tests.unit.darwin_platform.payments.test_omnibus_wallet import _Chain
     return OmnibusWallet(_Chain(balance=10_000.0))
 
 

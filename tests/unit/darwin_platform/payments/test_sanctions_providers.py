@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from darwin_platform.sanctions import (
+from darwin_platform.payments.sanctions import (
     ChainalysisScreener,
     SanctionsScreener,
     TRMScreener,

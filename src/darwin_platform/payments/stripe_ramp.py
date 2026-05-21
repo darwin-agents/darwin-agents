@@ -26,8 +26,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .adapters.fiat import FiatRamp, FiatRampError
-from .kyc import KYCError, KYCService
+from ..adapters.fiat import FiatRamp, FiatRampError
+from ..security.kyc import KYCError, KYCService
 from .omnibus_wallet import OmnibusError, OmnibusWallet
 
 
