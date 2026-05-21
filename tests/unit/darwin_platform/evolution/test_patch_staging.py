@@ -20,7 +20,7 @@ import pytest
 
 from darwin_dna.machinery.eval_harness import BehaviorDelta, FrozenScenario
 from darwin_dna.machinery.patch_validator import FileChange, Patch
-from darwin_platform.patch_staging import (
+from darwin_platform.evolution.patch_staging import (
     PatchStagingService,
     StagingQuota,
     StagingVerdict,

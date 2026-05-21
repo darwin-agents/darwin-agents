@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from darwin_dna.machinery.eval_harness import BehaviorDelta
 from darwin_dna.machinery.patch_validator import FileChange, Patch
-from darwin_platform.eval_runner import EvalRequest, EvalRunner
-from darwin_platform.patch_staging import PatchStagingService
+from darwin_platform.evolution.eval_runner import EvalRequest, EvalRunner
+from darwin_platform.evolution.patch_staging import PatchStagingService
 
 
 class _Sink:
