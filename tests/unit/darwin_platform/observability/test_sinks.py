@@ -6,10 +6,10 @@ import types
 
 import pytest
 
-from darwin_platform.escalation import RoutedTicket, TicketStatus
+from darwin_platform.escalations.escalation import RoutedTicket, TicketStatus
 from darwin_dna.constitution import TicketClass
-from darwin_platform.monitoring import Alert, Severity
-from darwin_platform.sinks import (
+from darwin_platform.observability.monitoring import Alert, Severity
+from darwin_platform.observability.sinks import (
     FanOutAlertSink,
     FanOutNotificationSink,
     GenericWebhookAlertSink,

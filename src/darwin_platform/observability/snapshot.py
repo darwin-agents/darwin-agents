@@ -19,7 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .supervisor import Supervisor
+from ..runtime.supervisor import Supervisor
 
 
 def snapshot(supervisor: Supervisor) -> dict[str, Any]:

@@ -10,7 +10,7 @@ Coverage:
 
 from __future__ import annotations
 
-from darwin_platform.drift_detector import (
+from darwin_platform.observability.drift_detector import (
     DailyProfile,
     DriftDetector,
     DriftSeverity,

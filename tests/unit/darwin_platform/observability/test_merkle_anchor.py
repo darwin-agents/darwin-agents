@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.merkle_anchor import (
+from darwin_platform.observability.merkle_anchor import (
     ChainAnchorBackend,
     DarwinDailyRoot,
     MerkleAnchorPublisher,
