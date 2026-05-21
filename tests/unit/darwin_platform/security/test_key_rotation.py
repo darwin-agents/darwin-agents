@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from darwin_fakes.fake_platform import SigningService
-from darwin_platform.key_rotation import (
+from darwin_platform.security.key_rotation import (
     KeyRotationError,
     KeyRotationService,
 )
-from darwin_platform.persistence import PersistenceStore
+from darwin_platform.runtime.persistence import PersistenceStore
 
 
 def _service(tmp_path: Path) -> tuple[KeyRotationService, PersistenceStore, SigningService]:

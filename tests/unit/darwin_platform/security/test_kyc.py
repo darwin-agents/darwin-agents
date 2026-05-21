@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from darwin_platform.kyc import (
+from darwin_platform.security.kyc import (
     KYCError,
     KYCService,
     KYCStatus,

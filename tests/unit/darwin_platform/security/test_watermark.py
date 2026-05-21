@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from darwin_platform.vault_admin import VaultAdminService
-from darwin_platform.watermark import (
+from darwin_platform.tenancy.vault_admin import VaultAdminService
+from darwin_platform.security.watermark import (
     HmacWatermarker,
     NoOpWatermarker,
     WATERMARK_MARKER,
@@ -289,7 +289,7 @@ def test_vault_admin_records_watermark_in_sidecar():
 
 @pytest.mark.asyncio
 async def test_supervisor_wires_hmac_watermarker():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor(vault_watermark_key=b"platform-secret")
     status = await sup.spawn(opening_usdc=50.0)
@@ -308,7 +308,7 @@ async def test_supervisor_wires_hmac_watermarker():
 
 @pytest.mark.asyncio
 async def test_supervisor_default_no_watermark():
-    from darwin_platform.supervisor import Supervisor
+    from darwin_platform.runtime.supervisor import Supervisor
 
     sup = Supervisor()
     status = await sup.spawn(opening_usdc=50.0)

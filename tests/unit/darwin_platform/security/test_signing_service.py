@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
 from darwin_dna.signature import load_platform_public_key, verify
-from darwin_platform.signing_service import (
+from darwin_platform.security.signing_service import (
     HvacTransitBackend,
     KMSBackend,
     KMSSigningService,
