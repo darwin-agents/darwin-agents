@@ -674,6 +674,103 @@ def build_parser() -> argparse.ArgumentParser:
              "alerts. Env: DARWIN_PAGERDUTY_ROUTING_KEY",
     )
 
+    # -- observability (doc 08 §Observability) ---------------------------
+    obs_group = serve.add_argument_group(
+        "observability (doc 08)",
+        "OpenTelemetry trace export. Without this, spans stay NoOp.",
+    )
+    obs_group.add_argument(
+        "--otlp-endpoint", default=None, metavar="URL",
+        help="OTLP/HTTP collector base URL (e.g. http://jaeger:4318). "
+             "Spans the supervisor emits are exported here. "
+             "Env: OTEL_EXPORTER_OTLP_ENDPOINT",
+    )
+
+    # -- real LLM gateway (doc 13) ---------------------------------------
+    llm_group = serve.add_argument_group(
+        "LLM gateway (doc 13)",
+        "Point the genome's LLM transport at a real LiteLLM proxy. "
+        "Without this, the deterministic FakeLLM is used.",
+    )
+    llm_group.add_argument(
+        "--litellm-url", default=None, metavar="URL",
+        help="LiteLLM proxy base URL (e.g. http://litellm:4000). "
+             "Env: DARWIN_LITELLM_URL",
+    )
+    llm_group.add_argument(
+        "--litellm-master-key", default=None, metavar="KEY",
+        help="LiteLLM proxy master key (default: dev_only_master_key, "
+             "matching docker/litellm.config.yaml). "
+             "Env: DARWIN_LITELLM_MASTER_KEY",
+    )
+
+    # -- Phase 1: evolution wiring (doc 21) ------------------------------
+    evolution_group = serve.add_argument_group(
+        "Phase 1 evolution (doc 21)",
+        "HSM-backed DNA signing + sandboxed patch staging.",
+    )
+    evolution_group.add_argument(
+        "--signing-vault-transit-key", default=None, metavar="NAME",
+        help="Vault Transit key name for HSM-backed DNA signing "
+             "(reuses --vault-url / --vault-token). Without this, an "
+             "in-process Ed25519 signer is used.",
+    )
+    evolution_group.add_argument(
+        "--patch-staging-e2b", action="store_true",
+        help="Route Phase-1 patch staging through an E2B sandbox "
+             "(requires --e2b-api-key). Without it, staging runs "
+             "in-process.",
+    )
+
+    # -- Phase 2: multi-tenant services (doc 22) -------------------------
+    phase2_group = serve.add_argument_group(
+        "Phase 2 services (doc 22)",
+        "Optional platform services: drift detection, Merkle anchoring, "
+        "omnibus wallet, KYC, FCM push. Each is off unless its flag is "
+        "set. The maintenance interval drives their periodic hooks.",
+    )
+    phase2_group.add_argument(
+        "--enable-drift-detection", action="store_true",
+        help="Run the behavioural drift detector (rolling 7-window "
+             "profile, 2σ alerts).",
+    )
+    phase2_group.add_argument(
+        "--enable-merkle-anchor", action="store_true",
+        help="Publish a daily fleet Merkle root for audit tamper-"
+             "evidence. Uses an in-memory anchor backend in dev.",
+    )
+    phase2_group.add_argument(
+        "--enable-omnibus", action="store_true",
+        help="Run the platform omnibus wallet (requires a real chain "
+             "via --rpc-url + --wallet-key).",
+    )
+    phase2_group.add_argument(
+        "--kyc-provider", default="none",
+        choices=["none", "stub", "persona"],
+        help="KYC provider for fund/withdraw gating (default: none).",
+    )
+    phase2_group.add_argument(
+        "--kyc-persona-api-key", default=None, metavar="KEY",
+        help="Persona API key (when --kyc-provider persona). "
+             "Env: DARWIN_KYC_PERSONA_API_KEY",
+    )
+    phase2_group.add_argument(
+        "--kyc-persona-template-id", default=None, metavar="ID",
+        help="Persona inquiry template id (when --kyc-provider persona).",
+    )
+    phase2_group.add_argument(
+        "--fcm-project-id", default=None, metavar="ID",
+        help="Firebase project id — enables FCM push for escalation "
+             "tickets. Env: DARWIN_FCM_PROJECT_ID",
+    )
+    phase2_group.add_argument(
+        "--maintenance-interval", default=86400.0, type=float,
+        metavar="SECONDS",
+        help="Wall-clock gap between drive-loop maintenance runs "
+             "(drift profile, Merkle anchor, omnibus reconciliation). "
+             "Default 86400 (daily); set low for a soak.",
+    )
+
     k8s_group = serve.add_argument_group(
         "K8s driver (doc 08 production posture)",
         "Per-Darwin namespace + orchestrator microVM. Requires the "
