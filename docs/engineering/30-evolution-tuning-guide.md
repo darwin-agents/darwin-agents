@@ -56,7 +56,7 @@ ArchiveEntry(
 ### Reading the archive
 
 ```python
-archive = runtime.mutation_archive
+archive = runtime.archive
 
 # All entries (oldest first):
 for entry in archive.all():
@@ -147,7 +147,8 @@ Both must be true simultaneously. If the Darwin is fit but broke, no reproductio
 The `tools/sim/calibration.py` module accepts real production observations and applies them to the simulation:
 
 ```python
-from tools.sim.calibration import CalibrationDataset, SimCalibration
+from tools.sim.calibration import CalibrationDataset, apply_calibration
+from tools.sim.world import RevenueModel, SimWorld
 
 ds = CalibrationDataset.from_file("calibration.json")
 # calibration.json contains measured values:
@@ -156,9 +157,10 @@ ds = CalibrationDataset.from_file("calibration.json")
 #   {"metric": "revenue_usd_per_effective_piece", "value": 0.35, "source": "audit:d-1", ...}
 # ]}
 
-calibration = SimCalibration(ds)
-world = SimWorld(scenario)
-calibration.apply(world)  # overrides world constants with real data
+revenue = RevenueModel()
+world = SimWorld(start_ts=0.0, revenue=revenue)
+# Mutates world + revenue in place from the most-recent value per metric.
+apply_calibration(sim_world=world, revenue_model=revenue, dataset=ds)
 ```
 
 **Supported calibration metrics:**

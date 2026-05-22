@@ -123,16 +123,17 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 - [ ] **Real economic activity** — Darwin earns ≥ $1 USDC live. Doc 21.
 - [ ] **`docs/postmortems/` directory** — referenced by the doc-29 template.
 
-## Doc-drift cleanup (code is fine — fix the docs)
+## Doc-drift cleanup (code is fine — fix the docs) — ✅ COMPLETE
 
-- [ ] **Doc 25** — Prometheus metric names use `darwin_*`; code emits `darwin_platform_*`.
-      `/platform/signing/public-key` → actual route is `public_key`.
-- [ ] **Doc 24** — red-team gate checklist uses stale flat paths (`tests/test_redteam.py`);
-      actual is `tests/redteam/`, `tests/property/`, `tests/integration/`.
-- [ ] **Doc 30** — shows `SimCalibration(ds).apply()` and `runtime.mutation_archive`;
-      code has `apply_calibration()` and `runtime.archive`.
-- [ ] **Doc 05** — MoonPay listed as missing in the original audit; it _is_ implemented
-      (`MoonPayFiatRamp`, `src/darwin_platform/adapters/fiat.py:344`). Mark DONE.
+- [x] **Doc 25** — metric table replaced with the real `darwin_platform_*` names +
+      a pointer to `/metrics` as authoritative; inline metric refs corrected;
+      `/platform/signing/public-key` → `public_key`. _(done 2026-05-22)_
+- [x] **Doc 24** — red-team gate checklist + suite references repointed to
+      `tests/redteam/`, `tests/property/`, `tests/integration/`. _(done 2026-05-22)_
+- [x] **Doc 30** — calibration example uses `apply_calibration(sim_world=,
+      revenue_model=, dataset=)` and `runtime.archive`. _(done 2026-05-22)_
+- [x] **Doc 05** — MoonPay confirmed implemented (`MoonPayFiatRamp`,
+      `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
 
 ---
 

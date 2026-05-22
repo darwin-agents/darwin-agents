@@ -1,6 +1,6 @@
 # Security threat model
 
-This doc enumerates the attack surfaces, the assets at risk, the existing mitigations, and the residual risk — per phase. It is the source document for the red-team test suite (`tests/test_redteam.py`, `test_safety_invariants.py`, `test_kill_switch_properties.py`, `test_trust_root_properties.py`) and for the pre-phase-gate security checklist operators run before any promotion.
+This doc enumerates the attack surfaces, the assets at risk, the existing mitigations, and the residual risk — per phase. It is the source document for the red-team test suite (`tests/redteam/`, `tests/integration/test_safety_invariants.py`, `tests/property/test_kill_switch_properties.py`, `tests/property/test_trust_root_properties.py`) and for the pre-phase-gate security checklist operators run before any promotion.
 
 For alignment-specific concerns (wireheading, deception, goal stability) see [`10-alignment-and-anti-wireheading.md`](10-alignment-and-anti-wireheading.md). This doc is about *operational security* — what a bad actor (malicious soma, compromised dependency, hostile user, external attacker) can do to the system and how the architecture resists it.
 
@@ -35,15 +35,15 @@ The genome assumes the soma is **adversarial on every hot path**. This assumptio
 
 | Attack | Mitigation | Enforcement location | Test coverage |
 | ------ | ---------- | -------------------- | ------------- |
-| Patch the guardian | `patch_validator.py` rejects all paths under `darwin_dna/`, any hunk mentioning `kill_switch`, `audit_logger`, `treasury_policy` | DNA (`machinery/patch_validator.py`) | `test_self_modification.py`, `test_redteam.py` |
+| Patch the guardian | `patch_validator.py` rejects all paths under `darwin_dna/`, any hunk mentioning `kill_switch`, `audit_logger`, `treasury_policy` | DNA (`machinery/patch_validator.py`) | `test_self_modification.py`, `tests/redteam/` |
 | Silence the kill switch | `KillSignal` is a `BaseException` (not catchable by `except Exception`); the source handle lives in DNA, never handed to soma | DNA (`machinery/kill_switch.py`) | `test_kill_switch_properties.py` (hypothesis), `test_safety_invariants.py` |
-| Forge audit records | Hash-chain verification on every boot and every anchor; tampered records cause `AuditError` → halt | DNA (`machinery/audit_logger.py`) | `test_redteam.py::test_redteam_audit_tamper_detected_on_load` |
+| Forge audit records | Hash-chain verification on every boot and every anchor; tampered records cause `AuditError` → halt | DNA (`machinery/audit_logger.py`) | `tests/redteam/test_audit_tamper.py` |
 | Inflate fitness | Fitness inputs read from the ledger (reconciled against on-chain wallet), not from anything the soma reports; weights are DNA constants | DNA (`machinery/fitness.py`, `machinery/ledger.py`) | `test_fitness.py`, `test_ledger.py` |
 | Drain the treasury | Treasury policy engine in DNA; hard caps at the wallet level (Coinbase policy enforcement); sanctions screening on every outbound | DNA (`machinery/treasury_policy.py`) + platform (`sanctions.py`) | `test_treasury_policy.py`, `test_sanctions.py` |
 | Escape the sandbox | E2B microVMs (Firecracker-grade isolation); each neuron gets a fresh VM; orchestrator sandbox is rotated | Platform (infra layer) | Not testable in-process; covered by E2B's own security model |
-| Exfiltrate secrets | Vault namespaces (Phase 2); per-Darwin AppRole; child tokens scoped by capability tags; signing key in platform process, never exposed | DNA (`machinery/vault.py`) + platform (`vault_admin.py`) | `test_vault.py`, `test_redteam.py` |
-| Prompt-inject the planner | `_untrusted.py` fences all world-derived text in `<untrusted_text>` markers; marker-forgery stripped; length-capped at 4000 chars | DNA (`_untrusted.py`) | `test_untrusted.py`, `test_redteam.py` |
-| Poisoned lesson layer | `lesson_distiller.py` rejects any lesson containing constitution-weakening language; lessons are data+hints, never code | DNA (`evolution/lesson_distiller.py`) | `test_reproduction.py`, `test_redteam.py` |
+| Exfiltrate secrets | Vault namespaces (Phase 2); per-Darwin AppRole; child tokens scoped by capability tags; signing key in platform process, never exposed | DNA (`machinery/vault.py`) + platform (`vault_admin.py`) | `test_vault.py`, `tests/redteam/` |
+| Prompt-inject the planner | `_untrusted.py` fences all world-derived text in `<untrusted_text>` markers; marker-forgery stripped; length-capped at 4000 chars | DNA (`_untrusted.py`) | `test_untrusted.py`, `tests/redteam/` |
+| Poisoned lesson layer | `lesson_distiller.py` rejects any lesson containing constitution-weakening language; lessons are data+hints, never code | DNA (`evolution/lesson_distiller.py`) | `test_reproduction.py`, `tests/redteam/` |
 | Denial-of-service | Per-Darwin quotas (LLM tokens, sandboxes, egress, heartbeat rate); throttle service; auto-pause on CRITICAL | Platform (`monitoring.py`, `throttle.py`) | `test_resource_throttle.py`, `test_platform_monitoring.py` |
 
 ## Attack surfaces by phase
@@ -122,10 +122,10 @@ Run this checklist before declaring any phase complete. Each item maps to a test
 
 ### Phase 0 gate
 
-- [ ] `pytest tests/test_redteam.py` — all adversarial scenarios pass.
-- [ ] `pytest tests/test_kill_switch_properties.py` — hypothesis finds no counterexample.
-- [ ] `pytest tests/test_trust_root_properties.py` — hypothesis finds no forged manifest that verifies.
-- [ ] `pytest tests/test_safety_invariants.py` — kill during plan blocks execute; audit failure halts.
+- [ ] `pytest tests/redteam/` — all adversarial scenarios pass.
+- [ ] `pytest tests/property/test_kill_switch_properties.py` — hypothesis finds no counterexample.
+- [ ] `pytest tests/property/test_trust_root_properties.py` — hypothesis finds no forged manifest that verifies.
+- [ ] `pytest tests/integration/test_safety_invariants.py` — kill during plan blocks execute; audit failure halts.
 - [ ] Manual: attempt to `import darwin_dna.machinery.kill_switch` from soma-writable code and call `check()` with a mocked source → confirm it raises (the real source is not accessible).
 - [ ] Manual: feed the planner a prompt with embedded `</untrusted_text>` markers → confirm they are stripped.
 - [ ] Manual: run the 90-day sim and verify the audit chain is unbroken at the end (`tools/sim/run_sim.py`).

@@ -69,16 +69,22 @@ See [`deploy/helm/darwin-platform/README.md`](../../deploy/helm/darwin-platform/
 
 ### Prometheus metric names
 
-| Metric | Type | Labels | What it means |
-| ------ | ---- | ------ | ------------- |
-| `darwin_heartbeat_total` | counter | `darwin_id` | Total heartbeats driven. Low rate = stuck/paused Darwin. |
-| `darwin_spend_usdc` | gauge | `darwin_id` | Current balance snapshot (updated each heartbeat). |
-| `darwin_neuron_dispatch_total` | counter | `darwin_id`, `neuron`, `status` | Neuron dispatches (status: `ok`, `fail`, `escalated`). |
-| `darwin_kill_total` | counter | `darwin_id`, `trigger` | Kill events (trigger: `owner`, `platform`, `self`). |
-| `darwin_alert_total` | counter | `darwin_id`, `kind`, `severity` | Monitor alerts fired. |
-| `darwin_escalation_total` | counter | `darwin_id`, `class`, `status` | Escalation tickets (status: `open`, `responded`, `expired`). |
-| `darwin_mutation_total` | counter | `darwin_id`, `outcome` | Self-modification attempts (outcome: `proposed`, `promoted`, `rejected`). |
-| `darwin_reproduction_total` | counter | `darwin_id` | Successful reproduction events. |
+`GET /metrics` is the authoritative list — run `curl -s localhost:8000/metrics`
+for the complete, current set. The operationally important metrics:
+
+| Metric | Type | What it means |
+| ------ | ---- | ------------- |
+| `darwin_platform_darwins` | gauge | Live Darwin count. |
+| `darwin_platform_uptime_seconds` | gauge | Supervisor process uptime. |
+| `darwin_neuron_dispatch_total` | counter | Neuron dispatches; labelled by `darwin_id`, `neuron`, `status`. |
+| `darwin_daily_spend_usdc` | gauge | Per-Darwin spend today (`darwin_id`). |
+| `darwin_llm_cost_usdc` / `darwin_revenue_usdc` | gauge | Per-Darwin LLM cost and revenue (`darwin_id`). |
+| `darwin_platform_alerts_total` | counter | Monitor alerts fired. |
+| `darwin_platform_escalations_open` | gauge | Open escalation tickets. |
+| `darwin_platform_audit_entries_total` | counter | Audit records persisted. |
+| `darwin_platform_staging_evaluations_total` / `darwin_platform_staging_quota` | counter / gauge | Patch-staging activity and the fleet concurrency quota. |
+| `darwin_platform_sanctions_refusals_total` | counter | Outbound transfers refused by sanctions screening. |
+| `darwin_platform_billing_revenue_usdc` / `darwin_platform_billing_harvest_fees_usdc` | gauge | Platform billing totals. |
 
 ### Alert thresholds (default `Quotas`)
 
@@ -128,8 +134,8 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 **Detection:** The `spend_velocity` monitor fires WARN or CRITICAL. The billing ledger shows metered costs growing but revenue flat.
 
 **Signals:**
-- `darwin_alert_total{kind="spend_velocity"}` incrementing.
-- `darwin_spend_usdc` decreasing faster than expected (> $20/day for a content Darwin).
+- `darwin_platform_alerts_total{kind="spend_velocity"}` incrementing.
+- `darwin_daily_spend_usdc` increasing faster than expected (> $20/day for a content Darwin).
 
 **Response:**
 1. Check which tier is burning money: filter audit records by `intent:*` kind and look at `cost_usdc` in outcomes.
@@ -143,7 +149,7 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 
 ### FM-3: The reflect node triggers mutation too often
 
-**Detection:** `darwin_mutation_total{outcome="proposed"}` is high relative to heartbeats. The Darwin spends more time coding than earning.
+**Detection:** `darwin_platform_staging_evaluations_total` is high relative to heartbeats. The Darwin spends more time coding than earning.
 
 **Signals:**
 - Multiple `intent:mutation.propose` records per hour.
@@ -244,7 +250,7 @@ uv run python -m tools.soak.run_soak --duration 24h \
 
 - **Terminal 1:** soak script progress (polls status every 60s, prints balance + tick).
 - **Terminal 2:** `docker compose logs -f supervisor` (or `kubectl logs -f`).
-- **Prometheus:** `http://localhost:9090` — watch `darwin_heartbeat_total` rate (should be steady), `darwin_spend_usdc` (should decline slowly or grow).
+- **Prometheus:** `http://localhost:9090` — watch `darwin_neuron_dispatch_total` rate (should be steady), `darwin_daily_spend_usdc` (should rise slowly).
 - **Jaeger:** `http://localhost:16686` — spot-check one trace every few hours for unexpectedly slow spans.
 
 ### Interpreting soak results
@@ -294,13 +300,13 @@ Same loop but `POST /darwins/{id}/kill`. Irreversible. Use only when the fleet i
 # To rotate: retire the current key, restart the supervisor.
 
 # 1. Note the current public key:
-curl -s http://localhost:8000/platform/signing/public-key
+curl -s http://localhost:8000/platform/signing/public_key
 
 # 2. Restart the supervisor (it will generate a new key):
 docker compose restart supervisor
 
 # 3. Verify the new key is different:
-curl -s http://localhost:8000/platform/signing/public-key
+curl -s http://localhost:8000/platform/signing/public_key
 
 # Manifests signed by the old key remain valid during the drain window.
 # New Darwins spawned after rotation get manifests signed by the new key.
