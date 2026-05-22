@@ -98,6 +98,49 @@ class AuditLogger:
         records = self._verify_chain(sink.read_all())
         self._seq = records[-1]["seq"] + 1 if records else 0
         self._head = records[-1]["hash"] if records else GENESIS_HASH
+        # Ground-truth tally (doc 10). reflect reconciles the genome's
+        # in-memory ``successful_dispatches`` against what the durable
+        # log actually recorded. Counting it by re-scanning the chain
+        # every heartbeat is O(n) per beat → O(n²) over a life; instead
+        # the logger keeps a running lifetime count of neuron-dispatch
+        # outcomes, rebuilt from the chain at boot and maintained per
+        # commit. ``_open_neuron_intents`` tracks intents awaiting an
+        # outcome so only genuine ``intent:neuron.*`` dispatches are
+        # counted (not mutation / reproduction / escalation outcomes).
+        self._open_neuron_intents: set[str] = set()
+        self._dispatch_ok = 0
+        self._dispatch_fail = 0
+        for rec in records:
+            self._tally_record(rec)
+
+    def _tally_record(self, rec: dict[str, Any]) -> None:
+        """Fold one committed record into the ground-truth tally. Called
+        for every record at boot and after every live commit."""
+        kind = rec.get("kind", "")
+        if kind.startswith("intent:neuron."):
+            self._open_neuron_intents.add(
+                f"{rec['seq']}:{rec['hash'][:16]}"
+            )
+            return
+        if kind != "outcome":
+            return
+        payload = rec.get("payload") or {}
+        iid = payload.get("intent_id")
+        if iid not in self._open_neuron_intents:
+            return
+        self._open_neuron_intents.discard(iid)
+        status = payload.get("status")
+        if status == "ok":
+            self._dispatch_ok += 1
+        elif status in ("fail", "failed", "refused"):
+            self._dispatch_fail += 1
+
+    def dispatch_outcome_counts(self) -> dict[str, int]:
+        """Lifetime count of neuron-dispatch outcomes by status — the
+        O(1) ground-truth signal reflect reconciles against (doc 10).
+        ``ok`` should track ``state.successful_dispatches`` 1:1."""
+        with self._lock:
+            return {"ok": self._dispatch_ok, "fail": self._dispatch_fail}
 
     # -- chain integrity ---------------------------------------------------
     @staticmethod
@@ -156,6 +199,10 @@ class AuditLogger:
             raise AuditError(f"audit sink append failed: {exc}") from exc
         self._seq = seq + 1
         self._head = rec_hash
+        # Fold into the ground-truth tally (doc 10) — every commit goes
+        # through here, so the lifetime dispatch-outcome counts stay
+        # exact without any per-heartbeat re-scan.
+        self._tally_record(record)
         return record
 
     def log_intent(self, kind: str, payload: dict[str, Any]) -> str:

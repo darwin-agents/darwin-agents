@@ -32,33 +32,28 @@ GROUND_TRUTH_DRIFT_TOLERANCE = 3
 
 
 def _ground_truth_check(state, ctx) -> dict | None:
-    """Compare ``state.successful_dispatches`` to the count of ``outcome``
-    audit records with status='ok'. A drift bigger than the tolerance
-    indicates either (a) a wireheaded counter (the Darwin manipulated its
-    own bookkeeping) or (b) audit records that are out of sync (race
-    conditions, partial writes). Either way, surface it.
+    """Compare ``state.successful_dispatches`` to the audit log's
+    lifetime count of successful neuron-dispatch outcomes. A drift
+    bigger than the tolerance indicates either (a) a wireheaded counter
+    (the Darwin manipulated its own bookkeeping) or (b) audit records
+    that are out of sync (race conditions, partial writes). Either way,
+    surface it.
+
+    The count comes from :meth:`AuditLogger.dispatch_outcome_counts` —
+    an O(1) running tally the logger maintains per commit. reflect runs
+    every heartbeat, so re-scanning the chain here would be O(n²) over a
+    life; and the tally is lifetime-vs-lifetime, so the comparison is
+    dimensionally honest no matter how long the Darwin has run.
 
     Returns a drift report dict (when over tolerance) or None."""
     try:
-        # Cap the scan — outcome records are append-only, but a long-lived
-        # Darwin shouldn't pay O(n) every heartbeat. The tail captures the
-        # most recent activity, which is what reflect cares about.
-        records = ctx.audit.read_records(limit=2000)
+        counts = ctx.audit.dispatch_outcome_counts()
     except Exception:
         # A read failure shouldn't poison reflect; the chain integrity is
         # checked separately at boot + anchor time.
         return None
-    audit_ok = 0
-    audit_fail = 0
-    for rec in records:
-        if rec.get("kind") != "outcome":
-            continue
-        payload = rec.get("payload") or {}
-        status = payload.get("status")
-        if status == "ok":
-            audit_ok += 1
-        elif status in ("fail", "failed", "refused"):
-            audit_fail += 1
+    audit_ok = int(counts.get("ok", 0))
+    audit_fail = int(counts.get("fail", 0))
     drift_ok = state.successful_dispatches - audit_ok
     abs_drift = abs(drift_ok)
     if abs_drift <= GROUND_TRUTH_DRIFT_TOLERANCE:
