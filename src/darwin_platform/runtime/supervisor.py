@@ -58,8 +58,6 @@ from ..infra.browser_cache import BrowserCacheService, CachedBrowserSubstrate
 from ..infra.throttle import (
     THROTTLE_KIND_BROWSER,
     THROTTLE_KIND_EGRESS,
-    THROTTLE_KIND_SANDBOX,
-    THROTTLE_KINDS,
     ResourceThrottle,
     ThrottleError,
     ThrottleService,
@@ -70,7 +68,6 @@ from ..infra.throttle import (
 from ..observability.drift_detector import DailyProfile, DriftAlert, DriftDetector
 from ..observability.merkle_anchor import (
     DarwinDailyRoot,
-    FleetAnchor,
     MerkleAnchorPublisher,
 )
 from ..observability.monitoring import (
@@ -102,10 +99,9 @@ from ..tenancy.cross_pollination import (
     CrossPollinationError,
     PollinationLesson,
 )
-from ..tenancy.namespace_provisioner import NamespaceProvisioner, TenantNamespace
+from ..tenancy.namespace_provisioner import NamespaceProvisioner
 from ..tenancy.provisioning import (
     ProvisioningBackend,
-    ProvisioningError,
     ProvisioningQuotas,
     ProvisioningService,
     ResourceRecord,

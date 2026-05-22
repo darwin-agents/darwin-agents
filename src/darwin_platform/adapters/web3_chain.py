@@ -30,7 +30,6 @@ We do not use this for the supervisor's own state — only as the
 
 from __future__ import annotations
 
-from typing import Any
 
 
 # Standard ERC-20 ABI subset — only what we use. Includes ``transfer``

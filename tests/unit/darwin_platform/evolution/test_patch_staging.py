@@ -16,14 +16,12 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
-from darwin_dna.machinery.eval_harness import BehaviorDelta, FrozenScenario
+from darwin_dna.machinery.eval_harness import BehaviorDelta
 from darwin_dna.machinery.patch_validator import FileChange, Patch
 from darwin_platform.evolution.patch_staging import (
     PatchStagingService,
     StagingQuota,
-    StagingVerdict,
 )
 
 
@@ -59,7 +57,6 @@ def _delta(after: int = 3) -> BehaviorDelta:
 
 def test_dna_patch_is_rejected_before_sandbox():
     """A patch that targets the genome never reaches the sandbox."""
-    calls: list[dict] = []
 
     def factory():
         # The factory must NOT be called for a DNA-targeting patch.

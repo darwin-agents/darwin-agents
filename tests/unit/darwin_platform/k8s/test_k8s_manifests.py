@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from darwin_platform.k8s.manifests import (
     CONTROL_API_PORT,

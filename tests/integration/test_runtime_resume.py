@@ -9,8 +9,6 @@ billing carry across; the runtime is fresh."""
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -77,7 +75,7 @@ async def test_resume_skips_killed_darwins(tmp_path):
     db = tmp_path / "platform.db"
     sup_a = Supervisor(persistence_path=str(db))
     status1 = await sup_a.spawn(opening_usdc=50.0)
-    status2 = await sup_a.spawn(opening_usdc=75.0)
+    await sup_a.spawn(opening_usdc=75.0)
     await sup_a.kill(status1.darwin_id, reason="dev-shutdown")
     await sup_a.shutdown(kill_running=False)
     sup_a._persistence.close()
@@ -115,7 +113,7 @@ async def test_no_persistence_means_no_lifecycle(tmp_path):
     """Without persistence, the lifecycle store is None and resume is
     a no-op (which is the right behaviour for ephemeral dev)."""
     sup = Supervisor()
-    status = await sup.spawn(opening_usdc=50.0)
+    await sup.spawn(opening_usdc=50.0)
     assert sup._lifecycle is None
     await sup.shutdown(kill_running=True)
 

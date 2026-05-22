@@ -25,8 +25,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from darwin_dna.evolution import boot
-from darwin_dna.hyperparameters import DEFAULT_HYPERPARAMETERS
 from darwin_dna.neurons import Task
 from darwin_dna.neurons._base import (
     BaseNeuron,
@@ -35,8 +33,6 @@ from darwin_dna.neurons._base import (
     Plan,
 )
 from darwin_dna.strategies import StrategyAction, StrategySpec
-from darwin_fakes import make_platform
-from darwin_platform.evolution.patch_staging import PatchStagingService
 from darwin_platform.runtime.supervisor import Supervisor
 
 from .assertions import (

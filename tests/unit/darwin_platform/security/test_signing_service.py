@@ -22,7 +22,6 @@ from cryptography.hazmat.primitives import serialization
 from darwin_dna.signature import load_platform_public_key, verify
 from darwin_platform.security.signing_service import (
     HvacTransitBackend,
-    KMSBackend,
     KMSSigningService,
     LocalEd25519Signer,
     SigningServiceError,

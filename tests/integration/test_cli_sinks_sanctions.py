@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 import pytest
 
@@ -15,9 +14,7 @@ from darwin_platform.__main__ import (
 )
 from darwin_platform.payments.sanctions import (
     CachedScreener,
-    ChainalysisScreener,
     LocalDenylistScreener,
-    TRMScreener,
 )
 from darwin_platform.observability.sinks import (
     FanOutAlertSink,

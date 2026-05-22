@@ -25,8 +25,8 @@ This module ships the platform side:
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from dataclasses import asdict, dataclass
+from typing import Callable, Protocol, runtime_checkable
 
 
 class ProvisioningError(Exception):

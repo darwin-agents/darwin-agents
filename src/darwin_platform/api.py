@@ -44,7 +44,6 @@ from .security.auth import (
     disabled_context,
 )
 from .tenancy.provisioning import ProvisioningError
-from .tenancy.vault_admin import VaultAdminError
 
 
 # -- request/response models ------------------------------------------------

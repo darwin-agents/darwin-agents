@@ -28,10 +28,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..hyperparameters import DEFAULT_HYPERPARAMETERS
 from ..neurons._base import (
     BaseNeuron,
-    Blocker,
     CostEstimate,
     FailureMode,
     NeuronContext,
@@ -244,8 +242,8 @@ class InterpretedNeuron(BaseNeuron):
         return {
             "ok": False,
             "reason": (
-                f"unknown step prefix; supported: 'http GET <url>', "
-                f"'http POST <url>', 'sandbox <language> <code>'"
+                "unknown step prefix; supported: 'http GET <url>', "
+                "'http POST <url>', 'sandbox <language> <code>'"
             ),
         }
 

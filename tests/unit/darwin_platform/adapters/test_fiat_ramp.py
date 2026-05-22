@@ -75,11 +75,6 @@ class _StripeStub:
     """Minimal Stripe SDK shape — PaymentIntent.create / .retrieve /
     Transfer.create."""
 
-    def __init__(self):
-        self.intents = {}
-        self.payouts = []
-        self._n = 0
-
     class _IntentNS:
         def __init__(self, ramp): self.ramp = ramp
         def create(self, **kwargs):

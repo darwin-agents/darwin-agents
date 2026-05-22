@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 from darwin_platform.payments.harvest_scheduler import (
-    HarvestRule,
     HarvestRuleError,
     HarvestScheduler,
 )

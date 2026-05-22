@@ -7,12 +7,10 @@ and the supervisor-driven sweep.
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
 from darwin_platform.tenancy.vault_admin import (
-    DEFAULT_SENSITIVE_TTL_SECONDS,
     VaultAdminError,
     VaultAdminService,
     VaultRetentionService,

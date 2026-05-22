@@ -23,13 +23,12 @@ do not propagate.
 
 from __future__ import annotations
 
-import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from .escalation import NotificationSink, RoutedTicket
+from .escalation import RoutedTicket
 
 
 @runtime_checkable

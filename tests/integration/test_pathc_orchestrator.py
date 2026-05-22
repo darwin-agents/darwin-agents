@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from darwin_dna.evolution import boot
-from darwin_dna.machinery.neuron_proposal import NeuronProposal
 from darwin_dna.orchestrator_skeleton.nodes.propose_mutation import (
     _validate_and_normalise_proposal,
 )

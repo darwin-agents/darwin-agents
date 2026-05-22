@@ -42,7 +42,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import struct
-import time
 from typing import Protocol, runtime_checkable
 
 

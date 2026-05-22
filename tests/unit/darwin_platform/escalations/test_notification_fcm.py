@@ -12,12 +12,10 @@ Coverage:
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
 from darwin_platform.escalations.escalation import (
-    LogNotificationSink,  # for shape comparison
     RoutedTicket,
     TicketStatus,
 )

@@ -33,7 +33,7 @@ import hashlib
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any, Callable
+from typing import Callable
 
 
 # Hard limits — even an operator setting them looser cannot exceed these.

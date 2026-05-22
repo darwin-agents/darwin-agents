@@ -27,7 +27,7 @@ name) is a parameter — opinionated defaults but no buried magic.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 # Labels stamped on every per-Darwin namespace; used by the supervisor's

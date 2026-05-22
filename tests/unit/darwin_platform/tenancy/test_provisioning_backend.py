@@ -7,11 +7,8 @@ operator, etc.) must satisfy the same contract — provision returns
 
 from __future__ import annotations
 
-import json
-import os
 import stat
 import textwrap
-from pathlib import Path
 
 import pytest
 

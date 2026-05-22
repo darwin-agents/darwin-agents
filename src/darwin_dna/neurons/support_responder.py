@@ -11,7 +11,6 @@ needs a human.
 
 from __future__ import annotations
 
-import json
 
 from ..machinery.llm_router import Tier
 from ._base import (

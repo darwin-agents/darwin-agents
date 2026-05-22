@@ -4,12 +4,10 @@ supervisor wiring, the quota gates, and the HTTP routes."""
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
 from darwin_platform.tenancy.provisioning import (
-    InMemoryProvisioningBackend,
     ProvisioningError,
     ProvisioningQuotas,
     ProvisioningService,

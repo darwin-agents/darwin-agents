@@ -8,7 +8,6 @@ counter shows up immediately, not at reproduction time."""
 
 from __future__ import annotations
 
-import pytest
 
 from darwin_dna.machinery.audit_logger import AuditLogger
 from darwin_dna.machinery.memory import SemanticMemory

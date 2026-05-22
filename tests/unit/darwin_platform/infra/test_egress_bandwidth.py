@@ -10,7 +10,6 @@ Coverage:
 
 from __future__ import annotations
 
-import pytest
 
 from darwin_platform.infra.egress_proxy import BandwidthQuota
 

@@ -6,7 +6,6 @@ detector hit even if the total spend doesn't trip spend_velocity."""
 
 from __future__ import annotations
 
-import pytest
 
 from darwin_platform.observability.monitoring import (
     DarwinSignals,

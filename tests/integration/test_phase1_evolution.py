@@ -10,19 +10,13 @@ the in-process supervisor with the in-process staging fallback.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import types
 
 import pytest
 
-from darwin_dna.evolution import boot
-from darwin_dna.machinery.eval_harness import BehaviorDelta
-from darwin_dna.machinery.patch_validator import FileChange, Patch
-from darwin_platform.evolution.eval_runner import EvalRequest, EvalRunner
+from darwin_platform.evolution.eval_runner import EvalRunner
 from darwin_platform.evolution.patch_staging import (
     PatchStagingService,
-    StagingQuota,
 )
 from darwin_platform.runtime.supervisor import Supervisor
 

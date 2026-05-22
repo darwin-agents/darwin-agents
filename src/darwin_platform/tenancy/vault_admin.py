@@ -25,7 +25,7 @@ into the drive cycle (sweep every N heartbeats) and the HTTP layer
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
 from ..security.watermark import NoOpWatermarker, Watermarker

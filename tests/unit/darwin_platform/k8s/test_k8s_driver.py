@@ -4,7 +4,6 @@ this fast suite."""
 
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 

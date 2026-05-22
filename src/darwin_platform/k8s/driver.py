@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..runtime.driver import (
-    DarwinDriver,
     DarwinNotFound,
     DarwinSnapshot,
     DarwinSpec,

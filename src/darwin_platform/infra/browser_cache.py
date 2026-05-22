@@ -292,7 +292,7 @@ class CachedBrowserSubstrate:
         start = self._clock()
         try:
             outcome = substrate.run(list(steps))
-        except Exception as exc:
+        except Exception:
             # Underlying substrate raised — record + re-raise so the
             # neuron can surface the failure mode.
             record = BrowserSessionRecord(

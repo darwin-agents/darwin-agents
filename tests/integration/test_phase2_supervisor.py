@@ -102,8 +102,8 @@ async def test_reconcile_omnibus_sums_darwin_wallets(_omnibus_chain):
         heartbeat_seconds=0.001,
         omnibus_wallet=OmnibusWallet(_omnibus_chain),
     )
-    s1 = await sup.spawn(opening_usdc=100.0, actor="test")
-    s2 = await sup.spawn(opening_usdc=50.0, actor="test")
+    await sup.spawn(opening_usdc=100.0, actor="test")
+    await sup.spawn(opening_usdc=50.0, actor="test")
     try:
         result = sup.reconcile_omnibus()
         assert result is not None

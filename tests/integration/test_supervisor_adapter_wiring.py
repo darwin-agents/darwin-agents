@@ -14,14 +14,12 @@ All tests are fully offline — no real RPC, Vault, or Browserbase calls.
 
 from __future__ import annotations
 
-import asyncio
 import time
 import types
 
 import pytest
 
 from darwin_fakes import FakeStack, make_platform
-from darwin_dna.evolution.loop import Platform
 from darwin_dna.neurons._base import NeuronContext
 
 

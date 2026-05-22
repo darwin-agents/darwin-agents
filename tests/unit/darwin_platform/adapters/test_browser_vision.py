@@ -6,7 +6,6 @@ vision mode before letting the failure propagate to the neuron."""
 
 from __future__ import annotations
 
-import pytest
 
 from darwin_platform.adapters.browser import BrowserUseClient
 from darwin_platform.infra.browser_cache import (

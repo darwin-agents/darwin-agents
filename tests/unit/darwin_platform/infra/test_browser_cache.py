@@ -12,13 +12,11 @@ Covers:
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
 from darwin_platform.infra.browser_cache import (
     BrowserCacheService,
-    BrowserSessionRecord,
     CachedBrowserSubstrate,
 )
 

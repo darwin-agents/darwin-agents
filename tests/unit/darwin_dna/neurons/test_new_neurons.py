@@ -8,7 +8,6 @@ content.publisher, analytics.measurer, research.scout. Coverage:
 
 from __future__ import annotations
 
-import time
 import types
 
 import pytest

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from tools.sim.calibration import (
     CalibrationDataset,
-    CalibrationPoint,
     apply_calibration,
     extract_from_billing,
 )
