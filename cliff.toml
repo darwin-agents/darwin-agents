@@ -20,7 +20,7 @@ body = """
 trim = true
 render_always = true
 # Workflow: make changelog-sync  →  make release VERSION=0.0.2
-# (scripts/changelog.py splices [Unreleased]; do not use git-cliff --prepend by hand.)
+# Release uses git-cliff --current -t (delta since previous tag). Do not use -t alone or --prepend.
 
 [git]
 conventional_commits = true

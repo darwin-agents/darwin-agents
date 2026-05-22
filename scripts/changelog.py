@@ -9,6 +9,7 @@ Usage:
     python scripts/changelog.py release 0.0.2 [--no-tag] [--no-bump] [--no-commit] [--no-push]
 
 Release order (default): update CHANGELOG + pyproject → commit → annotated tag → push + --tags.
+Uses ``git-cliff --current -t`` so only commits since the previous tag are promoted (not full history).
 Commit message: ``chore(release): prepare v{version}``. Only stages CHANGELOG.md and pyproject.toml.
 """
 
@@ -167,9 +168,15 @@ def cmd_release(
     if tag and _tag_exists(tag_name):
         sys.exit(f"git tag {tag_name} already exists")
 
-    release_section = _run_git_cliff("-t", tag_name)
+    # --current: commits since the previous tag only (render_always + -t alone dumps full history).
+    release_section = _run_git_cliff("--current", "-t", tag_name)
     if UNRELEASED in release_section:
-        sys.exit("git-cliff returned an [Unreleased] block for -t; check cliff.toml")
+        sys.exit("git-cliff returned an [Unreleased] block; check cliff.toml")
+    if re.search(r"[^\n]## \[", release_section):
+        sys.exit(
+            "git-cliff release section has an inline version heading; "
+            "use --current -t or check cliff.toml render_always"
+        )
 
     text = _read()
     text = _replace_unreleased(text, _empty_unreleased())
