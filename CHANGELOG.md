@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- ci: install ruff via `uv sync --extra dev` (not `--dev`, which does not pull optional `[dev]` extras)
+- ci: point postgres persistence job at `tests/unit/darwin_platform/runtime/test_persistence_postgres.py` after test tree reorganisation
+- style: clear 82 ruff violations (unused imports, unused locals, duplicate `__init__`)
+
 ### Changed
 
 - refactor(platform): reorganise `darwin_platform` into bounded-context subpackages — `runtime/`, `tenancy/`, `payments/`, `security/`, `observability/`, `escalations/`, `evolution/`, `infra/` (plus existing `adapters/`, `k8s/`); update all 53 external import sites; mirror `tests/unit/darwin_platform/` to the same layout; new "Module layout" appendix in doc 08
