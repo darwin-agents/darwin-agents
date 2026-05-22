@@ -19,8 +19,8 @@ body = """
 """
 trim = true
 render_always = true
-# Release workflow: make changelog-sync && make release VERSION=0.0.2
-# (scripts/changelog.py splices sections; do not use --prepend by hand.)
+# Workflow: make changelog-sync  →  make release VERSION=0.0.2
+# (scripts/changelog.py splices [Unreleased]; do not use git-cliff --prepend by hand.)
 
 [git]
 conventional_commits = true

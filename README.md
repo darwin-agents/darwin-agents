@@ -505,15 +505,22 @@ Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [proj
 
 **Tests** — new behaviour must ship with tests. Hot-path changes (`kill_switch`, `treasury_policy`, `signature`, `audit_logger`, `manifest`) require property-based tests (Hypothesis) in addition to unit tests.
 
-**Changelog** — [git-cliff](https://git-cliff.org) + [`cliff.toml`](cliff.toml) + [`scripts/changelog.py`](scripts/changelog.py):
+**Changelog & releases** — requires [git-cliff](https://git-cliff.org) on `PATH`. Config: [`cliff.toml`](cliff.toml); automation: [`scripts/changelog.py`](scripts/changelog.py) via the [Makefile](Makefile).
+
+| Command | What it does |
+| ------- | ------------ |
+| `make changelog-sync` (alias `make changelog`) | Rewrite `## [Unreleased]` from conventional commits since the latest tag |
+| `make changelog-preview` | Same content as sync, stdout only |
+| `make release VERSION=0.0.2` | Promote commits to `## [0.0.2]`, clear `[Unreleased]`, bump `pyproject.toml`, `git commit`, annotated tag, `git push` + `git push --tags` |
+
+Typical flow:
 
 ```bash
-make changelog-sync          # rewrite ## [Unreleased] from commits since the last tag
-make changelog-preview       # print the same block without touching the file
-make release VERSION=0.0.2   # CHANGELOG + pyproject, commit, tag v0.0.2, push
+make changelog-sync                    # while developing on main
+make release VERSION=0.0.2             # when shipping (needs clean auth to origin)
 ```
 
-`changelog-sync` **replaces** the whole `[Unreleased]` section (custom lines there are overwritten). Put release notes in commit messages or edit after sync. `release` commits `chore(release): prepare vX.Y.Z`, tags, and runs `git push && git push --tags`. Opt out: `NO_COMMIT=1`, `NO_PUSH=1`, `NO_TAG=1`, or `NO_BUMP=1`.
+`changelog-sync` **replaces** the entire `[Unreleased]` section — write release notes in commit subjects, or edit the file after sync. Release commit message: `chore(release): prepare vX.Y.Z`. Opt out of git steps: `NO_COMMIT=1`, `NO_PUSH=1`, `NO_TAG=1`, or `NO_BUMP=1` (e.g. `make release VERSION=0.0.2 NO_PUSH=1` for a dry run). Details: [`docs/engineering/25-operational-runbook.md`](docs/engineering/25-operational-runbook.md) § Repository releases.
 
 ---
 

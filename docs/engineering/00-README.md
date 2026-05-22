@@ -46,6 +46,11 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`29-incident-postmortem-template.md`](29-incident-postmortem-template.md) — structured format for documenting and learning from failures
 - [`30-evolution-tuning-guide.md`](30-evolution-tuning-guide.md) — reading the archive, fitness trajectories, hyperparameter calibration, reproduction diagnostics
 
+## Repository tooling (repo root)
+
+- [`../../Makefile`](../../Makefile) — `make help` lists install, test tiers, lint, Docker stack, changelog sync, and semver release
+- [`../../README.md`](../../README.md) — quickstart and contributing conventions (Conventional Commits, changelog workflow)
+
 ## Related (in `overview/`)
 
 - [`../overview/02-design-principles.md`](../overview/02-design-principles.md) — the P1–P10 principles every doc here is checked against

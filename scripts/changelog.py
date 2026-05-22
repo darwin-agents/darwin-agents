@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Sync CHANGELOG.md [Unreleased] from git-cliff; cut a semver release.
 
+Prefer the Makefile wrappers (``make changelog-sync``, ``make release``).
+
 Usage:
     python scripts/changelog.py sync
-    python scripts/changelog.py release 0.0.2 [--no-tag] [--no-bump]
     python scripts/changelog.py preview
+    python scripts/changelog.py release 0.0.2 [--no-tag] [--no-bump] [--no-commit] [--no-push]
+
+Release order (default): update CHANGELOG + pyproject → commit → annotated tag → push + --tags.
+Commit message: ``chore(release): prepare v{version}``. Only stages CHANGELOG.md and pyproject.toml.
 """
 
 from __future__ import annotations
