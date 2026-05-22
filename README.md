@@ -147,21 +147,24 @@ flowchart TB
 
 **Prerequisites:** Python 3.12+, [uv](https://github.com/astral-sh/uv)
 
+A **[Makefile](Makefile)** wraps the usual commands — run `make help` for the full list
+(install, test tiers, lint, Docker stack, serve, changelog, Helm).
+
 ### 1 — Install and run the tests
 
 ```bash
 git clone https://github.com/quantium-rock/darwin-agent
 cd darwin-agent
 
-uv sync --extra dev
-uv run pytest -m "not slow" -q         # unit + property + redteam + integration (~90 s)
-uv run pytest -q                       # full suite including 90-day simulation (~3–5 min)
+make install          # or: make install-all  (CI-parity, all extras)
+make test-fast        # unit + property + redteam + integration (~90 s)
+make test-all         # full suite including simulation tier (~3–5 min)
 ```
 
 ### 2 — Watch a Darwin live (simulation)
 
 ```bash
-uv run python -m tools.sim.run_sim --days 90
+make sim              # default 90 days; make sim SIM_DAYS=30
 ```
 
 Runs a Darwin for 90 simulated days with in-memory fakes. No API keys needed.
@@ -172,8 +175,7 @@ Prints a live ledger, neuron dispatch log, and fitness trajectory.
 Supervisor on `:8000`, Postgres, LiteLLM proxy, Prometheus on `:9090`, Jaeger on `:16686`:
 
 ```bash
-cp docker/.env.example docker/.env   # add LLM provider keys (optional)
-docker compose up --build
+make docker-up      # copies docker/.env.example if missing, then compose up
 ```
 
 Full instructions: [`docker/README.md`](docker/README.md)
@@ -503,7 +505,18 @@ Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [proj
 
 **Tests** — new behaviour must ship with tests. Hot-path changes (`kill_switch`, `treasury_policy`, `signature`, `audit_logger`, `manifest`) require property-based tests (Hypothesis) in addition to unit tests.
 
+**Changelog** — [git-cliff](https://git-cliff.org) + [`cliff.toml`](cliff.toml) + [`scripts/changelog.py`](scripts/changelog.py):
+
+```bash
+make changelog-sync          # rewrite ## [Unreleased] from commits since the last tag
+make changelog-preview       # print the same block without touching the file
+make release VERSION=0.0.2   # add ## [0.0.2], clear [Unreleased], bump pyproject, tag v0.0.2
+```
+
+`changelog-sync` **replaces** the whole `[Unreleased]` section (custom lines there are overwritten). Put release notes in commit messages or edit after sync. `release` uses commits since the previous tag; then commit and `git push --tags`.
+
 ---
+
 
 ## License
 
