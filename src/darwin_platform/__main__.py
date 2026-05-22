@@ -431,6 +431,30 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
                 api_key=api_key, template_id=template_id,
             ),
         )
+    elif kyc_provider == "onfido":
+        api_token = getattr(
+            args, "kyc_onfido_api_token", None
+        ) or os.environ.get("ONFIDO_API_TOKEN")
+        workflow_id = getattr(
+            args, "kyc_onfido_workflow_id", None
+        ) or os.environ.get("ONFIDO_WORKFLOW_ID")
+        if not (api_token and workflow_id):
+            print(
+                "--kyc-provider onfido requires --kyc-onfido-api-token + "
+                "--kyc-onfido-workflow-id (or the ONFIDO_API_TOKEN / "
+                "ONFIDO_WORKFLOW_ID env vars)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from .security.kyc import KYCService, OnfidoKYCProvider
+
+        kwargs["kyc_service"] = KYCService(
+            provider=OnfidoKYCProvider(
+                api_token=api_token,
+                workflow_id=workflow_id,
+                region=getattr(args, "kyc_onfido_region", None) or "eu",
+            ),
+        )
 
     # -- fiat ramp (doc 17) ----------------------------------------------
     fiat_provider = getattr(args, "fiat_provider", "none")
@@ -1081,7 +1105,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phase2_group.add_argument(
         "--kyc-provider", default="none",
-        choices=["none", "stub", "persona"],
+        choices=["none", "stub", "persona", "onfido"],
         help="KYC provider for fund/withdraw gating (default: none).",
     )
     phase2_group.add_argument(
@@ -1092,6 +1116,20 @@ def build_parser() -> argparse.ArgumentParser:
     phase2_group.add_argument(
         "--kyc-persona-template-id", default=None, metavar="ID",
         help="Persona inquiry template id (when --kyc-provider persona).",
+    )
+    phase2_group.add_argument(
+        "--kyc-onfido-api-token", default=None, metavar="TOKEN",
+        help="Onfido API token (when --kyc-provider onfido). "
+             "Env: ONFIDO_API_TOKEN",
+    )
+    phase2_group.add_argument(
+        "--kyc-onfido-workflow-id", default=None, metavar="ID",
+        help="Onfido Studio workflow id (when --kyc-provider onfido). "
+             "Env: ONFIDO_WORKFLOW_ID",
+    )
+    phase2_group.add_argument(
+        "--kyc-onfido-region", default="eu", choices=["eu", "us", "ca"],
+        help="Onfido data region (default: eu).",
     )
     phase2_group.add_argument(
         "--fcm-project-id", default=None, metavar="ID",
