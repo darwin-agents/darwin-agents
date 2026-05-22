@@ -106,6 +106,7 @@ class NeuronContext:
         now=time.time,
         http=None,  # X402PaymentClient | HTTPClient | None (doc 17)
         sandbox=None,  # SandboxClient | None (doc 14)
+        content_classifier=None,  # ContentClassifier | None (doc 10)
     ):
         self.darwin_id = darwin_id
         self.llm = llm
@@ -123,6 +124,10 @@ class NeuronContext:
         # ``compute.run`` receive it; everyone else gets None and may not run
         # arbitrary code. Future eval_harness and Path-C neurons consume this.
         self.sandbox = sandbox
+        # Outbound content safety classifier (doc 10). Granted to publishing
+        # neurons. The ContentSafetyGate runs its deterministic backstop even
+        # when this is None, so outbound content is never wholly unscreened.
+        self.content_classifier = content_classifier
 
 
 @runtime_checkable

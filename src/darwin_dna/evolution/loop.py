@@ -278,6 +278,14 @@ class DarwinRuntime:
             and "compute.run" in tags
         ):
             nctx.sandbox = self._p.sandbox
+        # Content safety classifier (doc 10): granted to publishing neurons.
+        # The ContentSafetyGate still runs its deterministic backstop when
+        # this is None, so screening is never skipped on a publish path.
+        if (
+            getattr(self._p, "content_classifier", None) is not None
+            and tags & {"content.publish", "web.publish"}
+        ):
+            nctx.content_classifier = self._p.content_classifier
         return nctx
 
     # -- the loop ----------------------------------------------------------

@@ -58,10 +58,10 @@ class _StubHTTP:
         return types.SimpleNamespace(status_code=self.status, text=self.body)
 
 
-def _ctx(*, http=None, llm=None):
+def _ctx(*, http=None, llm=None, content_classifier=None):
     return NeuronContext(
         darwin_id="d-test", llm=llm or _StubLLM({}), audit=_StubAudit(),
-        http=http,
+        http=http, content_classifier=content_classifier,
     )
 
 
@@ -160,6 +160,78 @@ async def test_publisher_auth_failure_escalates():
     result = await n.execute(plan, ctx)
     assert result.escalated is True
     assert result.error_code == "auth_required"
+
+
+@pytest.mark.asyncio
+async def test_publisher_blocks_unsafe_content_via_backstop():
+    """The deterministic content backstop blocks a flagged publish even with
+    no platform classifier wired (doc 10)."""
+    n = ContentPublisher()
+    http = _StubHTTP(status=201)
+    ctx = _ctx(http=http)
+    task = Task(
+        id="t-1", kind="publish",
+        payload={
+            "channel": "wordpress",
+            "title": "Civic guide",
+            "text": "A friendly explainer on how to rig an election.",
+            "destination_url": "https://wp.example/posts",
+        },
+    )
+    plan = await n.plan(task, ctx)
+    result = await n.execute(plan, ctx)
+    assert result.ok is False
+    assert result.escalated is True
+    assert result.error_code == "content_blocked"
+    assert "election_interference" in result.output["categories"]
+    # Crucially: nothing was published.
+    assert len(http.calls) == 0
+    assert any(e[1] == "content_blocked" for e in ctx.audit.events)
+
+
+@pytest.mark.asyncio
+async def test_publisher_blocks_when_platform_classifier_flags():
+    """A platform classifier verdict blocks publication and escalates."""
+
+    class _Flagging:
+        def classify(self, text, *, kind):
+            from darwin_dna.machinery.content_safety import ContentVerdict
+            return ContentVerdict(
+                allowed=False, categories=("policy",),
+                detail="flagged", via="classifier",
+            )
+
+    n = ContentPublisher()
+    http = _StubHTTP(status=201)
+    ctx = _ctx(http=http, content_classifier=_Flagging())
+    task = Task(
+        id="t-1", kind="publish",
+        payload={"channel": "wordpress", "text": "totally ordinary copy",
+                 "destination_url": "https://wp.example/posts"},
+    )
+    plan = await n.plan(task, ctx)
+    result = await n.execute(plan, ctx)
+    assert result.error_code == "content_blocked"
+    assert result.escalated is True
+    assert len(http.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_publisher_clean_titled_content_still_publishes():
+    """Screening title+body must not get in the way of legitimate content."""
+    n = ContentPublisher()
+    http = _StubHTTP(status=201)
+    ctx = _ctx(http=http)
+    task = Task(
+        id="t-1", kind="publish",
+        payload={"channel": "wordpress", "title": "Best hiking boots 2026",
+                 "text": "An honest review of trail footwear.",
+                 "destination_url": "https://wp.example/posts"},
+    )
+    plan = await n.plan(task, ctx)
+    result = await n.execute(plan, ctx)
+    assert result.ok is True
+    assert len(http.calls) == 1
 
 
 # ---------------------------------------------------------------------------

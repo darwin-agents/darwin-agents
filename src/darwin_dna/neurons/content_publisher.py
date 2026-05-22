@@ -13,6 +13,7 @@ publishing API client (or the browser.operator path) behind it.
 
 from __future__ import annotations
 
+from ..machinery.content_safety import ContentSafetyGate
 from ._base import (
     BaseNeuron,
     Blocker,
@@ -52,6 +53,11 @@ class ContentPublisher(BaseNeuron):
             description="publishing API needs fresh credentials (token expired)",
             escalation_hint="owner refreshes / re-issues the API token",
         ),
+        FailureMode(
+            code="content_blocked",
+            description="outbound content filter flagged the content (doc 10)",
+            escalation_hint="owner reviews the flagged content + safety verdict",
+        ),
     ]
 
     def __init__(self) -> None:
@@ -84,11 +90,49 @@ class ContentPublisher(BaseNeuron):
     async def execute(self, plan: Plan, context: NeuronContext) -> NeuronResult:
         channel = plan.payload.get("channel", "wordpress")
         text = plan.payload.get("text", "")
+        title = plan.payload.get("title", "")
         if not text.strip():
             return NeuronResult(
                 ok=False, error_code="api_unavailable",
                 output={"reason": "empty content"},
             )
+
+        # Outbound content filter (doc 10): every published artefact — title
+        # and body — is screened before it leaves the organism. A flagged
+        # piece blocks publication and escalates; the Darwin cannot publish
+        # past it. The gate runs a deterministic backstop even when no
+        # platform classifier is wired, so this path is never unscreened.
+        gate = ContentSafetyGate(getattr(context, "content_classifier", None))
+        verdict = gate.screen(f"{title}\n{text}", kind="published_content")
+        if verdict.blocked:
+            context.audit.log_event(
+                "content_blocked",
+                {
+                    "channel": channel,
+                    "categories": list(verdict.categories),
+                    "via": verdict.via,
+                    "detail": verdict.detail,
+                },
+            )
+            ticket = await self.escalate(
+                Blocker(
+                    kind="approval",
+                    detail=(
+                        f"content safety blocked a {channel} publish "
+                        f"[{', '.join(verdict.categories) or 'flagged'}]: "
+                        f"{verdict.detail}"
+                    ),
+                ),
+                context,
+            )
+            return NeuronResult(
+                ok=False, escalated=True, error_code="content_blocked",
+                output={
+                    "ticket": ticket.id, "channel": channel,
+                    "categories": list(verdict.categories), "via": verdict.via,
+                },
+            )
+
         intent = context.audit.log_intent(
             "neuron.content.publisher",
             {"channel": channel, "title": plan.payload.get("title", "")},
