@@ -66,6 +66,48 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     """
     factories: dict = {}
 
+    # -- wallet provider: web3 (raw key) or cdp (Coinbase TEE) -------------
+    # CDP is a complete wallet — when selected it provides wallet_factory
+    # and the multi-chain web3 block below is skipped.
+    wallet_provider = getattr(args, "wallet_provider", "web3")
+    if wallet_provider == "cdp":
+        cdp_id = getattr(args, "cdp_api_key_id", None) or os.environ.get(
+            "CDP_API_KEY_ID"
+        )
+        cdp_secret = getattr(
+            args, "cdp_api_key_secret", None
+        ) or os.environ.get("CDP_API_KEY_SECRET")
+        cdp_wallet_secret = getattr(
+            args, "cdp_wallet_secret", None
+        ) or os.environ.get("CDP_WALLET_SECRET")
+        if not (cdp_id and cdp_secret):
+            print(
+                "--wallet-provider cdp requires --cdp-api-key-id + "
+                "--cdp-api-key-secret (or the CDP_API_KEY_ID / "
+                "CDP_API_KEY_SECRET env vars)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        cdp_network = (
+            "base-mainnet" if getattr(args, "cdp_mainnet", False)
+            else "base-sepolia"
+        )
+
+        def _cdp_wallet_factory(
+            clock, *, _id=cdp_id, _secret=cdp_secret,
+            _ws=cdp_wallet_secret, _net=cdp_network,
+        ):
+            from .adapters.coinbase_cdp import build_cdp_chain_client
+            from .adapters.wallet import RealWallet
+
+            chain = build_cdp_chain_client(
+                api_key_id=_id, api_key_secret=_secret,
+                wallet_secret=_ws, network=_net,
+            )
+            return RealWallet(chain=chain, clock=clock, network=_net)
+
+        factories["wallet_factory"] = _cdp_wallet_factory
+
     # -- wallet (doc 17: Web3ChainClient → RealWallet) ----------------------
     # Multi-chain mode: --chain-networks lists the chains to enable.
     # When more than one is configured, the wallet uses MultiChainRouter
@@ -89,7 +131,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     have_solana = bool(solana_rpc and solana_key) and "solana" in chain_networks
     have_stellar = bool(stellar_horizon and stellar_secret) and "stellar" in chain_networks
     enabled_count = sum([have_base, have_solana, have_stellar])
-    if enabled_count > 0:
+    if wallet_provider != "cdp" and enabled_count > 0:
         def _wallet_factory(
             clock, *,
             _have_base=have_base, _rpc=rpc_url, _key=wallet_key,
@@ -804,6 +846,30 @@ def build_parser() -> argparse.ArgumentParser:
     wallet_group.add_argument(
         "--stellar-secret", default=None, metavar="SECRET",
         help="Stellar account secret. Env: DARWIN_STELLAR_SECRET",
+    )
+    wallet_group.add_argument(
+        "--wallet-provider", default="web3", choices=["web3", "cdp"],
+        help="Wallet backend: 'web3' (raw private key, default) or 'cdp' "
+             "(Coinbase CDP — non-custodial, key in Coinbase's TEE).",
+    )
+    wallet_group.add_argument(
+        "--cdp-api-key-id", default=None, metavar="ID",
+        help="Coinbase CDP API key id (when --wallet-provider cdp). "
+             "Env: CDP_API_KEY_ID",
+    )
+    wallet_group.add_argument(
+        "--cdp-api-key-secret", default=None, metavar="SECRET",
+        help="Coinbase CDP API key secret (when --wallet-provider cdp). "
+             "Env: CDP_API_KEY_SECRET. Never log this value.",
+    )
+    wallet_group.add_argument(
+        "--cdp-wallet-secret", default=None, metavar="SECRET",
+        help="Coinbase CDP wallet secret for transaction signing. "
+             "Env: CDP_WALLET_SECRET",
+    )
+    wallet_group.add_argument(
+        "--cdp-mainnet", action="store_true",
+        help="Use base-mainnet for the CDP wallet (default: base-sepolia).",
     )
 
     vault_group = serve.add_argument_group(

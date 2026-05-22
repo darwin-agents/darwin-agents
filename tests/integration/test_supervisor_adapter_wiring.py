@@ -477,3 +477,44 @@ def test_fiat_api_key_falls_back_to_env(monkeypatch):
     assert isinstance(
         _build_platform_services(args)["fiat_ramp"], MoonPayFiatRamp
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. CLI _build_real_factories — Coinbase CDP wallet (P2, doc 17)
+# ---------------------------------------------------------------------------
+
+def test_build_factories_cdp_wallet():
+    from darwin_platform.__main__ import _build_real_factories
+    result = _build_real_factories(_make_args(
+        wallet_provider="cdp",
+        cdp_api_key_id="cdp-id", cdp_api_key_secret="cdp-secret",
+        cdp_wallet_secret=None, cdp_mainnet=False,
+    ))
+    assert "wallet_factory" in result
+    assert "x402_factory" in result  # auto-wired when the wallet is real
+
+
+def test_build_factories_cdp_requires_credentials(monkeypatch):
+    from darwin_platform.__main__ import _build_real_factories
+    monkeypatch.delenv("CDP_API_KEY_ID", raising=False)
+    monkeypatch.delenv("CDP_API_KEY_SECRET", raising=False)
+    with pytest.raises(SystemExit):
+        _build_real_factories(_make_args(
+            wallet_provider="cdp",
+            cdp_api_key_id=None, cdp_api_key_secret=None,
+            cdp_wallet_secret=None, cdp_mainnet=False,
+        ))
+
+
+def test_build_factories_cdp_excludes_web3_chains():
+    # With --wallet-provider cdp the multi-chain web3 block is skipped even
+    # if base RPC flags are also present.
+    from darwin_platform.__main__ import _build_real_factories
+    result = _build_real_factories(_make_args(
+        wallet_provider="cdp",
+        cdp_api_key_id="cdp-id", cdp_api_key_secret="cdp-secret",
+        cdp_wallet_secret=None, cdp_mainnet=False,
+        rpc_url="https://sepolia.base.org", wallet_key="0xdeadbeef",
+    ))
+    # one wallet_factory — the CDP one; no crash from the web3 path.
+    assert "wallet_factory" in result
