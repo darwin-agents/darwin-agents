@@ -52,6 +52,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _build_real_factories(args: argparse.Namespace) -> dict:
@@ -417,6 +418,9 @@ def _serve(args: argparse.Namespace) -> int:
         )
         return 2
 
+    supervisor_kwargs: dict[str, Any] = {}
+    if args.heartbeat_seconds is not None:
+        supervisor_kwargs["heartbeat_seconds"] = float(args.heartbeat_seconds)
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
@@ -424,6 +428,7 @@ def _serve(args: argparse.Namespace) -> int:
         notification_sink=notification_sink,
         alert_sink=alert_sink,
         k8s_driver=k8s_driver,
+        **supervisor_kwargs,
         **(real_factories if k8s_driver is None else {}),
     )
 
@@ -479,6 +484,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--port", default=8000, type=int, help="Bind port (default: 8000)",
+    )
+    serve.add_argument(
+        "--heartbeat-seconds", default=None, type=float,
+        help=(
+            "Gap between per-Darwin heartbeats (default: 0.001 — as fast "
+            "as the event loop allows). Set to a realistic value "
+            "(e.g. 600) for a soak test so the audit log grows at a "
+            "production pace."
+        ),
     )
     serve.add_argument(
         "--db", default=None,
