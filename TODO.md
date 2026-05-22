@@ -92,8 +92,12 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
       factory (all 5 tiers mapped to `openai/tier-*`); covered by `test_platform_wiring`.
       Per-Darwin virtual keys + a reconciliation worker are a deferred enhancement —
       per-Darwin LLM cost is already enforced wallet-side. Docs 11–13. _(done 2026-05-22)_
-- [ ] **Redis / ElastiCache** — LiteLLM rate-limit + prompt cache, session locks.
-      Docs 11, 13, 19.
+- [x] **Redis** — `redis` service in the Compose stack; the LiteLLM proxy is
+      configured for a Redis-backed response cache + cross-replica rate limits
+      (`litellm.config.yaml` `cache_params`). Service + config, not a Python
+      adapter — the platform's own Python has no Redis need (single-writer
+      supervisor; leader election uses Postgres advisory locks; "session locks"
+      from the doc aren't required). Docs 11, 13, 19. _(done 2026-05-22)_
 - [ ] **AWS Bedrock AgentCore Payments** — secondary payment rail, absent entirely.
       Docs 05, 11, 17.
 - [x] **Clerk auth** — `ClerkVerifier` verifies Clerk RS256 JWTs against the JWKS;
