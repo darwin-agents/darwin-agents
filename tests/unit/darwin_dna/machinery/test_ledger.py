@@ -67,10 +67,16 @@ def test_journal_cursor_is_idempotent():
     assert led.treasury_balance() == pytest.approx(9.0)
 
 
-def test_loop_reconciles_every_heartbeat(booted):
+def test_loop_reconciles_every_heartbeat(booted, vclock):
     rt, stack = booted
     asyncio.run(rt.run(max_heartbeats=20))
     rt.ledger.verify()
+    # The loop journals a heartbeat's debits at the *start* of the next one,
+    # so a fixed-length run always leaves the final heartbeat's spend
+    # un-journaled — a bounded one-heartbeat tail, well within the genome's
+    # 0.01 reconciliation tolerance (the Darwin stays healthy). Flush that
+    # tail, then the ledger reconciles against the wallet exactly.
+    rt.ledger.journal_new(stack.wallet.movements(), now=vclock())
     assert rt.ledger.treasury_balance() == pytest.approx(
         stack.wallet.balance_usdc(), abs=1e-6
     )

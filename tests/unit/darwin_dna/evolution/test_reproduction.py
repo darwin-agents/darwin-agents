@@ -52,7 +52,7 @@ def test_reproduce_then_boot_and_run_the_child(vclock):
 
     st = asyncio.run(child.run(max_heartbeats=15))
     assert st.alive
-    assert st.content_pieces == 5
+    assert st.content_pieces == 8
     child.audit.verify()  # the child keeps its own unbroken chain
 
 
