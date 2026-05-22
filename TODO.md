@@ -114,7 +114,11 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 - [x] **Modal / Northflank** — secondary sandbox runtimes. **Won't do (decision
       2026-05-22)** — E2B covers per-neuron sandboxing; a secondary runtime is only
       for GPU/batch work Darwin doesn't do yet. Doc 14.
-- [ ] **Twilio** — 2FA/SMS code handling for `accounts.manager`. Doc 15.
+- [x] **Twilio** — `TwilioSmsClient` is the platform's SMS 2FA inbox: reads inbound
+      texts to a platform-owned Twilio number and extracts the verification code.
+      `--twilio-*` flags build it; `GET /platform/sms/verification-code` (operator
+      scope) reads codes to answer `accounts.manager` 2FA escalations. Doc 15.
+      +13 tests. → `src/darwin_platform/adapters/twilio_sms.py` _(done 2026-05-22)_
 - [ ] **PagerDuty client + CloudWatch sink** — `--pagerduty-routing-key` flag exists,
       no client; logging is structlog-only. Doc 22.
 - [ ] **Real LanceDB client** — K8s sidecar is provisioned; genome memory uses
