@@ -16,14 +16,20 @@ and tracing.
 
 ## Quickstart
 
+All `docker compose` commands run from this `docker/` directory (that is
+where `docker-compose.yml` lives, and Compose auto-loads `./.env` from
+there).
+
 ```bash
+cd docker
+
 # 1. (Optional) Seed provider API keys so LiteLLM works.
-cp docker/.env.example docker/.env
-$EDITOR docker/.env
+cp .env.example .env
+$EDITOR .env
 
 # 2. (Optional) Enable bearer auth on the supervisor.
-cp docker/tokens.example.json docker/tokens.json
-# Then uncomment the tokens.json mount + --auth-tokens line in
+cp tokens.example.json tokens.json
+# Then uncomment the tokens.json mount + --auth-tokens lines in
 # docker-compose.yml.
 
 # 3. Start the stack.

@@ -1,0 +1,135 @@
+# Local dev stack for the Darwin platform (docs/engineering/20 §"Docker Compose").
+#
+# One command brings up the supervisor, persistence, an LLM gateway,
+# metrics, and tracing:
+#
+#     cd docker && docker compose up --build
+#
+# Compose auto-loads ./.env (copy it from .env.example) for the ${...}
+# substitutions below. Everything has a dev-only default so the stack
+# comes up even with no .env at all — see docker/README.md.
+
+name: darwin-platform
+
+services:
+  # -- supervisor: the FastAPI control plane + per-Darwin drive loop ----
+  supervisor:
+    build:
+      # Context is the repo root so the Dockerfile's COPY of pyproject /
+      # uv.lock / src reaches the actual sources; the Dockerfile path is
+      # resolved relative to that context.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: darwin-platform:dev
+    container_name: darwin-supervisor
+    ports:
+      - "8000:8000"
+    volumes:
+      - supervisor-data:/data
+      # Bearer-token auth (off by default — the API trusts every caller).
+      # To enable: `cp tokens.example.json tokens.json`, uncomment this
+      # mount AND the --auth-tokens lines in `command:` below.
+      # - ./tokens.json:/run/secrets/tokens.json:ro
+    command:
+      - python
+      - -m
+      - darwin_platform
+      - serve
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      # Persistence — SQLite by default (restart-survivable via the
+      # supervisor-data volume). To use the bundled Postgres instead,
+      # comment the two SQLite lines below and uncomment the two
+      # Postgres lines.
+      - --db
+      - /data/state.db
+      # - --db
+      # - postgresql://${POSTGRES_USER:-darwin}:${POSTGRES_PASSWORD:-dev_only_password}@postgres:5432/${POSTGRES_DB:-darwin}
+      # Auth — uncomment together with the tokens.json mount above.
+      # - --auth-tokens
+      # - /run/secrets/tokens.json
+    depends_on:
+      # Ordering only — the default SQLite mode does not need Postgres,
+      # but waiting for it to be healthy means switching --db to the
+      # postgresql:// line above "just works" with no further changes.
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    # The image already declares a /healthz HEALTHCHECK; Compose inherits it.
+
+  # -- postgres: optional restart-survivable backend --------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: darwin-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-darwin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_only_password}
+      POSTGRES_DB: ${POSTGRES_DB:-darwin}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-darwin} -d ${POSTGRES_DB:-darwin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # -- litellm: real LLM gateway (doc 13) ------------------------------
+  # Available on :4000 for experimentation. NOTE: the supervisor runs
+  # against the deterministic FakeLLM by default — there is no
+  # --litellm-url wiring yet (doc 20 adapter matrix marks it "future"),
+  # so this service is provided but not auto-consumed.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: darwin-litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      # Provider keys for the model_list in litellm.config.yaml. Empty
+      # when no .env is present — litellm still boots; model calls fail.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    restart: unless-stopped
+
+  # -- prometheus: scrapes supervisor /metrics every 15s ---------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: darwin-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - supervisor
+    restart: unless-stopped
+
+  # -- jaeger: OpenTelemetry trace UI ----------------------------------
+  # Receives OTLP on 4317 (gRPC) / 4318 (HTTP); UI on 16686. NOTE: the
+  # supervisor's tracing module stays a NoOp until code wires an OTLP
+  # exporter at startup (see observability/tracing.py) — Jaeger is in the
+  # stack per doc 20, but no spans flow to it yet.
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: darwin-jaeger
+    ports:
+      - "16686:16686"   # web UI
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+
+volumes:
+  supervisor-data:
+  postgres-data:
+  prometheus-data:
