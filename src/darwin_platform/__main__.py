@@ -724,6 +724,28 @@ def _serve(args: argparse.Namespace) -> int:
             )
         token_store = store
 
+    # Clerk auth — an alternative to --auth-tokens. When a Clerk issuer or
+    # JWKS URL is configured, bearer tokens are verified as Clerk JWTs.
+    if token_store is None:
+        clerk_issuer = getattr(args, "clerk_issuer", None) or os.environ.get(
+            "CLERK_ISSUER"
+        )
+        clerk_jwks_url = getattr(
+            args, "clerk_jwks_url", None
+        ) or os.environ.get("CLERK_JWKS_URL")
+        if clerk_issuer or clerk_jwks_url:
+            from .security.clerk import ClerkTokenStore, ClerkVerifier
+
+            verifier = ClerkVerifier(
+                jwks_url=clerk_jwks_url,
+                issuer=clerk_issuer,
+                audience=(
+                    getattr(args, "clerk_audience", None)
+                    or os.environ.get("CLERK_AUDIENCE")
+                ),
+            )
+            token_store = ClerkTokenStore(verifier=verifier)
+
     app = build_app(sup, token_store=token_store)
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -797,6 +819,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--leader-lock-key", default=None,
         help="Override the default lock key (BIGINT). Used to isolate "
         "platform releases sharing one Postgres instance.",
+    )
+
+    clerk_group = serve.add_argument_group(
+        "Clerk auth (doc 08)",
+        "Verify control-plane bearer tokens as Clerk-issued RS256 JWTs "
+        "against Clerk's JWKS. An alternative to --auth-tokens; both are "
+        "optional (no auth configured = trust every caller — dev only).",
+    )
+    clerk_group.add_argument(
+        "--clerk-issuer", default=None, metavar="URL",
+        help="Clerk issuer URL — the JWKS is derived as "
+             "<issuer>/.well-known/jwks.json. Env: CLERK_ISSUER",
+    )
+    clerk_group.add_argument(
+        "--clerk-jwks-url", default=None, metavar="URL",
+        help="Clerk JWKS URL (overrides the issuer-derived default). "
+             "Env: CLERK_JWKS_URL",
+    )
+    clerk_group.add_argument(
+        "--clerk-audience", default=None, metavar="AUD",
+        help="Expected JWT 'aud' claim (optional). Env: CLERK_AUDIENCE",
     )
 
     # -- real provider flags (docs 14-17) ------------------------------------
