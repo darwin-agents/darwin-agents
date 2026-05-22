@@ -77,29 +77,40 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
 ## P2 — Third-party integrations (named in docs, no adapter)
 
+- [x] **Fiat ramp wiring — Stripe + MoonPay** — the `StripeFiatRamp` / `MoonPayFiatRamp`
+      adapters are now CLI-wired: `--fiat-provider {stub,stripe,moonpay}` +
+      `STRIPE_API_KEY` / `MOONPAY_API_KEY`, built in `_build_platform_services` and
+      passed to the Supervisor. Doc 17. +6 tests. _(done 2026-05-22)_
 - [ ] **Coinbase CDP / Agentic Wallet** — currently a generic `RealWallet` over
       `Web3ChainClient` (web3.py, local key signing); no CDP SDK, no TEE.
       Docs 05, 07, 11, 17.
-- [ ] **LiteLLM self-hosted proxy** — adapter calls `litellm.completion` in-process;
-      no proxy URL, no per-Darwin virtual keys, no reconciliation worker. Docs 11–13.
+- [x] **LiteLLM self-hosted proxy** — `--litellm-url` / `--litellm-master-key` route
+      every genome LLM call through a self-hosted proxy via a `LiteLLMTransport`
+      factory (all 5 tiers mapped to `openai/tier-*`); covered by `test_platform_wiring`.
+      Per-Darwin virtual keys + a reconciliation worker are a deferred enhancement —
+      per-Darwin LLM cost is already enforced wallet-side. Docs 11–13. _(done 2026-05-22)_
 - [ ] **Redis / ElastiCache** — LiteLLM rate-limit + prompt cache, session locks.
       Docs 11, 13, 19.
 - [ ] **AWS Bedrock AgentCore Payments** — secondary payment rail, absent entirely.
       Docs 05, 11, 17.
-- [ ] **Clerk / WorkOS auth** — platform still uses an in-memory bearer-token store.
-      Docs 08, 11, 22.
+- [ ] **Clerk auth** — Clerk JWT/JWKS verification for the control-plane API (Clerk
+      chosen over WorkOS, decision 2026-05-22); platform still uses an in-memory
+      bearer-token store. Docs 08, 11, 22.
 - [ ] **Onfido KYC** — second provider; only `PersonaKYCProvider` exists. Docs 11, 16.
 - [ ] **Temporal** — durable billing/harvest/reproduce jobs; runs in-process now.
       Docs 11, 19.
-- [ ] **Modal / Northflank** — secondary sandbox runtimes; only E2B. Doc 14.
+- [x] **Modal / Northflank** — secondary sandbox runtimes. **Won't do (decision
+      2026-05-22)** — E2B covers per-neuron sandboxing; a secondary runtime is only
+      for GPU/batch work Darwin doesn't do yet. Doc 14.
 - [ ] **Twilio** — 2FA/SMS code handling for `accounts.manager`. Doc 15.
 - [ ] **PagerDuty client + CloudWatch sink** — `--pagerduty-routing-key` flag exists,
       no client; logging is structlog-only. Doc 22.
 - [ ] **Real LanceDB client** — K8s sidecar is provisioned; genome memory uses
       in-process deterministic recall. Docs 03, 07, 11, 19.
-- [ ] **LangGraph native features** — custom `PersistentCheckpointStore` instead of
-      `PostgresSaver`; escalation is state-routing, not `interrupt()`; no time-travel
-      or fan-out reducer. Doc 12.
+- [x] **LangGraph native features** — **Won't do (decision 2026-05-22)** — the custom
+      `PersistentCheckpointStore` + state-routing works and is fully tested;
+      converting to LangGraph-native (`PostgresSaver`, `interrupt()`, time-travel) is
+      churn with no behaviour gain. Doc 12.
 
 ## P3 — Frontend & infrastructure (never started)
 
