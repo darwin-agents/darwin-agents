@@ -16,6 +16,7 @@ The documentation is split into two folders. Read `overview/` first for the idea
 |---|---|
 | [`overview/`](.) | The global idea and the docs that aren't strictly the deployable core: the pitch, vision & metaphor, design principles, prior art, market landscape, legal/ToS, the phased roadmap, and platform deployment & infrastructure. |
 | [`engineering/`](../engineering/) | The technical design of the core Darwin agent: system architecture, DNA core, soma & orchestrator, neurons, treasury & payments, evolution & reproduction, isolation & multi-tenancy, the platform control plane, kill-switch and anti-wireheading mechanics, the full tech stack, the Layer 0 build plan, and system diagrams. |
+| [`frontend/`](../frontend/) | The Next.js dashboard and Expo escalation app: screens, Anatomy/Timeline canvases, API integration, auth, and phased delivery. |
 
 ### `overview/`
 

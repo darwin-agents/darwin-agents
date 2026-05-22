@@ -4,22 +4,22 @@
 
 Darwin is, deliberately, a biological metaphor pushed as far as it will go in software.
 
-| Biology | Darwin |
-|---|---|
-| Genome | The immutable DNA core (Python package, signed, never modified by the agent) |
-| Soma (body) | The mutable agent code the DNA generates and refines at runtime |
-| Cells / organs | Neurons — specialized worker sub-agents (content, ads, accounts, browser, trading, support) |
-| Metabolism | LLM tokens, compute, third-party APIs, ad spend, subscriptions — anything that costs money |
-| Food | Revenue from the online businesses the neurons run |
-| Hunger | Falling treasury balance, approaching minimum viable balance |
-| Death | Treasury hits zero before next revenue cycle, or owner pulls the kill-switch |
-| Reproduction | A profitable Darwin spawns a child whose DNA is parent's DNA + a new sealed layer of learned code |
-| Generation | Each successful reproduction event increments the lineage's generation counter |
-| Mutation | Mid-life code rewrites the agent performs on its own soma to adapt |
-| Natural selection | Unprofitable Darwins die; only profitable ones reproduce. The fittest lineage propagates |
-| Supernatural intervention | The human owner — solves captchas, uploads KYC docs, approves high-stakes actions |
+| Biology                   | Darwin                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------- |
+| Genome                    | The immutable DNA core (Python package, signed, never modified by the agent)                      |
+| Soma (body)               | The mutable agent code the DNA generates and refines at runtime                                   |
+| Cells / organs            | Neurons — specialized worker sub-agents (content, ads, accounts, browser, trading, support)       |
+| Metabolism                | LLM tokens, compute, third-party APIs, ad spend, subscriptions — anything that costs money        |
+| Food                      | Revenue from the online businesses the neurons run                                                |
+| Hunger                    | Falling treasury balance, approaching minimum viable balance                                      |
+| Death                     | Treasury hits zero before next revenue cycle, or owner pulls the kill-switch                      |
+| Reproduction              | A profitable Darwin spawns a child whose DNA is parent's DNA + a new sealed layer of learned code |
+| Generation                | Each successful reproduction event increments the lineage's generation counter                    |
+| Mutation                  | Mid-life code rewrites the agent performs on its own soma to adapt                                |
+| Natural selection         | Unprofitable Darwins die; only profitable ones reproduce. The fittest lineage propagates          |
+| Supernatural intervention | The human owner — solves captchas, uploads KYC docs, approves high-stakes actions                 |
 
-The metaphor is load-bearing, not decorative. Every design decision should be checkable against it: *what is the biological analogue, and does our implementation honor it?* Where the analogy breaks down, we name it (e.g. there is no biological equivalent of a kill-switch; we have one anyway because we're operating in human society).
+The metaphor is load-bearing, not decorative. Every design decision should be checkable against it: _what is the biological analogue, and does our implementation honor it?_ Where the analogy breaks down, we name it (e.g. there is no biological equivalent of a kill-switch; we have one anyway because we're operating in human society).
 
 ## Why an organism, not just an agent
 
@@ -46,7 +46,7 @@ If both propositions hold, Darwin is a new kind of digital labor: small, owned, 
 To save discussion later, explicit non-goals:
 
 - **Not AGI.** Darwins are narrow agents — they orchestrate online business operations. They don't reason about physics or invent new science. The "evolution" is over agent code and neuron behavior, not over the underlying foundation model.
-- **Not a get-rich-quick scheme.** Most Darwins will die. This is by design — selection pressure requires that failure be real. The platform's value proposition is that the *successful lineages* compound into something useful, not that every individual launch makes money.
+- **Not a get-rich-quick scheme.** Most Darwins will die. This is by design — selection pressure requires that failure be real. The platform's value proposition is that the _successful lineages_ compound into something useful, not that every individual launch makes money.
 - **Not unsupervised.** The owner is part of the system. Darwin escalates captchas, KYC, identity-bound actions, and any spend above a configurable threshold. "Fully autonomous" is a marketing fantasy; "as autonomous as is currently legal and feasible" is the real goal.
 - **Not jurisdiction-blind.** The platform will operate under specific terms of service and a defined set of allowed business categories. See [`05-legal-and-tos.md`](05-legal-and-tos.md).
 - **Not anonymous.** Every Darwin is bound to a verified human principal. This is required by every payment rail it touches (Coinbase, Stripe, banks) and by anti-money-laundering law everywhere we plan to launch.
@@ -63,6 +63,7 @@ From the user's perspective:
    - The **Timeline** canvas — a horizontal chronological feed of every "movement" the Darwin makes: reasoning, LLM calls, tool/neuron invocations, payments, escalations.
 
    Around them: treasury balance, current strategy, revenue stream, lineage tree, open escalations, and a data browser into the Darwin's own databases.
+
 5. **Help.** When the Darwin is blocked on a captcha or asks for documents, the user gets a push notification and resolves it from the dashboard or mobile app.
 6. **Harvest** (optional). Profit above a configurable reserve can be auto-withdrawn to the user's bank or wallet.
 7. **Mourn or celebrate.** When the Darwin dies, the user sees its full lifetime ledger and lineage. If it reproduced before dying, the children continue.

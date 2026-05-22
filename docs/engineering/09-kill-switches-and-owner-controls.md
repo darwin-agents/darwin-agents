@@ -1,6 +1,6 @@
 # Kill switches and owner controls
 
-Most of this work is *operational*, not architectural. The architecture has been designed for these controls; this doc says how they work in practice and how they get exercised.
+Most of this work is _operational_, not architectural. The architecture has been designed for these controls; this doc says how they work in practice and how they get exercised.
 
 ## Three kill triggers, three latencies
 
@@ -39,15 +39,15 @@ In all three cases, the **graceful shutdown invariant** holds: the Darwin halts 
 
 Before reaching kill, the supervisor escalates through five graded levels. Most Darwin issues never reach kill.
 
-| Level | Trigger | Response | User-visible? |
-|---|---|---|---|
-| 1. Log + dashboard warning | Mild anomaly (single-event spike) | Annotated in event log; yellow badge on dashboard | Yes (passive) |
-| 2. Throttle | Sustained anomaly above threshold | Rate-limit the offending resource (LLM calls, sandbox spawns, egress bandwidth) | Yes (passive) |
-| 3. Pause | Anomaly persists or escalates | Set `pause_flag=true`; orchestrator halts at next checkpoint; await owner decision | Yes (active — notification) |
-| 4. Quarantine | Confirmed policy issue or compliance trigger | Pause + lock the Darwin's wallet + lock outbound network; supervise-side review begins | Yes (active — high-priority notification, "your Darwin is under review") |
-| 5. Kill | Unrecoverable issue or quarantine review confirms violation | Permanent halt as above | Yes (final notification with reason) |
+| Level                      | Trigger                                                     | Response                                                                               | User-visible?                                                            |
+| -------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| 1. Log + dashboard warning | Mild anomaly (single-event spike)                           | Annotated in event log; yellow badge on dashboard                                      | Yes (passive)                                                            |
+| 2. Throttle                | Sustained anomaly above threshold                           | Rate-limit the offending resource (LLM calls, sandbox spawns, egress bandwidth)        | Yes (passive)                                                            |
+| 3. Pause                   | Anomaly persists or escalates                               | Set `pause_flag=true`; orchestrator halts at next checkpoint; await owner decision     | Yes (active — notification)                                              |
+| 4. Quarantine              | Confirmed policy issue or compliance trigger                | Pause + lock the Darwin's wallet + lock outbound network; supervise-side review begins | Yes (active — high-priority notification, "your Darwin is under review") |
+| 5. Kill                    | Unrecoverable issue or quarantine review confirms violation | Permanent halt as above                                                                | Yes (final notification with reason)                                     |
 
-The supervisor only auto-escalates *up* to level 4. Level 5 (kill) on the platform side always requires a human operator approval — never auto-fired, even for confirmed policy violations. This is deliberate: an auto-kill bug would be catastrophic across the fleet.
+The supervisor only auto-escalates _up_ to level 4. Level 5 (kill) on the platform side always requires a human operator approval — never auto-fired, even for confirmed policy violations. This is deliberate: an auto-kill bug would be catastrophic across the fleet.
 
 Self-kill is the exception — it doesn't go through grading; it goes directly to graceful death because the trigger is "the agent has no money left".
 
@@ -56,29 +56,35 @@ Self-kill is the exception — it doesn't go through grading; it goes directly t
 The user has more granular controls than just "kill". From the dashboard or mobile app:
 
 ### Lifecycle
+
 - **Pause / Resume.** Take a coffee break; come back. The Darwin halts at next checkpoint and resumes cleanly.
 - **Terminate.** Permanent. Confirmation required.
 
 ### Budget
+
 - **Tighten hard caps.** Lower the per-action / per-day / lifetime spend ceilings below the DNA's hard cap (cannot raise them).
 - **Adjust strategy budget envelope.** Force the Darwin to spend less on a specific strategy.
 - **Pause spending entirely.** A "spend lock" flag that refuses all outbound payments but lets the Darwin keep running otherwise (useful while debugging).
 
 ### Capabilities
+
 - **Disable a neuron.** "Don't use the ads.manager neuron right now." The Darwin replans without it.
 - **Disable a category.** "Don't pursue affiliate strategies for the next 24 hours." Tactical control.
 - **Force escalation lowering.** "Escalate to me on every spend over $1." (Cannot raise the escalation threshold above the DNA's default — escalation is one-way relaxable, not strengthenable.)
 
 ### Reproduction
+
 - **Block reproduction.** The Darwin can keep running and earning, but cannot spawn children. Useful if the user wants a stable single Darwin without lineage.
 - **Force reproduction.** Trigger a reproduction event now, even if the fitness threshold hasn't been crossed. Useful for testing or for "harvesting" lessons before the parent dies.
 - **Force compaction.** For deep lineages, manually trigger the layer compaction step.
 
 ### Vault
+
 - **Revoke a credential.** Removes the entry; the next neuron that needs it escalates.
 - **Mark sensitive.** Promote a `tier=scoped` entry to `tier=sensitive`, requiring fresh escalation on every read.
 
 ### Harvest
+
 - **Set/change harvest rule.** "Move profits above $X to my external wallet on schedule Y."
 - **Force harvest now.** Move everything above the minimum viable balance.
 
@@ -102,9 +108,10 @@ A killed Darwin cannot be resurrected. The death is permanent.
 
 This is deliberate. Resurrection breaks the selection-pressure model and creates a category of "almost dead" agents that are neither living nor dead. It also creates a regulatory mess (does the resurrected Darwin inherit the dead Darwin's transaction history?).
 
-What the user *can* do:
+What the user _can_ do:
+
 - **Spawn a new Darwin** with a fresh budget. Genesis 0, no inherited lessons.
-- **Spawn a new Darwin from an archived snapshot,** if the dead Darwin was useful enough that we wanted to preserve its lineage. This is a *new* Darwin (new ID, new wallet) but with the parent's DNA + lessons up to the moment of death. It's a normal post-mortem reproduction event; we just allow it for an already-dead parent within a 30-day window.
+- **Spawn a new Darwin from an archived snapshot,** if the dead Darwin was useful enough that we wanted to preserve its lineage. This is a _new_ Darwin (new ID, new wallet) but with the parent's DNA + lessons up to the moment of death. It's a normal post-mortem reproduction event; we just allow it for an already-dead parent within a 30-day window.
 - **Inherit the dead Darwin's accounts and databases.** These are in the user's vault and survive death. The new Darwin can pick up where the old one left off — same WordPress site, same Stripe Connect, same subscriber list. The biological metaphor breaks here; we lean into it for usability.
 
 ## The platform's commitments to users
@@ -131,14 +138,14 @@ Equally plainly:
 
 Things we will practice on a schedule:
 
-| Drill | Frequency | What we verify |
-|---|---|---|
-| Kill-switch fire (single Darwin) | Weekly in staging, monthly in prod | < 5s latency, clean death sequence, audit trail complete |
-| Fleet-wide pause | Monthly in staging, quarterly in prod | Supervisor can pause all Darwins without losing state |
-| DR failover (region) | Quarterly in staging | RTO 4 hours, RPO 15 minutes |
-| Vault sealing + unsealing | Quarterly | Procedure works, runbook is current |
-| Pen-test of tenant isolation | Annually (external) | No cross-tenant data leakage |
-| Incident response | Quarterly tabletop | Team knows roles, runbooks current |
+| Drill                            | Frequency                             | What we verify                                           |
+| -------------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| Kill-switch fire (single Darwin) | Weekly in staging, monthly in prod    | < 5s latency, clean death sequence, audit trail complete |
+| Fleet-wide pause                 | Monthly in staging, quarterly in prod | Supervisor can pause all Darwins without losing state    |
+| DR failover (region)             | Quarterly in staging                  | RTO 4 hours, RPO 15 minutes                              |
+| Vault sealing + unsealing        | Quarterly                             | Procedure works, runbook is current                      |
+| Pen-test of tenant isolation     | Annually (external)                   | No cross-tenant data leakage                             |
+| Incident response                | Quarterly tabletop                    | Team knows roles, runbooks current                       |
 
 Drills that fail block any new feature work until the underlying issue is fixed.
 

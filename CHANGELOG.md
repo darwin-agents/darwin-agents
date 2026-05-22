@@ -7,20 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-
 ### Added
-- chore(release): `make release` commits, tags, and pushes; opt out with `NO_COMMIT` / `NO_PUSH`
-- feat(cli): serve flags for OTLP, LiteLLM, Vault Transit signing, patch staging, and Phase 2 toggles
-- feat(observability): `configure_otlp_tracing` wires OTLP/HTTP exporter at serve startup
-- chore(deps): `opentelemetry-exporter-otlp-proto-http` on `[platform]` extra for Jaeger/OTLP tracing
-- docs: engineering backlog `TODO.md` from docs 01–30 audit
-- feat(tools): Phase 0 soak driver with six doc-20 acceptance-criterion assertions
-- feat(cli): `--heartbeat-seconds` on `serve` for soak and production pacing
-- test(integration): subprocess e2e smoke for `darwin-platform serve` (uvicorn + SQLite resume)
-- test(integration): soak assertion helpers and duration parser (CI without live server)
-- chore: Makefile, `cliff.toml`, and `scripts/changelog.py` for sync/release workflows
-- chore(docker): `docker/docker-compose.yml` stack; quickstart runs from `docker/`
-- docs: README quickstart via `make` and changelog release workflow
+
+- test(platform): assert quarantine state survives supervisor restart
+- feat(platform): wire serve CLI to Phase 1/2 services and OTLP tracing
+- feat(platform): add owner controls, quarantine persistence, and maintenance
+- feat(dna): add ContentSafetyGate for outbound publishes
+- feat(cli): add serve flags for OTLP, LiteLLM, and Phase 1/2 platform services
+- feat(observability): add configure_otlp_tracing for OTLP/HTTP span export
+- test(integration): add subprocess e2e smoke for darwin-platform serve
+- feat(tools): add Phase 0 soak driver with six acceptance-criterion assertions
+- feat(cli): add --heartbeat-seconds to serve for soak and production pacing
 - feat(tools): add evolution_test harness for Phase 1 criterion assertions
 - test(integration): add Phase 2 supervisor service wiring tests
 - test(integration): add Phase 1 API, evolution, and harness integration tests
@@ -40,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(platform): add sandboxed patch staging service for Phase 1 eval
 
 ### Changed
+
+- docs: expand README layout and mark P0 safety items done
+- docs: distinguish DNA release tags from repo semver in layer-zero plan
+- docs: cross-link Makefile in runbook, testing strategy, and test README
+- docs: expand changelog release table and cross-link Makefile in engineering index
+- docs: add engineering backlog TODO from docs 01–30 audit
+- docs: document Makefile, changelog workflow, and make-based quickstart
 - docs: document platform bounded-context layout and module paths
 - refactor(platform): re-export bounded contexts and update import sites
 - refactor(platform/infra): move egress proxy, throttle, and browser cache
@@ -52,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor(platform/runtime): move supervisor, persistence, and driver into runtime/
 
 ### Fixed
+
+- fix(dna): fail closed when kill-switch source is unreachable
 - style: clear ruff violations across platform, genome, and tests
 - ci: point postgres persistence job at reorganised test path
 

@@ -150,11 +150,11 @@ The Darwin dashboard has two centerpiece visualizations, designed to make a livi
 
 **Timeline (horizontal).** A chronological feed of every "movement" the Darwin makes: reasoning steps, LLM calls (with tier, model, latency, cost), tool/neuron invocations, payments, escalations, mutations, reproductions. Think: a unified observability/trace view but designed for humans, not engineers. Each entry is expandable for full detail. Filters by neuron, tier, category. This is the **what is it doing right now** view.
 
-The Timeline reads from the event log, with a fast indexed view per Darwin. Streaming updates over WebSocket so the user sees actions as they happen.
+The Timeline reads from the event log, with a fast indexed view per Darwin. Streaming updates over WebSocket so the user sees actions as they happen. See [`../frontend/06-timeline-canvas.md`](../frontend/06-timeline-canvas.md) and [`../frontend/07-realtime-websockets-and-caching.md`](../frontend/07-realtime-websockets-and-caching.md).
 
 **Anatomy (organism map).** A live, animated organism diagram showing the Darwin's structural shape. The orchestrator (the "first cell") sits in the center; neurons branch out as connected cells; active neurons pulse or glow; connections between neurons show in-flight data flow. As a Darwin self-modifies and adds new strategies or specialized neurons, the anatomy grows new branches. The lineage tree (parents above, children below) is a separate but related visualization accessible from this view. This is the **what does it look like** view.
 
-The Anatomy reads from the platform's view of the Darwin's current neuron registry, in-flight task graph (LangGraph state), and recent activity heatmap. Re-renders animate smoothly; new neurons appear with growth animations; dying neurons fade. Implementation will probably use D3 or React Flow with a force-directed layout — see the frontend-design notes when we get there.
+The Anatomy reads from the platform's view of the Darwin's current neuron registry, in-flight task graph (LangGraph state), and recent activity heatmap. Re-renders animate smoothly; new neurons appear with growth animations; dying neurons fade. Implementation will probably use D3 or React Flow with a force-directed layout — see [`../frontend/05-anatomy-canvas.md`](../frontend/05-anatomy-canvas.md).
 
 Together: the **Anatomy** answers "what is this organism", the **Timeline** answers "what is it doing". The two views are linked — clicking a neuron on the Anatomy filters the Timeline to that neuron's activity; clicking an action in the Timeline highlights the responsible neuron in the Anatomy.
 
@@ -177,17 +177,17 @@ The audit log is structurally separate from traces. Traces are sampled and rotat
 
 The `src/darwin_platform/` package is organised as bounded contexts. Each subpackage owns one concern and re-exports its public types via `__init__.py`. New code should prefer the subpackage path (`from darwin_platform.payments import BillingService`) over the top-level facade — the facade re-exports a curated subset for convenience, the subpackages are the source of truth.
 
-| Subpackage      | Owns                                                                                                                             |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime/`      | Per-Darwin lifecycle: `Supervisor`, `Orchestrator`, `DarwinDriver` Protocol, persistence, leader election.                       |
-| `tenancy/`      | Multi-tenant isolation: `NamespaceProvisioner` (K8s + Vault + DB), `ProvisioningService`, `VaultAdminService`, cross-pollination. |
-| `payments/`     | Money flow: `BillingService`, `OmnibusWallet`, `StripeRampService`, `HarvestScheduler`, sanctions screeners.                     |
-| `security/`     | `auth` (bearer tokens + scopes), `KYCService`, `PlatformSigner` + `KMSSigningService`, key rotation, vault watermarking.         |
-| `observability/`| `tracing`, `Monitor` + detectors, `OperatorAuditLog`, `DriftDetector`, `MerkleAnchorPublisher`, `snapshot`, notification + alert sinks. |
-| `escalations/`  | `EscalationRouter`, `NotificationSink` Protocol, `FCMNotificationSink` for mobile push.                                          |
-| `evolution/`    | Phase-1 sandboxed patch staging: `PatchStagingService`, `EvalRunner`. (Not to be confused with `darwin_dna.evolution`, the genome's reproduction machinery.) |
-| `infra/`        | Substrate-level resource controls: `egress_proxy` + `BandwidthQuota`, `ThrottleService`, `BrowserCacheService`.                  |
-| `adapters/`     | External-system adapters: `wallet`, `vault`, `browser`, `sandbox`, `litellm_transport`, `x402`, fiat ramps, chain SDKs.          |
-| `k8s/`          | K8s manifest builders + `K8sDarwinDriver`.                                                                                       |
+| Subpackage       | Owns                                                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `runtime/`       | Per-Darwin lifecycle: `Supervisor`, `Orchestrator`, `DarwinDriver` Protocol, persistence, leader election.                                                   |
+| `tenancy/`       | Multi-tenant isolation: `NamespaceProvisioner` (K8s + Vault + DB), `ProvisioningService`, `VaultAdminService`, cross-pollination.                            |
+| `payments/`      | Money flow: `BillingService`, `OmnibusWallet`, `StripeRampService`, `HarvestScheduler`, sanctions screeners.                                                 |
+| `security/`      | `auth` (bearer tokens + scopes), `KYCService`, `PlatformSigner` + `KMSSigningService`, key rotation, vault watermarking.                                     |
+| `observability/` | `tracing`, `Monitor` + detectors, `OperatorAuditLog`, `DriftDetector`, `MerkleAnchorPublisher`, `snapshot`, notification + alert sinks.                      |
+| `escalations/`   | `EscalationRouter`, `NotificationSink` Protocol, `FCMNotificationSink` for mobile push.                                                                      |
+| `evolution/`     | Phase-1 sandboxed patch staging: `PatchStagingService`, `EvalRunner`. (Not to be confused with `darwin_dna.evolution`, the genome's reproduction machinery.) |
+| `infra/`         | Substrate-level resource controls: `egress_proxy` + `BandwidthQuota`, `ThrottleService`, `BrowserCacheService`.                                              |
+| `adapters/`      | External-system adapters: `wallet`, `vault`, `browser`, `sandbox`, `litellm_transport`, `x402`, fiat ramps, chain SDKs.                                      |
+| `k8s/`           | K8s manifest builders + `K8sDarwinDriver`.                                                                                                                   |
 
 `api.py` (HTTP routes) and `__main__.py` (CLI entry point) stay at the package root since they cross-cut every subpackage.

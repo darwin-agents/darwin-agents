@@ -6,11 +6,12 @@ This is opinionated. We have a finite runway and an unproven core hypothesis ("a
 
 ## Phase 0 — Foundation (target: weeks 0–8)
 
-**Goal:** A single hand-built Darwin runs end-to-end in a sandbox, makes a few decisions, spends a few dollars, and writes a coherent ledger. No evolution yet. No multi-tenancy yet. We are proving the *plumbing*.
+**Goal:** A single hand-built Darwin runs end-to-end in a sandbox, makes a few decisions, spends a few dollars, and writes a coherent ledger. No evolution yet. No multi-tenancy yet. We are proving the _plumbing_.
 
 ### What we build
 
 **The Layer 0 founding genome (the most important code in the project):**
+
 - DNA package skeleton with signature verification, layer loading, kill-switch handler, audit logger, treasury policy engine
 - Founding orchestrator graph in LangGraph (perceive → plan → dispatch → reflect → check loops)
 - Three neurons: `content.writer`, `browser.operator`, `payments.facilitator`
@@ -20,6 +21,7 @@ This is opinionated. We have a finite runway and an unproven core hypothesis ("a
 See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-build-plan.md) for the concrete build plan of this piece.
 
 **The infrastructure substrate:**
+
 - A LiteLLM Proxy deployment in dev (single replica, Postgres-backed, a YAML model_list covering tier=fast/balanced/reasoning/coding/embed)
 - An E2B project, one orchestrator sandbox and one neuron sandbox profile
 - A single Postgres for both platform and Darwin data (we colocate in phase 0)
@@ -27,6 +29,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - A treasury — Coinbase Agentic Wallet in testnet (Base Sepolia) with mock USDC
 
 **A control plane skeleton:**
+
 - A FastAPI app exposing the supervisor's `spawn / pause / kill / status` endpoints
 - A trivial Next.js page that lists Darwins and shows the event log
 
@@ -53,6 +56,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 ### What we build
 
 **The self-modification engine:**
+
 - The `propose_mutation` node — coding-tier LLM proposes patches against the soma
 - The patch staging pipeline (fresh sandbox, copy soma, mount DNA read-only, apply patch)
 - The evaluation harness (in DNA, frozen): runs the proposed soma against replayed historical situations
@@ -60,17 +64,20 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - The archive — Postgres tables holding both promoted and rejected variants with their fitness scores
 
 **The reproduction event:**
+
 - Lesson distillation pass (structured lessons, not arbitrary code; see [`../engineering/06-evolution-and-reproduction.md`](../engineering/06-evolution-and-reproduction.md))
 - DNA layer signing service (platform-side, HSM-backed in prod; AWS KMS in this phase)
 - Child Darwin spawn — new wallet, new vault namespace, new event log, fresh soma + N+1 DNA layers
 - Lineage tree storage and basic visualization
 
 **Real economic activity (small):**
+
 - One realistic business archetype hard-coded in Layer 0's strategy priors: content + affiliate
 - Real LLM costs metered against a real treasury (now mainnet USDC on Base, funded from our test pool)
 - Real outputs: a content site running somewhere we control, affiliate links real, traffic synthetic
 
 **Extended neuron catalog:**
+
 - `content.publisher` — posts to WordPress
 - `accounts.manager` — handles signup with mandatory escalation on captchas
 - `analytics.measurer` — reads basic metrics
@@ -97,6 +104,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 ### What we build
 
 **Multi-tenancy hardening:**
+
 - Vault Enterprise (or HCP Vault) with one namespace per Darwin
 - Per-Darwin Postgres schemas with RLS; eventual move to per-Darwin DBs for organism data
 - Per-Darwin Kubernetes namespaces with NetworkPolicies
@@ -104,6 +112,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - E2B in prod with proper sandbox lifecycle (rotation, replacement, quotas)
 
 **The full payment stack:**
+
 - Stripe for fiat deposits (cards, ACH, SEPA)
 - KYC integration (Persona or Onfido — final pick by phase 2 kickoff)
 - Real Coinbase Agentic Wallet provisioning per Darwin (mainnet)
@@ -112,6 +121,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - Harvest rules — profit moves to user's verified wallet/bank on schedule
 
 **The user-facing dashboard:**
+
 - The **Anatomy** canvas — live organism visualization
 - The **Timeline** canvas — chronological feed
 - The Vault view — bidirectional, with provenance
@@ -120,6 +130,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - Lineage tree visualization
 
 **The supervisor in earnest:**
+
 - Resource quota enforcement
 - Anomaly detection (spend velocity, behavior drift, heartbeat health)
 - Graded response: log → throttle → pause → quarantine → kill
@@ -127,6 +138,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - Platform-side billing reconciliation
 
 **Operational maturity:**
+
 - Honeycomb tracing across the platform and Darwin telemetry
 - Audit log with daily Merkle anchoring to a public chain
 - Runbooks for the top 10 incident types we can foresee
@@ -146,7 +158,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 
 - Alpha users universally find the product confusing, useless, or distrustful
 - Tenant-isolation incident occurs that we can't fix structurally
-- Unit economics don't close: Darwin metabolism costs more than the platform's pass-through margin can cover, *and* no obvious optimization path
+- Unit economics don't close: Darwin metabolism costs more than the platform's pass-through margin can cover, _and_ no obvious optimization path
 
 ## Phase 3 — Public beta and beyond (target: weeks 28+)
 
@@ -155,12 +167,14 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 ### What we build (in rough priority order)
 
 **Public-launch readiness:**
+
 - Pricing, terms of service, privacy policy
 - Money transmitter posture (MTL, partnership, or non-custodial structuring — see [`05-legal-and-tos.md`](05-legal-and-tos.md))
 - Customer support tooling and escalation workflows for human-to-human issues
 - Marketing site, onboarding flows, fraud screening at signup
 
 **Capability expansion:**
+
 - `ads.manager` neuron with hard caps and mandatory owner pre-approval per campaign
 - `support.responder` neuron for the user's own community/inbox
 - Multimodal neurons: `content.image_creator`, `content.video_producer` (now that LiteLLM image/video gen is in play)
@@ -168,18 +182,21 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - `trading.operator` neuron — live financial/crypto market trading and prediction/betting-market positions, bounded by the Darwin's treasury hard caps and the kill switch
 
 **Architecture experiments:**
+
 - Cross-lineage learning prototype — anonymous lesson contribution to a curated pool, opt-in per user
 - Variation injection at reproduction (forced randomness magnitude calibration)
 - Compaction pass for deep lineages (gen 20+)
 - Owner-mediated mutation suggestions (do humans add value here, or do they degrade lineage fitness?)
 
 **Scale infrastructure:**
+
 - Split platform and organism Postgres into separate clusters
 - Multi-region deployment for users outside the launch region
 - Cost-driven LLM routing optimization (LiteLLM's cost-based routing + our per-strategy budgets)
 - Sandbox-fleet autoscaling
 
 **Phase-3 things we deliberately defer:**
+
 - Sexual reproduction across Darwins
 - Path C neuron generation (Darwins writing entirely new neuron classes)
 
@@ -203,7 +220,7 @@ Some work doesn't fit neatly in a phase — it runs continuously.
 
 ### Layer 0 evolution
 
-Layer 0 is *the* founding code. We will spend phases 0–2 refining it based on what running Darwins teach us. A Layer 0 update doesn't apply to existing Darwins (their DNA is immutable); it applies to *newly spawned* Darwins. We version Layer 0 semantically (`L0-v1.0.0`, `L0-v1.1.0`, etc.) and treat each version as a deliberate release.
+Layer 0 is _the_ founding code. We will spend phases 0–2 refining it based on what running Darwins teach us. A Layer 0 update doesn't apply to existing Darwins (their DNA is immutable); it applies to _newly spawned_ Darwins. We version Layer 0 semantically (`L0-v1.0.0`, `L0-v1.1.0`, etc.) and treat each version as a deliberate release.
 
 ### Infrastructure-as-code
 
@@ -215,7 +232,7 @@ This doc tree is treated as a deliverable, not a journal. A change to architectu
 
 ### Eval harness for Darwin behavior
 
-Throughout all phases, we maintain a simulated environment for testing Darwin behavior against scripted scenarios. This is *not* the per-Darwin runtime fitness evaluator; it's our internal regression suite. New Layer 0 versions, new neurons, new constitutional rules all pass through the eval before any rollout.
+Throughout all phases, we maintain a simulated environment for testing Darwin behavior against scripted scenarios. This is _not_ the per-Darwin runtime fitness evaluator; it's our internal regression suite. New Layer 0 versions, new neurons, new constitutional rules all pass through the eval before any rollout.
 
 ### Cost governance
 

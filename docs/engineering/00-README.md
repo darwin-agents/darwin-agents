@@ -14,6 +14,7 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`06-evolution-and-reproduction.md`](06-evolution-and-reproduction.md) — fitness, the reproduction event, the archive, generation depth
 - [`07-isolation-and-multi-tenancy.md`](07-isolation-and-multi-tenancy.md) — the four isolation boundaries, the shared vault, per-tenant data
 - [`08-platform-control-plane.md`](08-platform-control-plane.md) — the supervisor, escalation router, dashboards, billing
+- [`../frontend/`](../frontend/) — Next.js dashboard and mobile client (screens, canvases, API wiring)
 - [`09-kill-switches-and-owner-controls.md`](09-kill-switches-and-owner-controls.md) — the three kill triggers, the graded response, owner & operator controls
 - [`10-alignment-and-anti-wireheading.md`](10-alignment-and-anti-wireheading.md) — how the architecture resists pathological optimization and deception
 

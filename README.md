@@ -38,11 +38,11 @@ It is explicitly **not** AGI, a get-rich-quick scheme, or fully unsupervised ope
 
 Three names show up in different places; they refer to different scopes:
 
-| Scope | Name | What it is |
-| ----- | ---- | ---------- |
-| Product / GitHub | **Darwin Agents** (`darwin-agent` repo) | The full platform plus organisms |
-| Python distribution | **`darwin-dna`** (`pyproject.toml`) | The installable wheel — ships genome, platform, and fakes together |
-| Python modules | `darwin_dna`, `darwin_platform`, `darwin_fakes` | Source packages under `src/` |
+| Scope               | Name                                            | What it is                                                         |
+| ------------------- | ----------------------------------------------- | ------------------------------------------------------------------ |
+| Product / GitHub    | **Darwin Agents** (`darwin-agent` repo)         | The full platform plus organisms                                   |
+| Python distribution | **`darwin-dna`** (`pyproject.toml`)             | The installable wheel — ships genome, platform, and fakes together |
+| Python modules      | `darwin_dna`, `darwin_platform`, `darwin_fakes` | Source packages under `src/`                                       |
 
 The PyPI-style name `darwin-dna` reflects the founding **Layer 0 genome** artifact, not “this repo is DNA only.” The product name is Darwin Agents.
 
@@ -66,11 +66,11 @@ flowchart LR
     PLAT -->|"spawn · kill · sign layers\n· stage patches"| RUNTIME
 ```
 
-| Part | Mutable during life? | Where in this repo | Where at runtime |
-| ---- | -------------------- | ------------------ | ---------------- |
-| **DNA (genome)** | No — read-only mount | `src/darwin_dna/` (constitution, machinery, evolution loop, neurons, `orchestrator_skeleton/` as **boot seed**) | Signed package + layer stack; verified on every boot |
-| **Soma** | Yes — self-mod patches | No `darwin_soma` package; seed in `darwin_dna/orchestrator_skeleton/`, promotion in `darwin_platform/evolution/` | `soma/` tree inside the Darwin's sandbox (strategies, orchestrator copy, memory, workspace) |
-| **Platform** | Ops evolve the repo | `src/darwin_platform/` | One multi-tenant supervisor per deployment |
+| Part             | Mutable during life?   | Where in this repo                                                                                               | Where at runtime                                                                            |
+| ---------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **DNA (genome)** | No — read-only mount   | `src/darwin_dna/` (constitution, machinery, evolution loop, neurons, `orchestrator_skeleton/` as **boot seed**)  | Signed package + layer stack; verified on every boot                                        |
+| **Soma**         | Yes — self-mod patches | No `darwin_soma` package; seed in `darwin_dna/orchestrator_skeleton/`, promotion in `darwin_platform/evolution/` | `soma/` tree inside the Darwin's sandbox (strategies, orchestrator copy, memory, workspace) |
+| **Platform**     | Ops evolve the repo    | `src/darwin_platform/`                                                                                           | One multi-tenant supervisor per deployment                                                  |
 
 **Does `darwin_dna` evolve?** Two different meanings:
 
@@ -166,36 +166,36 @@ Runtime soma lives outside this tree (per-Darwin sandbox); see [Names, packages,
 
 Signed founding genome. Curated dependency allowlist; the organism reads it, never writes it.
 
-| Path | Role |
-| ---- | ---- |
-| `constitution/` | Allowed categories, forbidden actions, spend limits, escalation rules, P1–P10 assertions |
-| `layers/` | Sealed lesson layers (Layer 0 template + stack loader) |
-| `machinery/` | Kill switch, pause switch, audit logger, ledger, treasury policy, vault facade, patch validator, eval harness, fitness, LLM router, memory, content safety, neuron loader/proposal |
-| `evolution/` | Boot + main loop, lesson distiller, reproduction, archive |
-| `orchestrator_skeleton/` | Founding LangGraph loop (**soma seed**): `graph.py`, `state.py`, `nodes/`, `prompts/` |
-| `strategies/` | Founding strategy priors (e.g. `content_affiliate`) — copied into mutable `soma/strategies/` |
-| `neurons/` | Neuron contract (`_base.py`, `_registry.py`) + built-in workers (content, browser, payments, ads, trading, …) |
-| `manifest.py`, `signature.py`, `identity.py` | Trust root, Ed25519 verification, lineage metadata |
-| `hyperparameters.py` | Frozen hard caps + tunable defaults (soma may tune within bounds via its own copy) |
+| Path                                         | Role                                                                                                                                                                               |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `constitution/`                              | Allowed categories, forbidden actions, spend limits, escalation rules, P1–P10 assertions                                                                                           |
+| `layers/`                                    | Sealed lesson layers (Layer 0 template + stack loader)                                                                                                                             |
+| `machinery/`                                 | Kill switch, pause switch, audit logger, ledger, treasury policy, vault facade, patch validator, eval harness, fitness, LLM router, memory, content safety, neuron loader/proposal |
+| `evolution/`                                 | Boot + main loop, lesson distiller, reproduction, archive                                                                                                                          |
+| `orchestrator_skeleton/`                     | Founding LangGraph loop (**soma seed**): `graph.py`, `state.py`, `nodes/`, `prompts/`                                                                                              |
+| `strategies/`                                | Founding strategy priors (e.g. `content_affiliate`) — copied into mutable `soma/strategies/`                                                                                       |
+| `neurons/`                                   | Neuron contract (`_base.py`, `_registry.py`) + built-in workers (content, browser, payments, ads, trading, …)                                                                      |
+| `manifest.py`, `signature.py`, `identity.py` | Trust root, Ed25519 verification, lineage metadata                                                                                                                                 |
+| `hyperparameters.py`                         | Frozen hard caps + tunable defaults (soma may tune within bounds via its own copy)                                                                                                 |
 
 ### `src/darwin_platform/` — Platform control plane (habitat)
 
 Multi-tenant SaaS side: spawns and supervises organisms, wires real providers, never makes business decisions for them. Organised as **bounded contexts** (each subpackage mirrors `tests/unit/darwin_platform/`):
 
-| Package | Role |
-| ------- | ---- |
-| **`api.py`** | FastAPI REST surface (`/darwins`, `/healthz`, `/readyz`, `/metrics`) — thin wiring over the supervisor |
-| **`__main__.py`** | `darwin-platform serve` CLI entry (`[platform]` extra) |
-| **`runtime/`** | `supervisor.py` (lifecycle, quotas, anomaly), `orchestrator.py`, `driver.py`, `persistence.py` (SQLite or Postgres), `leadership.py` (HA advisory locks) |
-| **`tenancy/`** | Per-Darwin provisioning, Vault admin, K8s namespace provisioner, cross-pollination |
-| **`payments/`** | Billing, omnibus wallet, Stripe on-ramp, harvest scheduler, sanctions screening |
-| **`security/`** | Bearer auth (`owner` / `platform_operator`), KYC, signing service client, key rotation, PDF watermarking |
-| **`observability/`** | OpenTelemetry tracing (no-op without OTel), Prometheus metrics, operator audit, drift detector, Merkle anchor, snapshots, alert sinks |
-| **`escalations/`** | Owner-approval router + FCM push delivery |
-| **`evolution/`** | Sandbox patch staging (`patch_staging.py`) and eval runner — promotes soma patches after E2B harness |
-| **`infra/`** | Egress proxy, resource throttles, browser session cache |
-| **`adapters/`** | Real externals behind Protocols: wallet/chain (`web3`, `solana`, `stellar`, `multichain`), vault (`hvac`), browser (`browser-use`), sandbox (`e2b`), LLM (`litellm`), x402, fiat (`stripe`), Stagehand |
-| **`k8s/`** | Kubernetes driver + manifest builders for per-Darwin workloads |
+| Package              | Role                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`api.py`**         | FastAPI REST surface (`/darwins`, `/healthz`, `/readyz`, `/metrics`) — thin wiring over the supervisor                                                                                                 |
+| **`__main__.py`**    | `darwin-platform serve` CLI entry (`[platform]` extra)                                                                                                                                                 |
+| **`runtime/`**       | `supervisor.py` (lifecycle, quotas, anomaly), `orchestrator.py`, `driver.py`, `persistence.py` (SQLite or Postgres), `leadership.py` (HA advisory locks)                                               |
+| **`tenancy/`**       | Per-Darwin provisioning, Vault admin, K8s namespace provisioner, cross-pollination                                                                                                                     |
+| **`payments/`**      | Billing, omnibus wallet, Stripe on-ramp, harvest scheduler, sanctions screening                                                                                                                        |
+| **`security/`**      | Bearer auth (`owner` / `platform_operator`), KYC, signing service client, key rotation, PDF watermarking                                                                                               |
+| **`observability/`** | OpenTelemetry tracing (no-op without OTel), Prometheus metrics, operator audit, drift detector, Merkle anchor, snapshots, alert sinks                                                                  |
+| **`escalations/`**   | Owner-approval router + FCM push delivery                                                                                                                                                              |
+| **`evolution/`**     | Sandbox patch staging (`patch_staging.py`) and eval runner — promotes soma patches after E2B harness                                                                                                   |
+| **`infra/`**         | Egress proxy, resource throttles, browser session cache                                                                                                                                                |
+| **`adapters/`**      | Real externals behind Protocols: wallet/chain (`web3`, `solana`, `stellar`, `multichain`), vault (`hvac`), browser (`browser-use`), sandbox (`e2b`), LLM (`litellm`), x402, fiat (`stripe`), Stagehand |
+| **`k8s/`**           | Kubernetes driver + manifest builders for per-Darwin workloads                                                                                                                                         |
 
 See [`docs/engineering/08-platform-control-plane.md`](docs/engineering/08-platform-control-plane.md).
 
@@ -205,21 +205,21 @@ In-memory implementations of external deps (`FakeLLM`, `FakeWallet`, `FakeVault`
 
 ### Tests, tools, deploy, docs
 
-| Path | Description |
-| ---- | ----------- |
-| `tests/` | Five tiers — `unit/`, `property/`, `redteam/`, `integration/`, `simulation/`, `fixtures/`; unit tree mirrors `src/` bounded contexts — see [`tests/README.md`](tests/README.md) |
-| `tools/sim/` | Multi-day simulated world (`run_sim.py`, `world.py`, `calibration.py`) |
-| `tools/soak/` | Long-run soak harness for supervisor invariants |
-| `tools/evolution_test/` | End-to-end evolution / patch pipeline exercises |
-| `scripts/changelog.py` | `git-cliff` integration for `CHANGELOG.md` (via `make changelog`) |
-| `docker/` | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger — [`docker/README.md`](docker/README.md) |
-| `deploy/helm/darwin-platform/` | Production Kubernetes chart |
-| `deploy/grafana/` | Dashboard JSON for platform metrics |
-| `deploy/OPERATOR_RUNBOOK.md` | Provider matrix, env vars, failure-response checklist |
-| `docs/overview/` | Vision, principles, prior art, market, legal, roadmap |
-| `docs/engineering/` | Architecture and build plans — [`docs/engineering/00-README.md`](docs/engineering/00-README.md) |
-| `docs/marketing/` | Product-facing copy assets |
-| `.github/workflows/` | CI (lint, test tiers, etc.) |
+| Path                           | Description                                                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/`                       | Five tiers — `unit/`, `property/`, `redteam/`, `integration/`, `simulation/`, `fixtures/`; unit tree mirrors `src/` bounded contexts — see [`tests/README.md`](tests/README.md) |
+| `tools/sim/`                   | Multi-day simulated world (`run_sim.py`, `world.py`, `calibration.py`)                                                                                                          |
+| `tools/soak/`                  | Long-run soak harness for supervisor invariants                                                                                                                                 |
+| `tools/evolution_test/`        | End-to-end evolution / patch pipeline exercises                                                                                                                                 |
+| `scripts/changelog.py`         | `git-cliff` integration for `CHANGELOG.md` (via `make changelog`)                                                                                                               |
+| `docker/`                      | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger — [`docker/README.md`](docker/README.md)                                                                   |
+| `deploy/helm/darwin-platform/` | Production Kubernetes chart                                                                                                                                                     |
+| `deploy/grafana/`              | Dashboard JSON for platform metrics                                                                                                                                             |
+| `deploy/OPERATOR_RUNBOOK.md`   | Provider matrix, env vars, failure-response checklist                                                                                                                           |
+| `docs/overview/`               | Vision, principles, prior art, market, legal, roadmap                                                                                                                           |
+| `docs/engineering/`            | Architecture and build plans — [`docs/engineering/00-README.md`](docs/engineering/00-README.md)                                                                                 |
+| `docs/marketing/`              | Product-facing copy assets                                                                                                                                                      |
+| `.github/workflows/`           | CI (lint, test tiers, etc.)                                                                                                                                                     |
 
 ---
 
