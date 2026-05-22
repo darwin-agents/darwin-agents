@@ -29,6 +29,9 @@ llm = ["litellm>=1.40", "httpx>=0.27"]
 # the REST API and producing real spans.
 platform = [
     "fastapi>=0.110",
+    # uvicorn runs the FastAPI app — `darwin-platform serve` needs it,
+    # and the darwin-platform console script is only useful with it.
+    "uvicorn>=0.30",
     "httpx>=0.27",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",

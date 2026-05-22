@@ -74,9 +74,17 @@ class _Server:
     """A ``darwin-platform serve`` subprocess, context-managed so the
     process is always reaped — even when an assertion fails mid-test."""
 
-    def __init__(self, *, port: int, log_path: Path, db: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        port: int,
+        log_path: Path,
+        db: str | None = None,
+        extra_args: list[str] | None = None,
+    ) -> None:
         self.port = port
         self.db = db
+        self.extra_args = list(extra_args or [])
         self.base_url = f"http://127.0.0.1:{port}"
         self._log_path = log_path
         self._proc: subprocess.Popen | None = None
@@ -99,6 +107,7 @@ class _Server:
         ]
         if self.db is not None:
             cmd += ["--db", self.db]
+        cmd += self.extra_args
         self._logf = open(self._log_path, "w")
         self._proc = subprocess.Popen(
             cmd, cwd=str(_REPO_ROOT), env=env,
@@ -188,12 +197,18 @@ def server_factory(tmp_path):
     builds is torn down at the end of the test."""
     built: list[_Server] = []
 
-    def _make(*, db: str | None = None, port: int | None = None) -> _Server:
+    def _make(
+        *,
+        db: str | None = None,
+        port: int | None = None,
+        extra_args: list[str] | None = None,
+    ) -> _Server:
         idx = len(built)
         srv = _Server(
             port=port if port is not None else _free_port(),
             log_path=tmp_path / f"serve-{idx}.log",
             db=db,
+            extra_args=extra_args,
         )
         built.append(srv)
         return srv
@@ -321,3 +336,49 @@ def test_serve_resumes_darwin_after_kill_9(server_factory, tmp_path):
     c2.close()
     rc = srv2.stop(sig="term")
     _assert_graceful_shutdown(srv2, rc)
+
+
+# ---------------------------------------------------------------------------
+# test 3 — Phase 1/2 wiring flags are accepted by the real serve process
+# ---------------------------------------------------------------------------
+def test_serve_accepts_wiring_flags(server_factory):
+    """Boots the real process with the OTLP + Phase-2 wiring flags and
+    confirms it comes up healthy and the OTLP exporter is installed.
+
+    The OTLP install sets a process-global TracerProvider, so it can
+    only be exercised out-of-process like this; the endpoint can be
+    unreachable (the BatchSpanProcessor exports in the background and
+    swallows connection errors) — what we assert is that `serve`
+    accepted the flag and logged the exporter wiring."""
+    srv = server_factory(
+        extra_args=[
+            "--otlp-endpoint", "http://127.0.0.1:4318",
+            "--enable-drift-detection",
+            "--enable-merkle-anchor",
+            "--kyc-provider", "stub",
+            "--maintenance-interval", "2",
+        ]
+    ).start()
+    client = httpx.Client(base_url=srv.base_url, timeout=5.0)
+
+    # Came up healthy with all the wiring flags applied.
+    assert client.get("/healthz").json()["status"] == "ok"
+
+    # A Darwin still spawns + runs with the Phase-2 services wired.
+    did = client.post("/darwins", json={"opening_usdc": 100.0}).json()[
+        "darwin_id"
+    ]
+    _wait_for(
+        lambda: client.get(f"/darwins/{did}").json()["tick"] > 5,
+        timeout=15.0, what="darwin tick under wiring flags",
+    )
+    client.close()
+
+    rc = srv.stop(sig="term")
+    _assert_graceful_shutdown(srv, rc)
+
+    # The OTLP exporter wiring logged its startup line.
+    log = srv.log_tail(lines=200)
+    assert "tracing: exporting spans to" in log, (
+        f"OTLP wiring did not log; log:\n{log}"
+    )

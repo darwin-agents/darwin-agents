@@ -62,6 +62,19 @@ def get_tracer():
 _OTLP_CONFIGURED = False
 
 
+def otlp_traces_url(endpoint: str) -> str:
+    """Normalise a collector endpoint to the OTLP/HTTP traces URL.
+
+    The OTLP/HTTP spec puts traces at ``/v1/traces``; operators pass the
+    collector base (``http://jaeger:4318``) and we append the path when
+    it is not already there. Pure — extracted so it is unit-testable
+    without installing a global TracerProvider."""
+    url = endpoint.rstrip("/")
+    if not url.endswith("/v1/traces"):
+        url = f"{url}/v1/traces"
+    return url
+
+
 def configure_otlp_tracing(
     endpoint: str,
     *,
@@ -101,9 +114,7 @@ def configure_otlp_tracing(
             "— `pip install darwin-dna[platform]`"
         ) from exc
 
-    traces_url = endpoint.rstrip("/")
-    if not traces_url.endswith("/v1/traces"):
-        traces_url = f"{traces_url}/v1/traces"
+    traces_url = otlp_traces_url(endpoint)
 
     provider = TracerProvider(
         resource=Resource.create({"service.name": service_name})

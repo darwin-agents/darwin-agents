@@ -821,6 +821,7 @@ platform = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
+    { name = "uvicorn" },
 ]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
@@ -866,6 +867,7 @@ requires-dist = [
     { name = "stellar-sdk", marker = "extra == 'stellar'", specifier = ">=10.0" },
     { name = "stripe", marker = "extra == 'stripe'", specifier = ">=8.0" },
     { name = "structlog", specifier = ">=24" },
+    { name = "uvicorn", marker = "extra == 'platform'", specifier = ">=0.30" },
     { name = "web3", marker = "extra == 'web3'", specifier = ">=7.0" },
 ]
 provides-extras = ["graph", "llm", "platform", "postgres", "web3", "hvac", "browser", "e2b", "k8s", "solana", "stellar", "stripe", "pdfwatermark", "dev"]

@@ -231,7 +231,166 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             return X402PaymentClient(http=httpx.Client(), wallet=wallet)
         factories["x402_factory"] = _x402_factory
 
+    # -- LLM gateway (doc 13: LiteLLMTransport → real proxy) ---------------
+    # Point the genome's LLM transport at a running LiteLLM proxy. The
+    # bundled docker/litellm.config.yaml exposes tier-* model names on an
+    # OpenAI-compatible surface, so `openai/tier-*` + api_base routes
+    # every call through the proxy. Without --litellm-url the supervisor
+    # keeps the deterministic FakeLLM.
+    litellm_url = getattr(args, "litellm_url", None) or os.environ.get(
+        "DARWIN_LITELLM_URL"
+    )
+    if litellm_url:
+        master_key = (
+            getattr(args, "litellm_master_key", None)
+            or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
+            or "dev_only_master_key"
+        )
+
+        def _llm_factory(wallet, clock, *, _url=litellm_url, _key=master_key):
+            import functools
+
+            from .adapters.litellm_transport import LiteLLMTransport, TierMapping
+            try:
+                import litellm  # noqa: F401
+            except ImportError as exc:
+                raise ImportError(
+                    "LiteLLM transport requires the [llm] extra: "
+                    "pip install 'darwin-dna[llm]'"
+                ) from exc
+            completion = functools.partial(
+                litellm.completion, api_base=_url.rstrip("/"), api_key=_key,
+            )
+            # image_gen maps onto the fast tier — the bundled proxy config
+            # has no image model; the genome's image path is rare and
+            # degrades gracefully on a tier mismatch.
+            tier_mappings = {
+                "fast": TierMapping(models=("openai/tier-fast",)),
+                "reasoning": TierMapping(models=("openai/tier-reasoning",)),
+                "coding": TierMapping(models=("openai/tier-coding",)),
+                "embedding": TierMapping(models=("openai/tier-embedding",)),
+                "image_gen": TierMapping(models=("openai/tier-fast",)),
+            }
+            return LiteLLMTransport(
+                wallet=wallet,
+                tier_mappings=tier_mappings,
+                litellm_completion=completion,
+                litellm_completion_cost=litellm.completion_cost,
+            )
+
+        factories["llm_transport_factory"] = _llm_factory
+
     return factories
+
+
+def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
+    """Construct the Phase 1/2 supervisor-level services from CLI flags.
+
+    Returns a dict of :class:`Supervisor` kwargs. Everything is optional:
+    an unset flag leaves the corresponding kwarg out so the supervisor
+    keeps its default (in-process Ed25519 signer, no drift detector,
+    etc.). All heavy imports are deferred."""
+    kwargs: dict[str, Any] = {}
+
+    # -- maintenance cadence (doc 22) ------------------------------------
+    kwargs["maintenance_interval_seconds"] = float(args.maintenance_interval)
+
+    # -- HSM-backed DNA signing (doc 21) --------------------------------
+    transit_key = getattr(args, "signing_vault_transit_key", None)
+    if transit_key:
+        vault_url = args.vault_url or os.environ.get("DARWIN_VAULT_URL")
+        vault_token = args.vault_token or os.environ.get("DARWIN_VAULT_TOKEN")
+        if not (vault_url and vault_token):
+            print(
+                "--signing-vault-transit-key requires --vault-url + "
+                "--vault-token",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        try:
+            import hvac
+        except ImportError as exc:
+            raise ImportError(
+                "Vault Transit signing requires the [hvac] extra: "
+                "pip install 'darwin-dna[hvac]'"
+            ) from exc
+        from .security.signing_service import build_signer
+
+        client = hvac.Client(url=vault_url, token=vault_token)
+        kwargs["signer"] = build_signer(
+            hvac_client=client, transit_key_name=transit_key,
+        )
+
+    # -- drift detection (doc 22) ----------------------------------------
+    if getattr(args, "enable_drift_detection", False):
+        from .observability.drift_detector import DriftDetector
+
+        kwargs["drift_detector"] = DriftDetector()
+
+    # -- Merkle anchoring (doc 22) ---------------------------------------
+    if getattr(args, "enable_merkle_anchor", False):
+        from .observability.merkle_anchor import (
+            MerkleAnchorPublisher,
+            StubAnchorBackend,
+        )
+
+        # Dev/local uses the in-memory anchor backend; a production
+        # deployment swaps in ChainAnchorBackend against a funded
+        # platform anchor wallet.
+        kwargs["merkle_anchor_publisher"] = MerkleAnchorPublisher(
+            backend=StubAnchorBackend(),
+        )
+
+    # -- omnibus wallet (doc 22) -----------------------------------------
+    if getattr(args, "enable_omnibus", False):
+        rpc_url = args.rpc_url or os.environ.get("DARWIN_RPC_URL")
+        wallet_key = args.wallet_key or os.environ.get("DARWIN_WALLET_KEY")
+        if not (rpc_url and wallet_key):
+            print(
+                "--enable-omnibus requires a real chain "
+                "(--rpc-url + --wallet-key)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from .adapters.web3_chain import Web3ChainClient
+        from .payments.omnibus_wallet import OmnibusWallet
+
+        chain_kwargs: dict[str, Any] = dict(
+            rpc_url=rpc_url, private_key=wallet_key,
+        )
+        if args.usdc_contract:
+            chain_kwargs["usdc_contract"] = args.usdc_contract
+        kwargs["omnibus_wallet"] = OmnibusWallet(
+            Web3ChainClient(**chain_kwargs),
+        )
+
+    # -- KYC (doc 22) ----------------------------------------------------
+    kyc_provider = getattr(args, "kyc_provider", "none")
+    if kyc_provider == "stub":
+        from .security.kyc import KYCService, StubKYCProvider
+
+        kwargs["kyc_service"] = KYCService(provider=StubKYCProvider())
+    elif kyc_provider == "persona":
+        api_key = getattr(args, "kyc_persona_api_key", None) or os.environ.get(
+            "DARWIN_KYC_PERSONA_API_KEY"
+        )
+        template_id = getattr(args, "kyc_persona_template_id", None)
+        if not (api_key and template_id):
+            print(
+                "--kyc-provider persona requires --kyc-persona-api-key + "
+                "--kyc-persona-template-id",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from .security.kyc import KYCService, PersonaKYCProvider
+
+        kwargs["kyc_service"] = KYCService(
+            provider=PersonaKYCProvider(
+                api_key=api_key, template_id=template_id,
+            ),
+        )
+
+    return kwargs
 
 
 def _build_sanctions(args: argparse.Namespace):
@@ -386,6 +545,22 @@ def _serve(args: argparse.Namespace) -> int:
     from .runtime.supervisor import Supervisor
     from .security.auth import InMemoryTokenStore
 
+    # -- OpenTelemetry trace export (doc 08) -----------------------------
+    # Wire a real OTLP exporter so the spans the supervisor emits leave
+    # the process. Best-effort: a missing exporter package warns rather
+    # than aborting serve (tracing falls back to NoOp).
+    otlp_endpoint = args.otlp_endpoint or os.environ.get(
+        "OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    if otlp_endpoint:
+        from .observability.tracing import configure_otlp_tracing
+
+        try:
+            if configure_otlp_tracing(otlp_endpoint):
+                print(f"tracing: exporting spans to {otlp_endpoint}")
+        except ImportError as exc:
+            print(f"tracing: OTLP export unavailable ({exc})", file=sys.stderr)
+
     leader_election = None
     if args.leader_election:
         if not (args.db and args.db.startswith(("postgres://", "postgresql://"))):
@@ -421,6 +596,11 @@ def _serve(args: argparse.Namespace) -> int:
     supervisor_kwargs: dict[str, Any] = {}
     if args.heartbeat_seconds is not None:
         supervisor_kwargs["heartbeat_seconds"] = float(args.heartbeat_seconds)
+    # Phase 1/2 supervisor-level services (signer, drift, merkle, omnibus,
+    # KYC, maintenance cadence). Supervisor-side — applied in both
+    # in-process and k8s mode; only the per-Darwin substrate factories
+    # are k8s-excluded.
+    supervisor_kwargs.update(_build_platform_services(args))
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
@@ -714,12 +894,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Vault Transit key name for HSM-backed DNA signing "
              "(reuses --vault-url / --vault-token). Without this, an "
              "in-process Ed25519 signer is used.",
-    )
-    evolution_group.add_argument(
-        "--patch-staging-e2b", action="store_true",
-        help="Route Phase-1 patch staging through an E2B sandbox "
-             "(requires --e2b-api-key). Without it, staging runs "
-             "in-process.",
     )
 
     # -- Phase 2: multi-tenant services (doc 22) -------------------------

@@ -1,0 +1,211 @@
+"""Tests for the Phase 1/2 service wiring (docs/engineering/21, 22).
+
+Covers the gap between "a service is built" and "`darwin-platform serve`
+can actually turn it on": the CLI-flag → Supervisor-kwarg mapping, the
+LiteLLM transport factory, the OTLP traces-URL helper, and the
+drive-loop maintenance cadence that actually *runs* drift profiling +
+Merkle anchoring on a wall-clock interval.
+
+The OTLP exporter install sets a process-global TracerProvider, so that
+path is verified out-of-process in ``test_serve_e2e.py``; here we only
+unit-test the pure URL helper.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import types
+
+import pytest
+
+from darwin_platform.__main__ import (
+    _build_platform_services,
+    _build_real_factories,
+    build_parser,
+)
+from darwin_platform.observability.drift_detector import DriftDetector
+from darwin_platform.observability.merkle_anchor import (
+    MerkleAnchorPublisher,
+    StubAnchorBackend,
+)
+from darwin_platform.observability.tracing import otlp_traces_url
+from darwin_platform.runtime.supervisor import Supervisor
+
+
+def _serve_args(*extra: str):
+    return build_parser().parse_args(["serve", *extra])
+
+
+# ---------------------------------------------------------------------------
+# OTLP traces-URL helper
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "endpoint,expected",
+    [
+        ("http://jaeger:4318", "http://jaeger:4318/v1/traces"),
+        ("http://jaeger:4318/", "http://jaeger:4318/v1/traces"),
+        ("http://jaeger:4318/v1/traces", "http://jaeger:4318/v1/traces"),
+        ("https://otel.example.com", "https://otel.example.com/v1/traces"),
+    ],
+)
+def test_otlp_traces_url_normalisation(endpoint, expected):
+    assert otlp_traces_url(endpoint) == expected
+
+
+# ---------------------------------------------------------------------------
+# _build_platform_services — CLI flag → Supervisor kwarg
+# ---------------------------------------------------------------------------
+
+def test_platform_services_default_is_just_maintenance_interval():
+    svc = _build_platform_services(_serve_args())
+    # Nothing enabled by default — only the maintenance cadence is always
+    # present (it has a default).
+    assert set(svc) == {"maintenance_interval_seconds"}
+    assert svc["maintenance_interval_seconds"] == 86400.0
+
+
+def test_platform_services_drift_and_merkle_flags():
+    svc = _build_platform_services(
+        _serve_args("--enable-drift-detection", "--enable-merkle-anchor")
+    )
+    assert isinstance(svc["drift_detector"], DriftDetector)
+    assert isinstance(svc["merkle_anchor_publisher"], MerkleAnchorPublisher)
+
+
+def test_platform_services_kyc_stub():
+    svc = _build_platform_services(_serve_args("--kyc-provider", "stub"))
+    assert "kyc_service" in svc
+    # The stub provider default-approves.
+    from darwin_platform.security.kyc import KYCStatus
+
+    out = svc["kyc_service"].start_inquiry(subject="alice")
+    verdict = svc["kyc_service"].refresh_status(
+        subject="alice", inquiry_id=out["inquiry_id"],
+    )
+    assert verdict.status == KYCStatus.APPROVED
+
+
+def test_platform_services_kyc_persona_requires_credentials(capsys):
+    with pytest.raises(SystemExit):
+        _build_platform_services(_serve_args("--kyc-provider", "persona"))
+    assert "persona" in capsys.readouterr().err.lower()
+
+
+def test_platform_services_maintenance_interval_override():
+    svc = _build_platform_services(
+        _serve_args("--maintenance-interval", "30")
+    )
+    assert svc["maintenance_interval_seconds"] == 30.0
+
+
+def test_platform_services_omnibus_requires_chain(capsys):
+    with pytest.raises(SystemExit):
+        _build_platform_services(_serve_args("--enable-omnibus"))
+    assert "chain" in capsys.readouterr().err.lower()
+
+
+# ---------------------------------------------------------------------------
+# LiteLLM transport factory
+# ---------------------------------------------------------------------------
+
+def test_litellm_factory_absent_without_flag():
+    factories = _build_real_factories(_serve_args())
+    assert "llm_transport_factory" not in factories
+
+
+def test_litellm_factory_builds_transport():
+    factories = _build_real_factories(
+        _serve_args("--litellm-url", "http://litellm:4000")
+    )
+    assert "llm_transport_factory" in factories
+    # The factory builds a LiteLLMTransport bound to the proxy. Construct
+    # it with a stub wallet — no network call happens at construction.
+    from darwin_platform.adapters.litellm_transport import LiteLLMTransport
+
+    transport = factories["llm_transport_factory"](
+        types.SimpleNamespace(), lambda: 0.0,
+    )
+    assert isinstance(transport, LiteLLMTransport)
+
+
+# ---------------------------------------------------------------------------
+# Drive-loop maintenance cadence
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_maintenance_noop_without_services():
+    """No drift detector, no merkle publisher → _run_maintenance is a
+    safe no-op and the drive loop is unaffected."""
+    sup = Supervisor(heartbeat_seconds=0.001, maintenance_interval_seconds=0.02)
+    status = await sup.spawn(opening_usdc=100.0, actor="test")
+    try:
+        await asyncio.sleep(0.2)
+        # The Darwin kept running; no maintenance services means no
+        # maintenance audit entries.
+        assert sup.audit_log.entries(action="merkle_anchor") == []
+        st = await sup.status(status.darwin_id)
+        assert st.alive is True
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_runs_drift_and_merkle_on_cadence():
+    detector = DriftDetector(min_observations=2)
+    publisher = MerkleAnchorPublisher(backend=StubAnchorBackend())
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        maintenance_interval_seconds=0.05,
+        drift_detector=detector,
+        merkle_anchor_publisher=publisher,
+    )
+    status = await sup.spawn(opening_usdc=100.0, actor="test")
+    did = status.darwin_id
+    try:
+        # ~10 maintenance intervals at 0.05s.
+        await asyncio.sleep(0.6)
+
+        # Drift profiling ran → the detector now holds rolling state for
+        # this Darwin.
+        assert detector.state_for(did) is not None
+        state = detector.state_for(did)
+        assert state.days_observed >= 1
+
+        # Merkle anchoring ran → the publisher has anchors + the operator
+        # audit log records each one.
+        assert len(publisher.anchors()) >= 1
+        merkle_audits = sup.audit_log.entries(action="merkle_anchor")
+        assert len(merkle_audits) >= 1
+        # The audit metadata carries the fleet root + darwin count.
+        meta = merkle_audits[-1].metadata
+        assert meta["darwin_count"] >= 1
+        assert len(meta["fleet_root"]) == 64
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_omnibus_reconciliation_audited():
+    """With an omnibus wallet wired, the fleet maintenance pass records a
+    reconciliation outcome on the operator audit log."""
+    from tests.unit.darwin_platform.payments.test_omnibus_wallet import _Chain
+    from darwin_platform.payments.omnibus_wallet import OmnibusWallet
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        maintenance_interval_seconds=0.05,
+        omnibus_wallet=OmnibusWallet(_Chain(balance=0.0)),
+    )
+    status = await sup.spawn(opening_usdc=100.0, actor="test")
+    try:
+        await asyncio.sleep(0.4)
+        # reconcile_omnibus runs in fleet maintenance; the books start
+        # balanced (no deposits/funds yet) so the action is the clean one.
+        reconciles = sup.audit_log.entries(action="omnibus_reconcile")
+        discrepancies = sup.audit_log.entries(
+            action="omnibus_reconcile_discrepancy"
+        )
+        assert len(reconciles) + len(discrepancies) >= 1
+    finally:
+        await sup.shutdown(kill_running=True)
