@@ -180,6 +180,101 @@ async def test_resume_audit_records_lossless_flag(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_quarantine_state_survives_restart(tmp_path):
+    """A quarantined Darwin (doc-09 level 4) must come back from a
+    supervisor restart still quarantined AND paused (doc 23) — it must not
+    silently slip back to running unsupervised."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=80.0)
+    did = status.darwin_id
+    await sup_a.quarantine(did, reason="policy breach", operator="trust-team")
+    rec = sup_a._lifecycle.get(did)
+    assert rec.quarantined is True
+    assert rec.quarantine_reason == "policy breach"
+    assert rec.quarantine_operator == "trust-team"
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    assert did in sup_b._darwins
+    h = sup_b._darwins[did]
+    assert h.quarantine.active is True
+    assert h.quarantine.reason == "policy breach"
+    assert h.quarantine.operator == "trust-team"
+    # Quarantine implies paused — the resumed genome is parked, not free.
+    assert h.stack.pause.is_paused() is True
+    # The restore is recorded for a compliance reviewer.
+    assert len(sup_b._audit.entries(action="quarantine_restored")) == 1
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_unquarantine_clears_persisted_state(tmp_path):
+    """Clearing quarantine before a restart means the Darwin resumes
+    normally — the persisted flag is cleared too."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=80.0)
+    did = status.darwin_id
+    await sup_a.quarantine(did, reason="false alarm", operator="trust-team")
+    await sup_a.unquarantine(did, operator="trust-team")
+    rec = sup_a._lifecycle.get(did)
+    assert rec.quarantined is False
+    assert rec.quarantine_reason is None
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    h = sup_b._darwins[did]
+    assert h.quarantine.active is False
+    assert sup_b._audit.entries(action="quarantine_restored") == []
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_v2_db_upgrades_to_quarantine_columns(tmp_path):
+    """An existing v2 database — darwin_lifecycle without the quarantine
+    columns — upgrades cleanly: the v3 migration ALTERs the columns in."""
+    import sqlite3
+
+    db = tmp_path / "platform.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        "CREATE TABLE darwin_lifecycle ("
+        " darwin_id TEXT PRIMARY KEY, opening_usdc REAL NOT NULL,"
+        " last_balance REAL, parent_id TEXT, spawned_at REAL NOT NULL,"
+        " alive INTEGER NOT NULL, killed INTEGER NOT NULL,"
+        " kill_reason TEXT, escalation_auto TEXT);"
+        "CREATE TABLE schema_version ("
+        " id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL,"
+        " applied_at REAL NOT NULL, code_version TEXT NOT NULL);"
+        "INSERT INTO schema_version VALUES (1, 2, 0.0, 'test-v2');"
+    )
+    conn.commit()
+    conn.close()
+
+    # Opening with the current code runs the v3 migration in place.
+    sup = Supervisor(persistence_path=str(db))
+    try:
+        assert sup._persistence.schema_version() == 3
+        status = await sup.spawn(opening_usdc=70.0)
+        await sup.quarantine(
+            status.darwin_id, reason="upgraded", operator="ops"
+        )
+        rec = sup._lifecycle.get(status.darwin_id)
+        assert rec.quarantined is True
+        assert rec.quarantine_reason == "upgraded"
+    finally:
+        await sup.shutdown(kill_running=False)
+        sup._persistence.close()
+
+
+@pytest.mark.asyncio
 async def test_signing_key_persists_across_restart(tmp_path):
     """The platform signing key is persisted so manifests signed before
     the restart still verify after."""
