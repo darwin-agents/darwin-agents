@@ -98,8 +98,11 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
       adapter — the platform's own Python has no Redis need (single-writer
       supervisor; leader election uses Postgres advisory locks; "session locks"
       from the doc aren't required). Docs 11, 13, 19. _(done 2026-05-22)_
-- [ ] **AWS Bedrock AgentCore Payments** — secondary payment rail, absent entirely.
-      Docs 05, 11, 17.
+- [x] **AWS Bedrock AgentCore Payments** — **Won't do (decision 2026-05-22)** — there
+      is no real callable AgentCore Payments API to build against (the docs describe
+      it speculatively), and it would only wrap Coinbase + Stripe, both already
+      integrated directly. The multi-rail payment stack (on-chain USDC, x402,
+      Solana/Stellar, Stripe/MoonPay) is complete. Docs 05, 11, 17.
 - [x] **Clerk auth** — `ClerkVerifier` verifies Clerk RS256 JWTs against the JWKS;
       `ClerkTokenStore` (drop-in for the `TokenStore` Protocol) maps claims → scopes
       and keeps per-user Darwin ownership keyed by Clerk user id; `--clerk-issuer` /
@@ -109,8 +112,11 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
       implements the same `KYCProvider` Protocol as Persona; `--kyc-provider onfido`
       + `ONFIDO_API_TOKEN` / `ONFIDO_WORKFLOW_ID` wire it (eu/us/ca regions). +11 tests.
       → `src/darwin_platform/security/kyc.py` Docs 11, 16. _(done 2026-05-22)_
-- [ ] **Temporal** — durable billing/harvest/reproduce jobs; runs in-process now.
-      Docs 11, 19.
+- [x] **Temporal** — durable billing/harvest/reproduce jobs. **Won't do (decision
+      2026-05-22)** — the platform's durability need is already met by Postgres
+      persistence + leader-resume + cursor-idempotent maintenance sweeps; these
+      jobs are incremental idempotent sweeps, not complex sagas. Temporal would add
+      a mandatory cluster + a second orchestrator for no behaviour gain. Docs 11, 19.
 - [x] **Modal / Northflank** — secondary sandbox runtimes. **Won't do (decision
       2026-05-22)** — E2B covers per-neuron sandboxing; a secondary runtime is only
       for GPU/batch work Darwin doesn't do yet. Doc 14.
