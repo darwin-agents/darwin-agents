@@ -90,6 +90,35 @@ class EscalationTicket(BaseModel):
     created_at: float = Field(default_factory=time.time)
 
 
+class NeuronError(Exception):
+    """A neuron-level, non-fatal failure (docs/engineering/28, the error
+    hierarchy). The orchestrator treats it as RETRY / CONTINUE, never HALT —
+    a neuron blowing up must not take the organism down with it. Carries a
+    stable ``error_code`` so recurrence is matched on the *class* of fault,
+    not the message — the same contract as :attr:`FailureMode.code`."""
+
+    def __init__(self, message: str, *, error_code: str = "neuron_error"):
+        self.error_code = error_code
+        super().__init__(message)
+
+
+class EscalationNeeded(Exception):
+    """Raised by a neuron that is blocked and needs the owner (docs/
+    engineering/28: ESCALATE). The exception-based twin of returning
+    ``NeuronResult(escalated=True)`` — a neuron may *return* a blocked
+    result or *raise* this; ``dispatch`` converges both onto the same
+    escalation bookkeeping (the task parks and resumes verbatim when the
+    owner answers, P4). Carries the :class:`Blocker` the owner must
+    resolve, and optionally a pre-minted ticket id."""
+
+    def __init__(self, blocker: Blocker, *, ticket_id: str | None = None):
+        self.blocker = blocker
+        self.ticket_id = ticket_id
+        super().__init__(
+            f"escalation needed: {blocker.kind} — {blocker.detail}"
+        )
+
+
 class NeuronContext:
     """The scoped capabilities a neuron is handed for one invocation. A
     neuron sees *only* what is in here — never the DNA, the treasury key,

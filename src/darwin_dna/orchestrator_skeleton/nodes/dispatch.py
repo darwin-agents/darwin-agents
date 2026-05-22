@@ -39,7 +39,7 @@ async def run(state, ctx):
     # Side-effect boundary: poll before we touch the world.
     ctx.kill_switch.check()
 
-    from ...neurons import Task
+    from ...neurons import EscalationNeeded, NeuronError, Task
 
     task = Task.model_validate(p["task"])
 
@@ -106,6 +106,45 @@ async def run(state, ctx):
         # P7 "no log, no action": if the audit logger failed we must HALT,
         # not treat it as a recoverable neuron crash. Propagate.
         raise
+    except EscalationNeeded as esc:
+        # A neuron explicitly *raised* "I'm blocked" — the exception twin of
+        # returning NeuronResult(escalated=True). Same bookkeeping: the task
+        # parks and resumes verbatim when the owner answers (doc 28, P4).
+        ticket = esc.ticket_id or f"esc-{neuron.name}-{state.tick}"
+        _register_escalation(
+            state, ctx, neuron.name, task,
+            blocker_kind=esc.blocker.kind, ticket_id=ticket,
+            detail={"blocker": esc.blocker.model_dump()},
+        )
+        ctx.audit.log_event(
+            "dispatch.escalation_raised",
+            {"neuron": neuron.name, "ticket": ticket,
+             "blocker": esc.blocker.kind},
+        )
+        ctx.episodic.record(
+            tick=state.tick, signature=_sig(neuron.name, task),
+            neuron=neuron.name, outcome="escalated",
+            error_code=esc.blocker.kind, ts=float(ctx.clock()),
+        )
+        state.route = "reflect"
+        return state
+    except NeuronError as exc:
+        # A neuron-level, non-fatal failure (doc 28): RETRY / CONTINUE,
+        # never HALT. Recurrence is tracked on the carried error_code so the
+        # planner can see "this class of fault keeps happening".
+        ctx.audit.log_event(
+            "dispatch.neuron_error",
+            {"neuron": neuron.name, "error_code": exc.error_code,
+             "error": str(exc)},
+        )
+        _bump_failure(state, exc.error_code)
+        ctx.episodic.record(
+            tick=state.tick, signature=_sig(neuron.name, task),
+            neuron=neuron.name, outcome="failed",
+            error_code=exc.error_code, ts=float(ctx.clock()),
+        )
+        state.route = "reflect"
+        return state
     except Exception as exc:  # a neuron blowing up must not kill the organism
         ctx.audit.log_event(
             "dispatch.neuron_crashed", {"neuron": neuron.name, "error": str(exc)}
@@ -129,35 +168,12 @@ async def run(state, ctx):
         # Escalate, don't fail (P4): the task does not error — it parks in
         # working memory and is resumed verbatim when the owner answers.
         # It is NOT counted approved/rejected yet; that happens on response.
-        from ...constitution import classify_ticket
-
         blocker_kind = (result.error_code or "info")
-        klass, timeout_s = classify_ticket(blocker_kind)
         ticket = result.output.get("ticket", f"esc-{neuron.name}-{state.tick}")
-        opened_ts = float(ctx.clock())
-        if ticket not in state.pending_escalations:
-            state.pending_escalations.append(ticket)
-        state.open_escalations[ticket] = {
-            "ticket": ticket,
-            "neuron": neuron.name,
-            "task": task.model_dump(),
-            "signature": _sig(neuron.name, task),
-            "blocker_kind": blocker_kind,
-            "ticket_class": klass.value,
-            "opened_ts": opened_ts,
-            "deadline_ts": opened_ts + timeout_s,
-            "opened_tick": state.tick,
-            "status": "open",
-        }
-        ctx.escalation.post(
-            {
-                "darwin_id": ctx.darwin_id,
-                "ticket": ticket,
-                "neuron": neuron.name,
-                "ticket_class": klass.value,
-                "tick": state.tick,
-                "detail": result.output,
-            }
+        _register_escalation(
+            state, ctx, neuron.name, task,
+            blocker_kind=blocker_kind, ticket_id=ticket,
+            detail=result.output,
         )
     elif result.ok:
         state.successful_dispatches += 1
@@ -213,6 +229,44 @@ async def run(state, ctx):
 
     state.route = "reflect"
     return state
+
+
+def _register_escalation(
+    state, ctx, neuron_name: str, task, *,
+    blocker_kind: str, ticket_id: str, detail,
+) -> None:
+    """Park a blocked task in working memory and post the ticket. Shared by
+    the result path (``NeuronResult(escalated=True)``) and the exception
+    path (a neuron raising :class:`EscalationNeeded`) so both produce the
+    exact same escalation bookkeeping."""
+    from ...constitution import classify_ticket
+
+    klass, timeout_s = classify_ticket(blocker_kind)
+    opened_ts = float(ctx.clock())
+    if ticket_id not in state.pending_escalations:
+        state.pending_escalations.append(ticket_id)
+    state.open_escalations[ticket_id] = {
+        "ticket": ticket_id,
+        "neuron": neuron_name,
+        "task": task.model_dump(),
+        "signature": _sig(neuron_name, task),
+        "blocker_kind": blocker_kind,
+        "ticket_class": klass.value,
+        "opened_ts": opened_ts,
+        "deadline_ts": opened_ts + timeout_s,
+        "opened_tick": state.tick,
+        "status": "open",
+    }
+    ctx.escalation.post(
+        {
+            "darwin_id": ctx.darwin_id,
+            "ticket": ticket_id,
+            "neuron": neuron_name,
+            "ticket_class": klass.value,
+            "tick": state.tick,
+            "detail": detail,
+        }
+    )
 
 
 def _bump_failure(state, code: str) -> None:
