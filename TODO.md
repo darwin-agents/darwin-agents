@@ -96,9 +96,11 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
       Docs 11, 13, 19.
 - [ ] **AWS Bedrock AgentCore Payments** — secondary payment rail, absent entirely.
       Docs 05, 11, 17.
-- [ ] **Clerk auth** — Clerk JWT/JWKS verification for the control-plane API (Clerk
-      chosen over WorkOS, decision 2026-05-22); platform still uses an in-memory
-      bearer-token store. Docs 08, 11, 22.
+- [x] **Clerk auth** — `ClerkVerifier` verifies Clerk RS256 JWTs against the JWKS;
+      `ClerkTokenStore` (drop-in for the `TokenStore` Protocol) maps claims → scopes
+      and keeps per-user Darwin ownership keyed by Clerk user id; `--clerk-issuer` /
+      `--clerk-jwks-url` wire it. `pyjwt[crypto]` added to `[platform]`. +19 tests.
+      → `src/darwin_platform/security/clerk.py` Docs 08, 11, 22. _(done 2026-05-22)_
 - [ ] **Onfido KYC** — second provider; only `PersonaKYCProvider` exists. Docs 11, 16.
 - [ ] **Temporal** — durable billing/harvest/reproduce jobs; runs in-process now.
       Docs 11, 19.
