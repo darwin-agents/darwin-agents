@@ -299,6 +299,12 @@ class _Handle:
     quarantine: QuarantineState = field(
         default_factory=lambda: QuarantineState(active=False)
     )
+    # Owner runtime controls (doc 09). Persistent flags bridged into the
+    # genome's OrchestratorState at every heartbeat boundary by ``_drive``,
+    # so a control set mid-life takes effect on the very next tick.
+    reproduction_blocked: bool = False
+    disabled_neurons: set[str] = field(default_factory=set)
+    disabled_categories: set[str] = field(default_factory=set)
     # Set when a forced reproduction with amendment is in flight. After the
     # next child of this Darwin is observed, the supervisor kills the
     # parent — doc 02's "the parent dies; the child carries the amendment".
@@ -307,6 +313,14 @@ class _Handle:
     # the next ledger entry to attribute. Idempotent: a re-sweep starting
     # from here only sees new entries.
     billing_observed: int = 0
+    # Phase 2 maintenance (doc 22): wall-clock of the last per-Darwin
+    # drift profiling run (0.0 = baseline not yet established); cursor
+    # into this Darwin's own audit slice so each drift profile sees one
+    # interval's events, not the cumulative log; a per-Darwin run counter
+    # used as the DriftDetector period label.
+    last_drift_maintenance_ts: float = 0.0
+    drift_audit_cursor: int = 0
+    maintenance_runs: int = 0
 
 
 # -- the supervisor --------------------------------------------------------
@@ -366,6 +380,7 @@ class Supervisor:
         namespace_provisioner: NamespaceProvisioner | None = None,
         drift_detector: DriftDetector | None = None,
         merkle_anchor_publisher: MerkleAnchorPublisher | None = None,
+        maintenance_interval_seconds: float = 86400.0,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -522,6 +537,18 @@ class Supervisor:
         self._merkle_anchor: MerkleAnchorPublisher | None = (
             merkle_anchor_publisher
         )
+        # Drive-loop maintenance cadence (doc 22). Drift profiling is
+        # per-Darwin; Merkle anchoring + omnibus reconciliation are
+        # fleet-level. Both fire on a wall-clock interval so the cadence
+        # is decoupled from heartbeat speed — a soak can set it low, a
+        # production deploy leaves it daily.
+        # Floor at 1ms so a zero/negative value can't busy-spin the
+        # maintenance work every cycle; sub-second values are otherwise
+        # honoured (a soak sets it low, production leaves it daily).
+        self._maintenance_interval = max(
+            0.001, float(maintenance_interval_seconds)
+        )
+        self._last_fleet_maintenance_ts = self._clock()
         # Doc 08 §"Billing model". Revenue accrues from each metered wallet
         # debit (markup pass-through) and each harvest (fee on gross). The
         # genome doesn't know about billing — the supervisor sweeps the
@@ -765,6 +792,33 @@ class Supervisor:
                         "lossless": bool(has_manifest),
                     },
                 )
+                # Restore a persisted quarantine (doc 23): a Darwin that was
+                # at level-4 before the restart comes back quarantined AND
+                # paused — it must not slip back to running unsupervised.
+                if rec.quarantined:
+                    h = self._darwins.get(status.darwin_id)
+                    if h is not None:
+                        h.quarantine = QuarantineState(
+                            active=True,
+                            reason=rec.quarantine_reason,
+                            operator=rec.quarantine_operator,
+                            applied_ts=rec.quarantine_applied_ts,
+                        )
+                        try:
+                            h.stack.pause.pause(
+                                f"quarantine:{rec.quarantine_reason}"
+                            )
+                        except Exception:
+                            pass
+                        self._audit.record(
+                            actor="platform.resume",
+                            action="quarantine_restored",
+                            darwin_id=status.darwin_id,
+                            metadata={
+                                "reason": rec.quarantine_reason,
+                                "operator": rec.quarantine_operator,
+                            },
+                        )
                 resumed += 1
             except Exception as exc:
                 self._audit.record(
@@ -1707,6 +1761,18 @@ class Supervisor:
                 darwin_id=darwin_id,
                 metadata={"reason": reason, "operator": operator},
             )
+            # Write-through so a supervisor restart restores the quarantine
+            # (doc 23) — a quarantined Darwin must not silently come back
+            # running. Best-effort, like the kill write-through.
+            if self._lifecycle is not None:
+                try:
+                    self._lifecycle.set_quarantine(
+                        darwin_id, active=True, reason=reason,
+                        operator=operator,
+                        applied_ts=h.quarantine.applied_ts,
+                    )
+                except Exception:
+                    pass
 
     async def unquarantine(
         self,
@@ -1733,6 +1799,11 @@ class Supervisor:
                 darwin_id=darwin_id,
                 metadata={"operator": operator},
             )
+            if self._lifecycle is not None:
+                try:
+                    self._lifecycle.set_quarantine(darwin_id, active=False)
+                except Exception:
+                    pass
 
     # -- billing (doc 08 §"Billing model") --------------------------------
     async def harvest(
@@ -1969,6 +2040,140 @@ class Supervisor:
         if not hasattr(wallet, "policy"):
             raise SupervisorError("wallet does not expose policy")
         return wallet.policy()
+
+    # -- owner runtime controls (doc 09) ----------------------------------
+    async def set_spend_lock(
+        self,
+        darwin_id: str,
+        *,
+        locked: bool,
+        reason: str = "owner spend-lock",
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Engage or release the owner spend-lock (doc 09). A locked Darwin
+        keeps running but cannot make outbound payments. Distinct from
+        tightening caps — releasing the lock restores the owner's chosen
+        caps untouched."""
+        with span(
+            "supervisor.set_spend_lock",
+            darwin_id=darwin_id,
+            attributes={"locked": locked},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            wallet = h.stack.wallet
+            if not hasattr(wallet, "set_spend_lock"):
+                raise SupervisorError("wallet does not support spend-lock")
+            result = wallet.set_spend_lock(
+                bool(locked), reason=reason if locked else None
+            )
+            self._audit.record(
+                actor=actor,
+                action="spend_lock" if locked else "spend_unlock",
+                darwin_id=darwin_id,
+                metadata={"reason": reason} if locked else {},
+            )
+            return result
+
+    async def set_reproduction_block(
+        self,
+        darwin_id: str,
+        *,
+        blocked: bool,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Block or unblock autonomous reproduction (doc 09). A blocked Darwin
+        still runs and earns; ``check_reproduction`` simply never fires a
+        natural spawn. A platform forced reproduction is unaffected — forcing
+        is an explicit override, blocking is a standing policy."""
+        with span(
+            "supervisor.set_reproduction_block",
+            darwin_id=darwin_id,
+            attributes={"blocked": blocked},
+        ) as s:
+            h = self._get(darwin_id)
+            if h.killed:
+                raise SupervisorError(
+                    f"darwin {darwin_id} is killed; reproduction block "
+                    f"is a no-op"
+                )
+            annotate_span_with_runtime(s, h.runtime)
+            h.reproduction_blocked = bool(blocked)
+            self._audit.record(
+                actor=actor,
+                action=(
+                    "block_reproduction" if blocked
+                    else "unblock_reproduction"
+                ),
+                darwin_id=darwin_id,
+                metadata={},
+            )
+            return {"reproduction_blocked": h.reproduction_blocked}
+
+    async def set_disabled_neurons(
+        self,
+        darwin_id: str,
+        *,
+        neurons: list[str],
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Replace the set of neurons disabled for this Darwin (doc 09). A
+        disabled neuron is dropped from dispatch selection; pass an empty
+        list to re-enable everything."""
+        with span("supervisor.set_disabled_neurons", darwin_id=darwin_id) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            h.disabled_neurons = {
+                str(n).strip() for n in neurons if str(n).strip()
+            }
+            self._audit.record(
+                actor=actor,
+                action="set_disabled_neurons",
+                darwin_id=darwin_id,
+                metadata={"disabled": sorted(h.disabled_neurons)},
+            )
+            return {"disabled_neurons": sorted(h.disabled_neurons)}
+
+    async def set_disabled_categories(
+        self,
+        darwin_id: str,
+        *,
+        categories: list[str],
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Replace the set of business categories disabled for this Darwin
+        (doc 09). A task whose category is disabled is not dispatched."""
+        with span(
+            "supervisor.set_disabled_categories", darwin_id=darwin_id
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            h.disabled_categories = {
+                str(c).strip() for c in categories if str(c).strip()
+            }
+            self._audit.record(
+                actor=actor,
+                action="set_disabled_categories",
+                darwin_id=darwin_id,
+                metadata={"disabled": sorted(h.disabled_categories)},
+            )
+            return {"disabled_categories": sorted(h.disabled_categories)}
+
+    def get_owner_controls(self, darwin_id: str) -> dict[str, Any]:
+        """The current owner-control state for a Darwin (doc 09)."""
+        h = self._get(darwin_id)
+        wallet = h.stack.wallet
+        spend_lock = (
+            wallet.spend_lock()
+            if hasattr(wallet, "spend_lock")
+            else {"spend_locked": False, "reason": None}
+        )
+        return {
+            "spend_lock": spend_lock,
+            "reproduction_blocked": h.reproduction_blocked,
+            "disabled_neurons": sorted(h.disabled_neurons),
+            "disabled_categories": sorted(h.disabled_categories),
+        }
 
     # -- platform signing service surface (doc 08) ------------------------
     def signing_public_key_pem(self) -> bytes:
@@ -2549,6 +2754,144 @@ class Supervisor:
         # authoritative one and handles the inactive case + persistence.
         return self._lineage_registry.ancestry_of(darwin_id)
 
+    # -- Phase 2 maintenance cadence (doc 22) ----------------------------
+    def _run_maintenance(self, handle: _Handle) -> None:
+        """Wall-clock-paced maintenance, invoked every drive cycle. The
+        timestamp comparisons are cheap; the actual work only fires once
+        per ``maintenance_interval``. Per-Darwin drift profiling is keyed
+        on the handle; fleet-level Merkle anchoring + omnibus
+        reconciliation run once across the whole fleet.
+
+        Never raises — a maintenance failure is audit-logged, not allowed
+        to bring down a drive loop."""
+        now = self._clock()
+        interval = self._maintenance_interval
+
+        # Per-Darwin: behavioural drift profiling.
+        if self._drift_detector is not None:
+            if handle.last_drift_maintenance_ts == 0.0:
+                # Establish the baseline; first profile fires one
+                # interval from now.
+                handle.last_drift_maintenance_ts = now
+            elif now - handle.last_drift_maintenance_ts >= interval:
+                handle.last_drift_maintenance_ts = now
+                try:
+                    self._run_drift_observation(handle)
+                except Exception as exc:  # noqa: BLE001
+                    self._audit.record(
+                        actor="platform.maintenance",
+                        action="drift_observation_failed",
+                        darwin_id=handle.darwin_id,
+                        metadata={"reason": str(exc)[:200]},
+                    )
+
+        # Fleet-level: Merkle anchoring + omnibus reconciliation. The
+        # first drive loop to cross the interval claims it (synchronous —
+        # no await between the check and the timestamp bump, so two
+        # tasks can't both run it).
+        if now - self._last_fleet_maintenance_ts >= interval:
+            self._last_fleet_maintenance_ts = now
+            try:
+                self._run_fleet_maintenance(now)
+            except Exception as exc:  # noqa: BLE001
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="fleet_maintenance_failed",
+                    metadata={"reason": str(exc)[:200]},
+                )
+
+    def _run_drift_observation(self, handle: _Handle) -> None:
+        """Build a :class:`DailyProfile` from this Darwin's audit slice
+        since the last run and feed it to the drift detector. Each run
+        sees exactly one interval's events (the cursor advances) so the
+        rolling profile measures per-interval deltas, not cumulative
+        totals."""
+        assert self._drift_detector is not None
+        did = handle.darwin_id
+        rows = handle.stack.audit_sink.read_all()
+        own = [r for r in rows if r.get("darwin_id") == did]
+        slice_ = own[handle.drift_audit_cursor:]
+        handle.drift_audit_cursor = len(own)
+        handle.maintenance_runs += 1
+        profile = DailyProfile.from_audit_rows(
+            darwin_id=did,
+            day_iso=f"period-{handle.maintenance_runs}",
+            rows=slice_,
+        )
+        alerts = self._drift_detector.observe_day(profile)
+        for a in alerts:
+            self._audit.record(
+                actor="platform.maintenance",
+                action="drift_alert",
+                darwin_id=did,
+                metadata={
+                    "dimension": a.dimension,
+                    "severity": a.severity.value,
+                    "z_score": round(a.z_score, 4),
+                    "persistence_days": a.persistence_days,
+                    "note": a.note,
+                },
+            )
+
+    def _run_fleet_maintenance(self, now: float) -> None:
+        """Publish the daily Merkle anchor + reconcile the omnibus
+        wallet. Each concern is independently guarded so one failure
+        does not skip the other."""
+        # Microsecond-resolution label so every maintenance run anchors a
+        # distinct root — at the daily default it reads as a timestamp;
+        # at a soak's short interval it stays unique per run.
+        day_label = (
+            time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now))
+            + f".{int((now % 1) * 1_000_000):06d}"
+        )
+        if self._merkle_anchor is not None:
+            try:
+                roots = self.collect_daily_merkle_roots(day_label)
+                if roots:
+                    anchor = self._merkle_anchor.publish_daily(
+                        day_iso=day_label,
+                        per_darwin_roots=roots,
+                        actor="platform.maintenance",
+                    )
+                    self._audit.record(
+                        actor="platform.maintenance",
+                        action="merkle_anchor",
+                        metadata={
+                            "day": day_label,
+                            "fleet_root": anchor.fleet_root,
+                            "darwin_count": len(roots),
+                            "anchor_tx": anchor.anchor_tx,
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="merkle_anchor_failed",
+                    metadata={"reason": str(exc)[:200]},
+                )
+        if self._omnibus_wallet is not None:
+            try:
+                result = self.reconcile_omnibus()
+                if result is not None:
+                    self._audit.record(
+                        actor="platform.maintenance",
+                        action=(
+                            "omnibus_reconcile" if result.ok
+                            else "omnibus_reconcile_discrepancy"
+                        ),
+                        metadata={
+                            "ok": result.ok,
+                            "discrepancy_usdc": result.discrepancy_usdc,
+                            "note": result.note,
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="omnibus_reconcile_failed",
+                    metadata={"reason": str(exc)[:200]},
+                )
+
     async def _drive(self, handle: _Handle) -> None:
         """Drive one Darwin: one heartbeat per loop iteration, with an
         ``asyncio.sleep`` between to yield to other Darwins on the same loop.
@@ -2564,6 +2907,15 @@ class Supervisor:
                     # has to actually fire, not get gated by fitness).
                     runtime.state.force_reproduce = True
                     handle.reproduce_requested = False
+                # Owner runtime controls (doc 09): persistent flags, mirrored
+                # into the genome's working memory every heartbeat so a
+                # control set mid-life is honoured on the next tick. Cheap
+                # and idempotent — the inert defaults change nothing.
+                runtime.state.reproduction_blocked = handle.reproduction_blocked
+                runtime.state.disabled_neurons = sorted(handle.disabled_neurons)
+                runtime.state.disabled_categories = sorted(
+                    handle.disabled_categories
+                )
                 await runtime.run(max_heartbeats=1)
                 # A new child may have been spawned during this tick. Auto-
                 # boot it so the same supervisor instance drives the next
@@ -2616,6 +2968,11 @@ class Supervisor:
                         )
                     except Exception:
                         pass
+                # Phase 2 maintenance (doc 22): drift profiling, Merkle
+                # anchoring, omnibus reconciliation. Wall-clock paced —
+                # the per-cycle check is a cheap timestamp compare; the
+                # work only fires once per maintenance interval.
+                self._run_maintenance(handle)
                 if not runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)

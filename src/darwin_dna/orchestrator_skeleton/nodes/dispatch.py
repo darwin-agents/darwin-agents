@@ -42,13 +42,46 @@ async def run(state, ctx):
     from ...neurons import Task
 
     task = Task.model_validate(p["task"])
+
+    # Owner runtime control (doc 09): a task in a disabled business category
+    # is not dispatched at all — the Darwin keeps running, this line of work
+    # is simply parked while the owner has it switched off.
+    if task.category in state.disabled_categories:
+        ctx.audit.log_event(
+            "dispatch.category_disabled", {"category": task.category}
+        )
+        state.route = "check_reproduction"
+        return state
+
+    # Owner runtime control (doc 09): a disabled neuron is removed from
+    # selection (and ignored even if the plan named it explicitly).
+    disabled = set(state.disabled_neurons)
+    preselected = p.get("neuron") or ""
+    if preselected in disabled:
+        preselected = ""
+    selectable = (
+        {k: v for k, v in ctx.catalog.items() if k not in disabled}
+        if disabled
+        else ctx.catalog
+    )
     # Recency-of-success tie-breaking is a soma refinement; the Layer 0
     # selector ships with an empty recency map (cost-only ordering).
-    neuron = ctx.catalog.get(p.get("neuron") or "") or _select(
-        ctx.catalog, task.required_tags, {}
+    neuron = selectable.get(preselected) or _select(
+        selectable, task.required_tags, {}
     )
 
     if neuron is None:
+        # Distinguish an owner-disabled neuron from a genuine capability gap:
+        # if the *unfiltered* catalog would have matched, the owner disabled
+        # the only fit — that is a policy decision, not a missing capability.
+        if disabled and _select(ctx.catalog, task.required_tags, {}) is not None:
+            ctx.audit.log_event(
+                "dispatch.neuron_disabled",
+                {"tags": sorted(task.required_tags),
+                 "disabled": sorted(disabled)},
+            )
+            state.route = "check_reproduction"
+            return state
         # No neuron can do this — that's a capability gap, not a failure.
         for tag in task.required_tags:
             if tag not in state.pending_capability_requests:

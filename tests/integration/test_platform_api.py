@@ -90,6 +90,52 @@ async def test_pause_resume_endpoints(client) -> None:
     await _wait_until(lambda: not h.runtime.state.paused)
 
 
+async def test_owner_control_endpoints(client) -> None:
+    """The doc-09 owner runtime controls over the HTTP surface."""
+    c, sup = client
+    r = await c.post("/darwins", json={"opening_usdc": 60.0})
+    did = r.json()["darwin_id"]
+    h = sup._darwins[did]  # noqa: SLF001
+    await _wait_until(lambda: h.runtime.state.tick >= 3)
+
+    r = await c.post(
+        f"/darwins/{did}/controls/spend_lock",
+        json={"locked": True, "reason": "owner away"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["spend_locked"] is True
+
+    r = await c.post(
+        f"/darwins/{did}/controls/reproduction_block", json={"blocked": True}
+    )
+    assert r.status_code == 200
+    assert r.json()["reproduction_blocked"] is True
+
+    r = await c.post(
+        f"/darwins/{did}/controls/disabled_neurons",
+        json={"neurons": ["ads.manager"]},
+    )
+    assert r.status_code == 200
+    r = await c.post(
+        f"/darwins/{did}/controls/disabled_categories",
+        json={"categories": ["trading.crypto"]},
+    )
+    assert r.status_code == 200
+
+    r = await c.get(f"/darwins/{did}/controls")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["spend_lock"]["spend_locked"] is True
+    assert body["reproduction_blocked"] is True
+    assert body["disabled_neurons"] == ["ads.manager"]
+    assert body["disabled_categories"] == ["trading.crypto"]
+
+    r = await c.post(
+        "/darwins/does-not-exist/controls/spend_lock", json={"locked": True}
+    )
+    assert r.status_code == 404
+
+
 async def test_escalation_response_endpoint(client) -> None:
     c, sup = client
     r = await c.post(

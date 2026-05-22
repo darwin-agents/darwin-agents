@@ -39,7 +39,14 @@ def run(state, ctx):
     enough_surplus = surplus > hp.min_profit_for_reproduction_usdc
     healthy = score.score > 0.0
 
-    natural = bool(enough_profit and enough_surplus and healthy)
+    # Owner runtime control (doc 09): a blocked Darwin still runs and earns,
+    # it just never spawns a child autonomously. The block stops *natural*
+    # reproduction only — a platform forced reproduction is an explicit
+    # override and is unaffected.
+    natural = bool(
+        enough_profit and enough_surplus and healthy
+        and not state.reproduction_blocked
+    )
     # Platform-set force bypass (doc 08 force_reproduce / doc 02 amendment).
     # Forced reproduction still requires enough surplus to fund the child —
     # the fitness/profit gate is bypassed, the solvency floor is not. A
@@ -55,6 +62,7 @@ def run(state, ctx):
             "profit_since_reproduction": round(profit, 6),
             "reproduce": state.reproduce,
             "forced": forced,
+            "blocked": bool(state.reproduction_blocked),
         },
     )
     state.tick += 1

@@ -131,6 +131,23 @@ class ThrottleRequest(BaseModel):
     max_daily_calls: int = Field(ge=0)
 
 
+class SpendLockRequest(BaseModel):
+    locked: bool
+    reason: str = "owner spend-lock"
+
+
+class ReproductionBlockRequest(BaseModel):
+    blocked: bool
+
+
+class DisabledNeuronsRequest(BaseModel):
+    neurons: list[str] = Field(default_factory=list)
+
+
+class DisabledCategoriesRequest(BaseModel):
+    categories: list[str] = Field(default_factory=list)
+
+
 class HarvestRequest(BaseModel):
     amount_usdc: float = Field(gt=0)
     destination: str = Field(min_length=1)
@@ -355,6 +372,93 @@ def build_app(
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
         return {"status": "reproduction-requested"}
+
+    # -- owner runtime controls (doc 09) ----------------------------------
+    @app.post("/darwins/{darwin_id}/controls/spend_lock")
+    async def set_spend_lock(
+        darwin_id: str,
+        request: Request,
+        req: SpendLockRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).set_spend_lock(
+                darwin_id, locked=req.locked, reason=req.reason,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/darwins/{darwin_id}/controls/reproduction_block")
+    async def set_reproduction_block(
+        darwin_id: str,
+        request: Request,
+        req: ReproductionBlockRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).set_reproduction_block(
+                darwin_id, blocked=req.blocked, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/darwins/{darwin_id}/controls/disabled_neurons")
+    async def set_disabled_neurons(
+        darwin_id: str,
+        request: Request,
+        req: DisabledNeuronsRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).set_disabled_neurons(
+                darwin_id, neurons=req.neurons, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/darwins/{darwin_id}/controls/disabled_categories")
+    async def set_disabled_categories(
+        darwin_id: str,
+        request: Request,
+        req: DisabledCategoriesRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).set_disabled_categories(
+                darwin_id, categories=req.categories, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/darwins/{darwin_id}/controls")
+    async def get_owner_controls(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return _sup(request).get_owner_controls(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
 
     # -- escalation response ----------------------------------------------
     @app.post("/darwins/{darwin_id}/escalations/{escalation_id}/respond")

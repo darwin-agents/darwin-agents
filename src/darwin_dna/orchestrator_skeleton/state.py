@@ -80,6 +80,19 @@ class OrchestratorState(BaseModel):
     force_reproduce: bool = False
     fitness: float | None = None
 
+    # owner runtime controls (docs/engineering/09). The supervisor bridges
+    # these into working memory at each heartbeat boundary; the genome nodes
+    # honour them. All default to the inert value so a Darwin nobody
+    # constrains behaves exactly as before — cross-engine parity undisturbed.
+    # - reproduction_blocked: check_reproduction never fires a *natural*
+    #   spawn (a platform forced reproduction still overrides — forcing is an
+    #   explicit override, blocking is a standing policy).
+    # - disabled_neurons / disabled_categories: dispatch drops a disabled
+    #   neuron from selection and refuses to dispatch a disabled category.
+    reproduction_blocked: bool = False
+    disabled_neurons: list[str] = Field(default_factory=list)
+    disabled_categories: list[str] = Field(default_factory=list)
+
     # diagnostics — recent node trail for the dashboard / tests
     trail: list[str] = Field(default_factory=list)
 

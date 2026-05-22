@@ -39,6 +39,13 @@ class FakeWallet:
         self._per_action_cap: float = HARD_CAPS.per_action_usdc
         self._per_day_cap: float = HARD_CAPS.per_day_usdc
         self._per_lifetime_cap: float = HARD_CAPS.per_lifetime_usdc
+        # Owner spend-lock (doc 09 owner controls). When engaged the wallet
+        # refuses every *outbound payment* — a neuron paying a counterparty —
+        # while still allowing metered LLM/compute billing, so the Darwin
+        # keeps running. Distinct from a $0 cap: releasing the lock restores
+        # whatever caps the owner set, untouched.
+        self._spend_locked: bool = False
+        self._spend_lock_reason: str | None = None
         # Optional sanctions screener (doc 17). Default None preserves
         # legacy behaviour (the 90-day sim's recipients are all symbolic
         # like "blog.example/affiliate"). The platform installs one at
@@ -96,6 +103,14 @@ class FakeWallet:
         amount = float(amount_usdc)
         if amount < 0:
             raise WalletError("negative debit")
+        # Owner spend-lock (doc 09): refuse outbound payments while engaged.
+        # Metered platform billing (LLM/compute) is exempt — locking spend
+        # stops the Darwin moving money, it does not stop it thinking.
+        if kind == "payment" and self._spend_locked:
+            raise WalletError(
+                f"spend locked: "
+                f"{self._spend_lock_reason or 'owner spend-lock engaged'}"
+            )
         # Independent provider-side hard ceiling (defense in depth). The
         # effective cap is the lower of the genome's HARD_CAPS and any
         # platform-installed soft cap (doc 08 POST /platform/wallets/{id}/
@@ -196,6 +211,25 @@ class FakeWallet:
             "hard_per_action_usdc": HARD_CAPS.per_action_usdc,
             "hard_per_day_usdc": HARD_CAPS.per_day_usdc,
             "hard_per_lifetime_usdc": HARD_CAPS.per_lifetime_usdc,
+            "spend_locked": self._spend_locked,
+            "spend_lock_reason": self._spend_lock_reason,
+        }
+
+    # -- owner spend-lock (doc 09 owner controls) --------------------------
+    def set_spend_lock(
+        self, locked: bool, *, reason: str | None = None
+    ) -> dict:
+        """Engage or release the owner spend-lock. While locked the wallet
+        refuses every outbound payment; metered LLM/compute billing still
+        goes through so the Darwin keeps running. Returns the lock state."""
+        self._spend_locked = bool(locked)
+        self._spend_lock_reason = reason if self._spend_locked else None
+        return self.spend_lock()
+
+    def spend_lock(self) -> dict:
+        return {
+            "spend_locked": self._spend_locked,
+            "reason": self._spend_lock_reason,
         }
 
     def owner_soft_caps(self) -> OwnerSoftCaps | None:

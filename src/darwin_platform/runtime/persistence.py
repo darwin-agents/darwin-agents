@@ -154,7 +154,11 @@ CREATE TABLE IF NOT EXISTS darwin_lifecycle (
     alive          INTEGER NOT NULL,
     killed         INTEGER NOT NULL,
     kill_reason    TEXT,
-    escalation_auto TEXT
+    escalation_auto TEXT,
+    quarantined           INTEGER NOT NULL DEFAULT 0,
+    quarantine_reason     TEXT,
+    quarantine_operator   TEXT,
+    quarantine_applied_ts {real}
 );
 CREATE INDEX IF NOT EXISTS darwin_lifecycle_alive_idx ON darwin_lifecycle(alive);
 
@@ -210,7 +214,7 @@ CREATE INDEX IF NOT EXISTS platform_retired_keys_drain_idx
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 2
+CURRENT_SCHEMA_VERSION: int = 3
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -1027,6 +1031,8 @@ class LifecycleRecord:
     __slots__ = (
         "darwin_id", "opening_usdc", "last_balance", "parent_id",
         "spawned_at", "alive", "killed", "kill_reason", "escalation_auto",
+        "quarantined", "quarantine_reason", "quarantine_operator",
+        "quarantine_applied_ts",
     )
 
     def __init__(
@@ -1041,6 +1047,10 @@ class LifecycleRecord:
         killed: bool,
         kill_reason: str | None,
         escalation_auto: str | None,
+        quarantined: bool = False,
+        quarantine_reason: str | None = None,
+        quarantine_operator: str | None = None,
+        quarantine_applied_ts: float | None = None,
     ) -> None:
         self.darwin_id = darwin_id
         self.opening_usdc = opening_usdc
@@ -1051,6 +1061,12 @@ class LifecycleRecord:
         self.killed = killed
         self.kill_reason = kill_reason
         self.escalation_auto = escalation_auto
+        # Doc-09 level-4 quarantine, persisted (doc 23): a quarantined
+        # Darwin must come back from a supervisor restart still quarantined.
+        self.quarantined = quarantined
+        self.quarantine_reason = quarantine_reason
+        self.quarantine_operator = quarantine_operator
+        self.quarantine_applied_ts = quarantine_applied_ts
 
     def to_json(self) -> dict:
         return {
@@ -1063,6 +1079,10 @@ class LifecycleRecord:
             "killed": self.killed,
             "kill_reason": self.kill_reason,
             "escalation_auto": self.escalation_auto,
+            "quarantined": self.quarantined,
+            "quarantine_reason": self.quarantine_reason,
+            "quarantine_operator": self.quarantine_operator,
+            "quarantine_applied_ts": self.quarantine_applied_ts,
         }
 
 
@@ -1123,10 +1143,38 @@ class PersistentLifecycleStore:
                 (float(balance_usdc), darwin_id),
             )
 
+    def set_quarantine(
+        self,
+        darwin_id: str,
+        *,
+        active: bool,
+        reason: str | None = None,
+        operator: str | None = None,
+        applied_ts: float | None = None,
+    ) -> None:
+        """Persist the doc-09 level-4 quarantine state (doc 23). Write-through
+        on every quarantine / unquarantine so a supervisor restart restores
+        a quarantined Darwin still quarantined, not silently running."""
+        with self._backend:
+            self._backend.execute(
+                "UPDATE darwin_lifecycle SET quarantined = ?, "
+                "quarantine_reason = ?, quarantine_operator = ?, "
+                "quarantine_applied_ts = ? WHERE darwin_id = ?",
+                (
+                    1 if active else 0,
+                    reason if active else None,
+                    operator if active else None,
+                    applied_ts if active else None,
+                    darwin_id,
+                ),
+            )
+
     def get(self, darwin_id: str) -> LifecycleRecord | None:
         row = self._backend.execute(
             "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
-            "spawned_at, alive, killed, kill_reason, escalation_auto "
+            "spawned_at, alive, killed, kill_reason, escalation_auto, "
+            "quarantined, quarantine_reason, quarantine_operator, "
+            "quarantine_applied_ts "
             "FROM darwin_lifecycle WHERE darwin_id = ?",
             (darwin_id,),
         ).fetchone()
@@ -1137,7 +1185,9 @@ class PersistentLifecycleStore:
     def list_alive(self) -> list[LifecycleRecord]:
         rows = list(self._backend.execute(
             "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
-            "spawned_at, alive, killed, kill_reason, escalation_auto "
+            "spawned_at, alive, killed, kill_reason, escalation_auto, "
+            "quarantined, quarantine_reason, quarantine_operator, "
+            "quarantine_applied_ts "
             "FROM darwin_lifecycle WHERE alive = 1 ORDER BY spawned_at ASC"
         ).fetchall())
         return [_lifecycle_from_row(r) for r in rows]
@@ -1145,7 +1195,9 @@ class PersistentLifecycleStore:
     def list_all(self) -> list[LifecycleRecord]:
         rows = list(self._backend.execute(
             "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
-            "spawned_at, alive, killed, kill_reason, escalation_auto "
+            "spawned_at, alive, killed, kill_reason, escalation_auto, "
+            "quarantined, quarantine_reason, quarantine_operator, "
+            "quarantine_applied_ts "
             "FROM darwin_lifecycle ORDER BY spawned_at ASC"
         ).fetchall())
         return [_lifecycle_from_row(r) for r in rows]
@@ -1169,6 +1221,14 @@ def _lifecycle_from_row(row) -> LifecycleRecord:
         killed=bool(_get("killed")),
         kill_reason=_get("kill_reason"),
         escalation_auto=_get("escalation_auto"),
+        quarantined=bool(_get("quarantined")),
+        quarantine_reason=_get("quarantine_reason"),
+        quarantine_operator=_get("quarantine_operator"),
+        quarantine_applied_ts=(
+            float(_get("quarantine_applied_ts"))
+            if _get("quarantine_applied_ts") is not None
+            else None
+        ),
     )
 
 
@@ -1357,7 +1417,51 @@ class PersistentManifestStore:
 # recorded.
 # Version 2 adds platform_retired_keys (additive — handled by the
 # schema's CREATE TABLE IF NOT EXISTS).
+# Version 3 adds the quarantine_* columns to darwin_lifecycle. Adding a
+# COLUMN to an *existing* table is NOT covered by CREATE TABLE IF NOT
+# EXISTS, so this step needs a real migration.
+
+
+def _column_exists(backend: _Backend, table: str, column: str) -> bool:
+    """True if ``table`` already has ``column``. Lets an add-column
+    migration stay idempotent — a freshly created DB already carries the
+    column from the main DDL, so the migration must not re-add it."""
+    if backend.kind == "postgres":
+        row = backend.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = ?",
+            (table, column),
+        ).fetchone()
+        return row is not None
+    rows = backend.execute(f"PRAGMA table_info({table})").fetchall()
+    names: set[str] = set()
+    for r in rows:
+        try:
+            names.add(r["name"])
+        except (KeyError, IndexError, TypeError):
+            names.add(r[1])  # sqlite PRAGMA: (cid, name, type, ...)
+    return column in names
+
+
+def _migrate_v3_quarantine_columns(backend: _Backend) -> None:
+    """v3: persist quarantine state on darwin_lifecycle (doc 23) so a
+    quarantined Darwin survives a supervisor restart still quarantined."""
+    real = "DOUBLE PRECISION" if backend.kind == "postgres" else "REAL"
+    columns = (
+        ("quarantined", "INTEGER NOT NULL DEFAULT 0"),
+        ("quarantine_reason", "TEXT"),
+        ("quarantine_operator", "TEXT"),
+        ("quarantine_applied_ts", real),
+    )
+    for name, coldef in columns:
+        if not _column_exists(backend, "darwin_lifecycle", name):
+            backend.execute(
+                f"ALTER TABLE darwin_lifecycle ADD COLUMN {name} {coldef}"
+            )
+
+
 _MIGRATIONS: dict[int, Any] = {
     # 1: no-op baseline (covered by CREATE TABLE IF NOT EXISTS).
     # 2: no-op (platform_retired_keys table covered by schema).
+    3: _migrate_v3_quarantine_columns,
 }
