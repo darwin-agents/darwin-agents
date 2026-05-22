@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - chore(release): `make release` commits, tags, and pushes; opt out with `NO_COMMIT` / `NO_PUSH`
+- feat(cli): serve flags for OTLP, LiteLLM, Vault Transit signing, patch staging, and Phase 2 toggles
 - feat(observability): `configure_otlp_tracing` wires OTLP/HTTP exporter at serve startup
 - chore(deps): `opentelemetry-exporter-otlp-proto-http` on `[platform]` extra for Jaeger/OTLP tracing
 - docs: engineering backlog `TODO.md` from docs 01–30 audit
