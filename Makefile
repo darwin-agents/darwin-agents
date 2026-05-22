@@ -141,10 +141,11 @@ changelog-preview: ## Print [Unreleased] to stdout (no file changes)
 changelog-sync: ## Replace [Unreleased] in CHANGELOG.md from git history
 	$(UV) run python scripts/changelog.py sync
 
-release: ## Cut release: version CHANGELOG + bump pyproject + git tag (VERSION=0.0.2)
+release: ## Cut release: CHANGELOG + pyproject + commit + tag + push (VERSION=0.0.2)
 	@test -n "$(VERSION)" || { echo "Usage: make release VERSION=0.0.2"; exit 1; }
 	$(UV) run python scripts/changelog.py release $(VERSION) \
-		$(if $(NO_TAG),--no-tag,) $(if $(NO_BUMP),--no-bump,)
+		$(if $(NO_TAG),--no-tag,) $(if $(NO_BUMP),--no-bump,) \
+		$(if $(NO_COMMIT),--no-commit,) $(if $(NO_PUSH),--no-push,)
 
 # --- Helm / container ---------------------------------------------------------
 

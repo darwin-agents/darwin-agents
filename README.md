@@ -510,10 +510,10 @@ Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [proj
 ```bash
 make changelog-sync          # rewrite ## [Unreleased] from commits since the last tag
 make changelog-preview       # print the same block without touching the file
-make release VERSION=0.0.2   # add ## [0.0.2], clear [Unreleased], bump pyproject, tag v0.0.2
+make release VERSION=0.0.2   # CHANGELOG + pyproject, commit, tag v0.0.2, push
 ```
 
-`changelog-sync` **replaces** the whole `[Unreleased]` section (custom lines there are overwritten). Put release notes in commit messages or edit after sync. `release` uses commits since the previous tag; then commit and `git push --tags`.
+`changelog-sync` **replaces** the whole `[Unreleased]` section (custom lines there are overwritten). Put release notes in commit messages or edit after sync. `release` commits `chore(release): prepare vX.Y.Z`, tags, and runs `git push && git push --tags`. Opt out: `NO_COMMIT=1`, `NO_PUSH=1`, `NO_TAG=1`, or `NO_BUMP=1`.
 
 ---
 

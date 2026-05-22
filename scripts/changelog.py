@@ -95,13 +95,33 @@ def _normalize_version(raw: str) -> tuple[str, str]:
     return ver, f"v{ver}"
 
 
+def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=ROOT, check=check, text=True)
+
+
 def _tag_exists(tag: str) -> bool:
-    proc = subprocess.run(
-        ["git", "rev-parse", "--verify", f"refs/tags/{tag}"],
-        cwd=ROOT,
-        capture_output=True,
-    )
+    proc = _git("rev-parse", "--verify", f"refs/tags/{tag}", check=False)
     return proc.returncode == 0
+
+
+def _commit_release(ver: str) -> None:
+    _git("add", str(CHANGELOG.relative_to(ROOT)), str(PYPROJECT.relative_to(ROOT)))
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=ROOT,
+    )
+    if staged.returncode == 0:
+        print("No staged changes — skipping commit.")
+        return
+    message = f"chore(release): prepare v{ver}"
+    _git("commit", "-m", message)
+    print(f"Committed: {message}")
+
+
+def _push_release() -> None:
+    _git("push")
+    _git("push", "--tags")
+    print("Pushed branch and tags.")
 
 
 def _bump_pyproject(version: str) -> None:
@@ -129,7 +149,14 @@ def cmd_sync() -> None:
     print(f"Updated {UNRELEASED} in {CHANGELOG.relative_to(ROOT)} from git history.")
 
 
-def cmd_release(version: str, *, tag: bool, bump: bool) -> None:
+def cmd_release(
+    version: str,
+    *,
+    tag: bool,
+    bump: bool,
+    commit: bool,
+    push: bool,
+) -> None:
     ver, tag_name = _normalize_version(version)
 
     if tag and _tag_exists(tag_name):
@@ -148,12 +175,19 @@ def cmd_release(version: str, *, tag: bool, bump: bool) -> None:
         _bump_pyproject(ver)
         print(f"Bumped {PYPROJECT.name} → {ver}")
 
+    if commit:
+        _commit_release(ver)
+
     if tag:
-        subprocess.run(["git", "tag", "-a", tag_name, "-m", f"Release {tag_name}"], cwd=ROOT, check=True)
+        _git("tag", "-a", tag_name, "-m", f"Release {tag_name}")
         print(f"Created annotated tag {tag_name}")
 
+    if push:
+        if not commit:
+            sys.exit("push requires commit (files must be committed before pushing tags)")
+        _push_release()
+
     print(f"Released {ver} in {CHANGELOG.name}.")
-    print("Next: review diff, commit, and push with tags.")
 
 
 def main() -> None:
@@ -167,6 +201,8 @@ def main() -> None:
     rel.add_argument("version", help="semver (e.g. 0.0.2 or v0.0.2)")
     rel.add_argument("--no-tag", action="store_true", help="do not create a git tag")
     rel.add_argument("--no-bump", action="store_true", help="do not bump pyproject.toml version")
+    rel.add_argument("--no-commit", action="store_true", help="do not git commit CHANGELOG + pyproject")
+    rel.add_argument("--no-push", action="store_true", help="do not git push branch and tags")
 
     args = parser.parse_args()
     if args.command == "preview":
@@ -174,7 +210,13 @@ def main() -> None:
     elif args.command == "sync":
         cmd_sync()
     elif args.command == "release":
-        cmd_release(args.version, tag=not args.no_tag, bump=not args.no_bump)
+        cmd_release(
+            args.version,
+            tag=not args.no_tag,
+            bump=not args.no_bump,
+            commit=not args.no_commit,
+            push=not args.no_push,
+        )
 
 
 if __name__ == "__main__":
