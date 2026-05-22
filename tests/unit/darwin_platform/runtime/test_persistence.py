@@ -407,3 +407,62 @@ async def test_monitor_alerts_survive_restart(tmp_path: Path) -> None:
         assert any(a.kind == "failure_rate" for a in rows)
     finally:
         await sup2.shutdown()
+
+
+# -- Postgres connection retry (doc 28: reconnect, 5 attempts, exponential)
+
+
+class _Transient(Exception):
+    """Stand-in for psycopg.OperationalError in the retry-loop tests."""
+
+
+def test_retry_connect_succeeds_after_transient_failures():
+    from darwin_platform.runtime.persistence import _retry_connect
+
+    calls: list[int] = []
+    delays: list[float] = []
+
+    def _connect():
+        calls.append(1)
+        if len(calls) < 3:
+            raise _Transient("db not ready")
+        return "CONN"
+
+    conn = _retry_connect(
+        _connect, attempts=5, base_delay=1.0,
+        sleep=delays.append, retry_on=(_Transient,),
+    )
+    assert conn == "CONN"
+    assert len(calls) == 3
+    assert delays == [1.0, 2.0]  # exponential backoff before attempts 2 and 3
+
+
+def test_retry_connect_gives_up_after_max_attempts():
+    from darwin_platform.runtime.persistence import _retry_connect
+
+    delays: list[float] = []
+
+    def _connect():
+        raise _Transient("never up")
+
+    with pytest.raises(_Transient):
+        _retry_connect(
+            _connect, attempts=5, base_delay=1.0,
+            sleep=delays.append, retry_on=(_Transient,),
+        )
+    # 5 attempts → 4 backoffs, doubling each time (doc 28: 1/2/4/8/16s).
+    assert delays == [1.0, 2.0, 4.0, 8.0]
+
+
+def test_retry_connect_does_not_swallow_unexpected_errors():
+    from darwin_platform.runtime.persistence import _retry_connect
+
+    def _connect():
+        raise ValueError("malformed dsn")
+
+    # A non-transient error is not in retry_on — it surfaces immediately.
+    with pytest.raises(ValueError):
+        _retry_connect(
+            _connect, attempts=5, base_delay=1.0,
+            sleep=lambda _s: None, retry_on=(_Transient,),
+        )

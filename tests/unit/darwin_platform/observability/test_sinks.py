@@ -20,6 +20,15 @@ from darwin_platform.observability.sinks import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _instant_backoff(monkeypatch):
+    """Keep the doc-28 retry policy active but make its backoff instant so
+    the suite never actually sleeps. The retry *count* is still exercised."""
+    monkeypatch.setattr(
+        "darwin_platform.observability.sinks.time.sleep", lambda _s: None
+    )
+
+
 def _ticket():
     return RoutedTicket(
         ticket_id="t-1",
@@ -224,3 +233,65 @@ def test_alert_fanout():
     fan.emit(_alert(severity=Severity.CRITICAL))
     assert len(http_a.calls) == 1
     assert len(http_b.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Retry policy (doc 28: up to 3 retries, linear 5s/10s/15s backoff)
+# ---------------------------------------------------------------------------
+
+class _FlakyHTTP:
+    """Fails the first ``fail_times`` requests with 500, then succeeds."""
+
+    def __init__(self, fail_times: int):
+        self.fail_times = fail_times
+        self.calls = 0
+
+    def request(self, method, url, **kwargs):
+        self.calls += 1
+        status = 500 if self.calls <= self.fail_times else 200
+        return types.SimpleNamespace(status_code=status, text="")
+
+
+def test_sink_retries_then_succeeds():
+    http = _FlakyHTTP(fail_times=2)
+    s = GenericWebhookNotificationSink(url="https://hook/", http_client=http)
+    delays: list[float] = []
+    s.set_retry_policy(sleep=delays.append)
+    s.notify(_ticket())
+    assert http.calls == 3          # 2 failures + 1 success
+    assert s.delivered == 1
+    assert s.retries == 2
+    assert s.errors == []
+    assert delays == [5.0, 10.0]    # linear backoff between attempts
+
+
+def test_sink_gives_up_after_three_retries():
+    http = _StubHTTP(status=500)
+    s = GenericWebhookNotificationSink(url="https://hook/", http_client=http)
+    delays: list[float] = []
+    s.set_retry_policy(sleep=delays.append)
+    s.notify(_ticket())
+    assert len(http.calls) == 4     # 1 initial + 3 retries
+    assert s.retries == 3
+    assert s.delivered == 0
+    assert len(s.errors) == 1       # only the final failure is recorded
+    assert delays == [5.0, 10.0, 15.0]
+
+
+def test_retry_can_be_disabled():
+    http = _StubHTTP(status=500)
+    s = GenericWebhookNotificationSink(url="https://hook/", http_client=http)
+    s.set_retry_policy(max_retries=0)
+    s.notify(_ticket())
+    assert len(http.calls) == 1     # no retry
+    assert s.retries == 0
+    assert len(s.errors) == 1
+
+
+def test_retry_backoff_base_is_tunable():
+    http = _StubHTTP(status=500)
+    s = GenericWebhookAlertSink(url="https://alerts/", http_client=http)
+    delays: list[float] = []
+    s.set_retry_policy(backoff_base=1.0, sleep=delays.append)
+    s.emit(_alert(severity=Severity.CRITICAL))
+    assert delays == [1.0, 2.0, 3.0]

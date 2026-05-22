@@ -147,7 +147,85 @@ class CachedScreener:
         return result
 
 
-class ChainalysisScreener:
+# -- transient-failure retry (docs/engineering/28: sanctions API gets
+# 2 retries, fixed 2s) -----------------------------------------------------
+def _request_with_retry(
+    http: Any,
+    *,
+    method: str,
+    url: str,
+    max_retries: int,
+    retry_delay: float,
+    sleep: Callable[[float], None],
+    **kwargs: Any,
+) -> Any:
+    """Issue an HTTP request, retrying transient failures (doc 28: the
+    sanctions API gets 2 retries, fixed 2s). Transient = a raised exception
+    OR a 5xx / 429 response. Returns the final response; re-raises the last
+    exception only when *every* attempt errored, leaving the caller's
+    fail-closed handler to take over."""
+    last_exc: Exception | None = None
+    last_resp: Any = None
+    for attempt in range(1 + max(0, max_retries)):
+        if attempt > 0:
+            sleep(retry_delay)
+        try:
+            resp = http.request(method, url, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - transient; retry then fail closed
+            last_exc = exc
+            continue
+        last_resp = resp
+        status = int(getattr(resp, "status_code", 0))
+        if status < 500 and status != 429:
+            return resp  # success or a non-transient error — done
+    if last_resp is not None:
+        return last_resp  # every attempt returned a transient status
+    raise last_exc if last_exc is not None else RuntimeError(
+        "sanctions request failed with no response"
+    )
+
+
+class _RetryingScreener:
+    """Mixin: a per-screener retry policy for the sanctions HTTP call
+    (doc 28 — 2 retries, fixed 2s). Concrete screeners call ``_init_retry``
+    in their ``__init__`` and ``_retried_request`` from ``check``."""
+
+    _max_retries: int
+    _retry_delay: float
+    _sleep: Callable[[float], None]
+
+    def _init_retry(self) -> None:
+        self._max_retries = 2
+        self._retry_delay = 2.0
+        self._sleep = time.sleep
+
+    def set_retry_policy(
+        self,
+        *,
+        max_retries: int | None = None,
+        retry_delay: float | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        """Tune the sanctions retry policy. ``max_retries=0`` disables it;
+        ``sleep`` is the backoff function (injected by tests)."""
+        if max_retries is not None:
+            self._max_retries = max(0, int(max_retries))
+        if retry_delay is not None:
+            self._retry_delay = max(0.0, float(retry_delay))
+        if sleep is not None:
+            self._sleep = sleep
+
+    def _retried_request(
+        self, http: Any, *, method: str, url: str, **kwargs: Any
+    ) -> Any:
+        return _request_with_retry(
+            http, method=method, url=url,
+            max_retries=self._max_retries, retry_delay=self._retry_delay,
+            sleep=self._sleep, **kwargs,
+        )
+
+
+class ChainalysisScreener(_RetryingScreener):
     """Real Chainalysis Address Screening client. POSTs the address to
     Chainalysis's Address Screening API; if the response classifies the
     address as ``severe`` or carries a sanctions exposure, returns
@@ -186,13 +264,15 @@ class ChainalysisScreener:
                     "`pip install darwin-dna[platform]`"
                 ) from exc
         self._http = http_client
+        self._init_retry()
 
     def check(self, address: str) -> ScreeningResult:
         import json as _json
         try:
-            resp = self._http.request(
-                "POST",
-                f"{self._base}/api/risk/v2/entities",
+            resp = self._retried_request(
+                self._http,
+                method="POST",
+                url=f"{self._base}/api/risk/v2/entities",
                 content=_json.dumps({"address": address}),
                 headers={
                     "Token": self._key,
@@ -238,7 +318,7 @@ class ChainalysisScreener:
         return ScreeningResult(allowed=True, source="chainalysis")
 
 
-class TRMScreener:
+class TRMScreener(_RetryingScreener):
     """TRM Labs API screener. Same fail-closed posture as
     :class:`ChainalysisScreener`."""
 
@@ -267,13 +347,15 @@ class TRMScreener:
                     "`pip install darwin-dna[platform]`"
                 ) from exc
         self._http = http_client
+        self._init_retry()
 
     def check(self, address: str) -> ScreeningResult:
         import json as _json
         try:
-            resp = self._http.request(
-                "POST",
-                f"{self._base}/public/v2/screening/addresses",
+            resp = self._retried_request(
+                self._http,
+                method="POST",
+                url=f"{self._base}/public/v2/screening/addresses",
                 content=_json.dumps([{"address": address}]),
                 headers={
                     "Authorization": f"Basic {self._key}",

@@ -35,19 +35,55 @@ class _SinkError(Exception):
 
 
 def _safe_call(fn: Callable[[], None], *, sink: "_SinkBase") -> None:
-    try:
-        fn()
-    except Exception as exc:
-        sink._record_error(exc)  # noqa: SLF001
+    """Run ``fn``, retrying transient failures with linear backoff
+    (docs/engineering/28: up to 3 retries, 5s/10s/15s). The final failure is
+    absorbed and recorded — a sink NEVER raises into the supervisor's drive
+    loop. The backoff ``sleep`` is injectable so tests do not actually wait
+    and a latency-sensitive deployer can dial retries down to zero."""
+    total = 1 + max(0, sink._max_retries)  # noqa: SLF001
+    for attempt in range(1, total + 1):
+        try:
+            fn()
+            return
+        except Exception as exc:  # noqa: BLE001 - a sink must never raise
+            if attempt >= total:
+                sink._record_error(exc)  # noqa: SLF001
+                return
+            sink.retries += 1
+            sink._sleep(sink._backoff_base * attempt)  # noqa: SLF001
 
 
 class _SinkBase:
     """Shared bookkeeping: a bounded ring of recent errors so an operator
-    can ``GET /platform/sinks/errors`` and see why notifications stopped."""
+    can ``GET /platform/sinks/errors`` and see why notifications stopped,
+    plus the retry policy (docs/engineering/28) applied by ``_safe_call``."""
 
     def __init__(self) -> None:
         self.errors: list[dict[str, Any]] = []
         self.delivered = 0
+        self.retries = 0
+        # Retry policy (doc 28): up to 3 retries, linear backoff (5s, 10s,
+        # 15s). Tunable per sink via :meth:`set_retry_policy`.
+        self._max_retries = 3
+        self._backoff_base = 5.0
+        self._sleep: Callable[[float], None] = time.sleep
+
+    def set_retry_policy(
+        self,
+        *,
+        max_retries: int | None = None,
+        backoff_base: float | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        """Tune the retry policy. ``max_retries=0`` disables retrying;
+        ``sleep`` is the backoff function (injected by tests / by a
+        deployer that cannot afford a blocking retry in the drive loop)."""
+        if max_retries is not None:
+            self._max_retries = max(0, int(max_retries))
+        if backoff_base is not None:
+            self._backoff_base = max(0.0, float(backoff_base))
+        if sleep is not None:
+            self._sleep = sleep
 
     def _record_error(self, exc: Exception) -> None:
         self.errors.append({

@@ -44,7 +44,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from darwin_dna.constitution import TicketClass
 
@@ -294,6 +294,38 @@ class _SqliteBackend(_Backend):
         self._conn.close()
 
 
+# Postgres connection-retry policy (docs/engineering/28: reconnect — up to
+# 5 attempts, exponential backoff 1s/2s/4s/8s/16s). Lets a supervisor pod
+# that starts before its database is ready wait it out instead of crash-
+# looping, and ride through a brief failover.
+_PG_RECONNECT_ATTEMPTS = 5
+_PG_RECONNECT_BASE_DELAY = 1.0
+
+
+def _retry_connect(
+    connect_fn: Callable[[], Any],
+    *,
+    attempts: int,
+    base_delay: float,
+    sleep: Callable[[float], None],
+    retry_on: tuple[type[BaseException], ...],
+) -> Any:
+    """Call ``connect_fn``, retrying failures of type ``retry_on`` with
+    exponential backoff (doc 28). Returns the connection; raises the last
+    error if every attempt fails."""
+    last_exc: BaseException | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return connect_fn()
+        except retry_on as exc:
+            last_exc = exc
+            if attempt + 1 >= attempts:
+                break
+            sleep(base_delay * (2 ** attempt))
+    assert last_exc is not None
+    raise last_exc
+
+
 class _PostgresBackend(_Backend):
     """psycopg-backed. Multi-replica future-proofs the supervisor; for
     now the same single-writer constraint applies (Postgres just lets us
@@ -305,27 +337,58 @@ class _PostgresBackend(_Backend):
     real_type = "DOUBLE PRECISION"
     auto_id_pk = "BIGSERIAL PRIMARY KEY"
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        connect_attempts: int = _PG_RECONNECT_ATTEMPTS,
+        connect_base_delay: float = _PG_RECONNECT_BASE_DELAY,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         try:
             import psycopg
-            from psycopg.rows import dict_row
         except ImportError as exc:  # pragma: no cover - install hint
             raise ImportError(
                 "Postgres persistence requires the [postgres] extra: "
                 "`pip install darwin-dna[postgres]`"
             ) from exc
         self._dsn = dsn
+        self._connect_attempts = max(1, int(connect_attempts))
+        self._connect_base_delay = max(0.0, float(connect_base_delay))
+        self._sleep = sleep
+        self._op_error: type[BaseException] = psycopg.OperationalError
         # autocommit=True so SELECTs don't leave a long-lived implicit
         # transaction open (psycopg's default off-mode does, and close()
         # would then roll back any pending writes that ran in nested
         # ``conn.transaction()`` savepoints). Single statements commit
         # immediately; multi-statement atomicity is opt-in via the
         # ``with self._backend:`` transaction wrapper.
-        self._conn = psycopg.connect(
-            dsn, autocommit=True, row_factory=dict_row
+        self._conn = self._connect()
+
+    def _connect(self) -> Any:
+        """(Re)open the connection, retrying on failure with exponential
+        backoff (docs/engineering/28: up to 5 attempts, 1s/2s/4s/8s/16s)."""
+        import psycopg
+        from psycopg.rows import dict_row
+
+        return _retry_connect(
+            lambda: psycopg.connect(
+                self._dsn, autocommit=True, row_factory=dict_row
+            ),
+            attempts=self._connect_attempts,
+            base_delay=self._connect_base_delay,
+            sleep=self._sleep,
+            retry_on=(psycopg.OperationalError,),
         )
-        # Ruff doesn't see these used — they're held by the connection.
-        del psycopg, dict_row
+
+    def reconnect(self) -> None:
+        """Drop and re-establish the connection after a connection-level
+        error (doc 28). Retries with the same exponential backoff."""
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001 - the conn is already dead; ignore
+            pass
+        self._conn = self._connect()
 
     @staticmethod
     def _adapt(sql: str) -> str:
@@ -336,9 +399,22 @@ class _PostgresBackend(_Backend):
         return sql.replace("?", "%s")
 
     def execute(self, sql, params=()):
-        cur = self._conn.cursor()
-        cur.execute(self._adapt(sql), tuple(params))
-        return cur
+        try:
+            cur = self._conn.cursor()
+            cur.execute(self._adapt(sql), tuple(params))
+            return cur
+        except self._op_error:
+            # Connection-level failure: reconnect (doc 28). A read-only
+            # statement is idempotent — retry it once. A write is NOT
+            # retried: replaying one that may already have committed risks
+            # a double-apply, so we heal the connection and re-raise for
+            # the caller to handle.
+            self.reconnect()
+            if sql.lstrip()[:6].lower() == "select":
+                cur = self._conn.cursor()
+                cur.execute(self._adapt(sql), tuple(params))
+                return cur
+            raise
 
     def executemany(self, sql, params_seq):
         with self._conn.cursor() as cur:
