@@ -118,6 +118,44 @@ def test_negative_markup_refused():
         )
 
 
+# -- per-tier timeouts (doc 28) -------------------------------------------
+def test_per_tier_timeout_applied_to_completion_call():
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    stub = _CompletionStub()
+    t = _make_transport(w, stub)
+    req = {"task": "plan", "strategy_prior": "x", "balance_usdc": 1.0}
+
+    t.complete("fast", req)
+    assert stub.calls[-1]["timeout"] == 30.0
+    t.complete("reasoning", req)
+    assert stub.calls[-1]["timeout"] == 120.0
+    t.complete("coding", req)
+    assert stub.calls[-1]["timeout"] == 300.0
+
+
+def test_tiers_without_a_configured_timeout_fall_back_to_default():
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    stub = _CompletionStub()
+    t = _make_transport(w, stub)
+    # image_gen / embedding are not in the doc-28 table -> request_timeout.
+    t.complete("image_gen", {"task": "plan", "balance_usdc": 1.0})
+    assert stub.calls[-1]["timeout"] == 60.0
+
+
+def test_tier_timeouts_can_be_overridden():
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    stub = _CompletionStub()
+    t = LiteLLMTransport(
+        wallet=w,
+        tier_mappings={"fast": TierMapping(models=("m",))},
+        litellm_completion=stub,
+        litellm_completion_cost=lambda **_: 0.0,
+        tier_timeouts={"fast": 5.0},
+    )
+    t.complete("fast", {"task": "plan", "balance_usdc": 1.0})
+    assert stub.calls[-1]["timeout"] == 5.0
+
+
 # -- task handlers --------------------------------------------------------
 def test_plan_handler_basic():
     w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)

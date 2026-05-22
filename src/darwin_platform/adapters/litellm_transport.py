@@ -172,6 +172,16 @@ class _CompletionResult:
     raw: Any  # for caller-side debugging / tests
 
 
+# Per-tier request timeouts (docs/engineering/28 timeout table). A slow
+# tier needs a longer leash; a fast-tier call hanging for five minutes is a
+# bug, not patience. Tiers absent here fall back to ``request_timeout``.
+_DEFAULT_TIER_TIMEOUTS: dict[str, float] = {
+    "fast": 30.0,
+    "reasoning": 120.0,
+    "coding": 300.0,
+}
+
+
 class LiteLLMTransport:
     """Real LLM gateway. Implements :class:`LLMTransport`.
 
@@ -202,6 +212,7 @@ class LiteLLMTransport:
         litellm_completion: Callable[..., Any] | None = None,
         litellm_completion_cost: Callable[..., float] | None = None,
         request_timeout: float = 60.0,
+        tier_timeouts: dict[str, float] | None = None,
         circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         if not isinstance(tier_mappings, dict) or not tier_mappings:
@@ -219,6 +230,12 @@ class LiteLLMTransport:
             **(system_prompts or {}),
         }
         self._timeout = float(request_timeout)
+        # Per-tier timeouts (doc 28): start from the doc's table, let a
+        # deployer override per tier. Tiers not listed use ``request_timeout``.
+        self._tier_timeouts: dict[str, float] = {
+            **_DEFAULT_TIER_TIMEOUTS,
+            **{k: float(v) for k, v in (tier_timeouts or {}).items()},
+        }
         if litellm_completion is None or litellm_completion_cost is None:
             try:
                 import litellm  # type: ignore[import-not-found]
@@ -271,6 +288,11 @@ class LiteLLMTransport:
             )
         return mapping.models
 
+    def _timeout_for(self, tier: Tier) -> float:
+        """The request timeout for ``tier`` (doc 28). Slow tiers get a
+        longer leash; tiers without a configured timeout use the default."""
+        return self._tier_timeouts.get(tier.value, self._timeout)
+
     def _call_with_fallback(
         self,
         tier: Tier,
@@ -292,7 +314,7 @@ class LiteLLMTransport:
                 kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "timeout": self._timeout,
+                    "timeout": self._timeout_for(tier),
                 }
                 if response_format is not None:
                     kwargs["response_format"] = response_format
