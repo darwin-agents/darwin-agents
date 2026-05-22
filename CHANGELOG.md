@@ -7,39 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- ci: install ruff via `uv sync --extra dev` (not `--dev`, which does not pull optional `[dev]` extras)
-- ci: point postgres persistence job at `tests/unit/darwin_platform/runtime/test_persistence_postgres.py` after test tree reorganisation
-- style: clear 82 ruff violations (unused imports, unused locals, duplicate `__init__`)
-
-### Changed
-
-- refactor(platform): reorganise `darwin_platform` into bounded-context subpackages — `runtime/`, `tenancy/`, `payments/`, `security/`, `observability/`, `escalations/`, `evolution/`, `infra/` (plus existing `adapters/`, `k8s/`); update all 53 external import sites; mirror `tests/unit/darwin_platform/` to the same layout; new "Module layout" appendix in doc 08
 
 ### Added
+- feat(tools): Phase 0 soak driver with six doc-20 acceptance-criterion assertions
+- feat(cli): `--heartbeat-seconds` on `serve` for soak and production pacing
+- test(integration): subprocess e2e smoke for `darwin-platform serve` (uvicorn + SQLite resume)
+- test(integration): soak assertion helpers and duration parser (CI without live server)
+- chore: Makefile, `cliff.toml`, and `scripts/changelog.py` for sync/release workflows
+- chore(docker): `docker/docker-compose.yml` stack; quickstart runs from `docker/`
+- docs: README quickstart via `make` and changelog release workflow
+- feat(tools): add evolution_test harness for Phase 1 criterion assertions
+- test(integration): add Phase 2 supervisor service wiring tests
+- test(integration): add Phase 1 API, evolution, and harness integration tests
+- feat(supervisor): wire Phase 1 and Phase 2 services with REST and metrics
+- feat(genome): wire patch staging in evaluate_mutation and neuron URL overrides
+- feat(adapters): add mainnet safety to RealWallet with confirmation wait
+- feat(platform): add per-Darwin bandwidth quotas on egress proxy
+- feat(platform): add FCM notification sink for mobile escalation delivery
+- feat(platform): add daily Merkle anchor publisher for audit tamper-evidence
+- feat(platform): add behavioural drift detector with rolling profiles
+- feat(platform): add namespace provisioner for K8s, Vault, and organism DB
+- feat(platform): add StripeRampService for webhook-driven fiat deposits
+- feat(platform): add omnibus wallet with fund, sweep, and reconciliation
+- feat(platform): add KYC service with stub and Persona provider skeleton
+- feat(platform): add KMS and Vault Transit signing backends
+- feat(platform): add EvalRunner for audit-tail replay through staging
+- feat(platform): add sandboxed patch staging service for Phase 1 eval
 
-- feat(platform): KYC service + StubKYCProvider + PersonaKYCProvider skeleton; status cache, retention TTL, gated require_allowed (doc 22)
-- feat(platform): OmnibusWallet — platform-owned wallet with deposit/fund_child/sweep/withdraw + daily reconciliation (doc 22)
-- feat(platform): StripeRampService — high-level webhook-driven fiat deposit flow on top of adapters/fiat.py; KYC-gated + idempotent on provider_tx_id (doc 22)
-- feat(platform): NamespaceProvisioner — atomic K8s + Vault + organism-DB provisioning with rollback on partial failure; stub backends for tests (doc 22)
-- feat(platform): DriftDetector — 7-day rolling behavioural profile, 2σ INFO alerts, 3-day persistence WARN escalation (doc 22)
-- feat(platform): MerkleAnchorPublisher + StubAnchorBackend + ChainAnchorBackend — daily fleet root publishing for tamper-evidence (doc 22)
-- feat(platform): FCMNotificationSink — mobile push escalation delivery; never raises on transport failure (doc 22)
-- feat(platform): BandwidthQuota on egress_proxy — per-Darwin daily soft/hard caps + /bandwidth introspection endpoint (doc 22)
-- feat(supervisor): wire all five Phase 2 services as optional injected dependencies; helpers for collect_daily_merkle_roots, reconcile_omnibus, observe_drift (doc 22)
-- test: 60+ new unit + integration tests covering every Phase 2 module + supervisor wiring
-- feat(platform): PatchStagingService — sandboxed Phase 1 patch staging with in-process fallback, validator-outside-sandbox gate, quota enforcement, history (doc 21)
-- feat(platform): EvalRunner — replays per-Darwin audit tail through staging for real-situation eval (doc 21)
-- feat(platform): KMSSigningService + HvacTransitBackend + LocalEd25519Signer + build_signer factory — HSM-backed PlatformSigner with Ed25519 trust-root compatibility (doc 21)
-- feat(supervisor): wire patch-staging hook onto genome ctx, expose lineage_tree, accept injected signer + publishing/analytics endpoints (doc 21)
-- feat(orchestrator): evaluate_mutation routes through `ctx.patch_staging` when wired, records `via=staging` in outcome (doc 21)
-- feat(adapters): RealWallet gains `network`, `is_mainnet`, `wait_for_confirmation` mainnet safety + ConfirmingChainClient protocol (doc 21)
-- feat(neurons): content.publisher accepts `endpoint_overrides`; analytics.measurer accepts `default_endpoint` for platform-pinned real URLs (doc 21)
-- feat(api): `GET /darwins/{id}/lineage/tree`, `GET /platform/staging/status`, `GET /platform/staging/history` endpoints (doc 21)
-- feat(metrics): `darwin_daily_spend_usdc`, `darwin_llm_cost_usdc`, `darwin_neuron_dispatch_total`, `darwin_revenue_usdc`, plus staging quota/promotion gauges (doc 21)
-- feat(tools): `tools/evolution_test/` end-to-end Phase 1 harness with criterion-based assertion report (doc 21)
-- test: 40+ new tests across unit (patch_staging, eval_runner, signing_service, mainnet wallet) and integration (Phase 1 wiring, lineage tree endpoint, /metrics, evolution harness smoke)
+### Changed
+- docs: document platform bounded-context layout and module paths
+- refactor(platform): re-export bounded contexts and update import sites
+- refactor(platform/infra): move egress proxy, throttle, and browser cache
+- refactor(platform/evolution): move patch staging and eval runner
+- refactor(platform/escalations): move escalation router and FCM sink
+- refactor(platform/observability): move monitoring, audit, drift, and Merkle code
+- refactor(platform/security): move auth, KYC, signing, and watermark modules
+- refactor(platform/payments): move billing, ramps, sanctions, and harvest code
+- refactor(platform/tenancy): move provisioning, vault admin, and namespace code
+- refactor(platform/runtime): move supervisor, persistence, and driver into runtime/
+
+### Fixed
+- style: clear ruff violations across platform, genome, and tests
+- ci: point postgres persistence job at reorganised test path
 
 ## [0.0.1] - 2026-05-21
 
