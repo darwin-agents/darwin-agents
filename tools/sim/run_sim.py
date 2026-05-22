@@ -60,45 +60,38 @@ def _audit(stack):
     return stack.audit_sink.read_all()
 
 
-def _check_invariants(rt, stack, scenario: Scenario, *, opening: float) -> None:
-    # I1 — chain unbroken (re-verified from durable storage)
-    rt.audit.verify()
+def _check_invariants(
+    rt, stack, scenario: Scenario, *, opening: float, day: int, days: int,
+) -> None:
+    """Assert the Layer-0 invariants. Called once per simulated day.
 
-    records = _audit(stack)
+    Most invariants are O(1) and run every day. The three that need a
+    full O(n) pass over the audit log — I1 (chain re-verification), I4
+    (over-cap payment scan), I8 (graceful-death records) — would make
+    the whole sim O(n²) if run daily on a long, active run. I1 runs
+    every 30 days + at the end (the genome also anchors a Merkle root
+    daily, the continuous tamper-evidence); I4 + I8 run once at the end
+    (a single scan catches a violation from any day)."""
+    final = (day >= days) or (not rt.state.alive)
 
-    # I3 — balance never negative
+    # I1 — chain unbroken (re-verified from durable storage). O(n).
+    if final or day % 30 == 0:
+        rt.audit.verify()
+
+    # I3 — balance never negative.
     bal = stack.wallet.balance_usdc()
     if bal < -1e-9:
         raise InvariantError(f"I3: negative balance {bal}")
 
-    # I4 — no ALLOWED payment over the per-action hard cap
-    for r in records:
-        if r["kind"] == "event:payment.policy_decision":
-            d = r["payload"]["decision"]
-            if d["verdict"] == "allow":
-                # the matching intent record carries the amount
-                pass
-        if r["kind"] == "outcome":
-            det = r["payload"].get("detail", {})
-            amt = det.get("amount_usdc")
-            if (
-                r["payload"].get("status") == "ok"
-                and isinstance(amt, (int, float))
-                and amt > HARD_CAPS.per_action_usdc + 1e-9
-            ):
-                raise InvariantError(
-                    f"I4: payment of ${amt} settled over per-action cap"
-                )
-
-    # I5 — lifetime spend within the absolute ceiling
+    # I5 — lifetime spend within the absolute ceiling.
     if stack.wallet.spent_lifetime_usdc() > HARD_CAPS.per_lifetime_usdc + 1e-9:
         raise InvariantError("I5: lifetime spend exceeded the hard ceiling")
 
-    # I6 — checkpointed at node boundaries
+    # I6 — checkpointed at node boundaries.
     if stack.checkpoint.saves <= 0:
         raise InvariantError("I6: no checkpoints written")
 
-    # I7 — ledger reconciles to the wallet, zero discrepancy
+    # I7 — ledger reconciles to the wallet, zero discrepancy.
     debits = sum(
         e["debit"]["amount_usdc"] for e in stack.wallet.ledger if "debit" in e
     )
@@ -116,7 +109,28 @@ def _check_invariants(rt, stack, scenario: Scenario, *, opening: float) -> None:
             f"I7: ledger {expected:.6f} != wallet {bal:.6f}"
         )
 
-    # I8 — if not alive, death was graceful
+    # I4 + I8 scan the whole audit log — O(n). Run once at the end (or
+    # on death): a single pass catches an over-cap settlement or a
+    # non-graceful death from any day of the run.
+    if not final:
+        return
+    records = _audit(stack)
+
+    # I4 — no ALLOWED payment over the per-action hard cap.
+    for r in records:
+        if r["kind"] == "outcome":
+            det = r["payload"].get("detail", {})
+            amt = det.get("amount_usdc")
+            if (
+                r["payload"].get("status") == "ok"
+                and isinstance(amt, (int, float))
+                and amt > HARD_CAPS.per_action_usdc + 1e-9
+            ):
+                raise InvariantError(
+                    f"I4: payment of ${amt} settled over per-action cap"
+                )
+
+    # I8 — if not alive, death was graceful.
     if not rt.state.alive:
         kinds = {r["kind"] for r in records}
         graceful = (
@@ -160,12 +174,19 @@ async def _run(
     for day in range(1, days + 1):
         deadline = start_ts + day * DAY
         await rt.run(until=lambda: world.clock() >= deadline)
-        _check_invariants(rt, stack, scenario, opening=scenario.opening_usdc)
-
-        reproductions = sum(
-            1 for r in _audit(stack) if r["kind"] == "event:reproduction.done"
+        _check_invariants(
+            rt, stack, scenario,
+            opening=scenario.opening_usdc, day=day, days=days,
         )
+
         if day % 10 == 0 or not rt.state.alive or day == days:
+            # The reproduction count scans the audit log — O(n) — so it
+            # runs only on the days a timeline row is emitted, not every
+            # day (that would make the sim O(n²)).
+            reproductions = sum(
+                1 for r in _audit(stack)
+                if r["kind"] == "event:reproduction.done"
+            )
             row = {
                 "day": day,
                 "balance": round(stack.wallet.balance_usdc(), 4),
