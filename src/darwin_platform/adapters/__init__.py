@@ -13,6 +13,7 @@ Currently implemented:
 """
 
 from .browser import BrowserClient, BrowserUseClient
+from .coinbase_cdp import CdpChainClient, build_cdp_chain_client
 from .hvac_vault import HvacVaultClient
 from .litellm_transport import LiteLLMTransport, TierMapping
 from .sandbox import E2BSandbox, SandboxClient
@@ -37,6 +38,8 @@ __all__ = [
     "RealWallet",
     "WalletError",
     "Web3ChainClient",
+    "CdpChainClient",
+    "build_cdp_chain_client",
     "USDC_BASE_MAINNET",
     "USDC_BASE_SEPOLIA",
     "VaultClient",

@@ -80,6 +80,11 @@ stellar = ["stellar-sdk>=10.0"]
 # Transfer. MoonPay is HTTP-only (covered by the [platform] extra's
 # httpx).
 stripe = ["stripe>=8.0"]
+# Coinbase CDP / Agentic Wallet (docs/engineering/05, 17). A non-custodial
+# TEE-secured wallet — the per-Darwin private key lives in Coinbase's
+# infrastructure, never in this process. ``CdpChainClient`` fronts it
+# behind the same ``ChainClient`` Protocol as ``Web3ChainClient``.
+cdp = ["cdp-sdk>=1.0"]
 # Embedded PDF watermarking (docs/engineering/16). Round-3's
 # HmacWatermarker appends a trailer after %%EOF; with pypdf it can
 # also embed the HMAC into proper PDF metadata so a re-saved

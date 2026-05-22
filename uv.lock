@@ -110,6 +110,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiohttp-retry"
+version = "2.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/61/ebda4d8e3d8cfa1fd3db0fb428db2dd7461d5742cea35178277ad180b033/aiohttp_retry-2.9.1.tar.gz", hash = "sha256:8eb75e904ed4ee5c2ec242fefe85bf04240f685391c4879d8f541d6028ff01f1", size = 13608, upload-time = "2024-11-06T10:44:54.574Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1a/99/84ba7273339d0f3dfa57901b846489d2e5c2cd731470167757f1935fffbd/aiohttp_retry-2.9.1-py3-none-any.whl", hash = "sha256:66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54", size = 9981, upload-time = "2024-11-06T10:44:52.917Z" },
+]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -188,6 +200,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
+name = "base58"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/45/8ae61209bb9015f516102fa559a2914178da1d5868428bd86a1b4421141d/base58-2.1.1.tar.gz", hash = "sha256:c5d0cb3f5b6e81e8e35da5754388ddcc6d0d14b6c6a132cb93d69ed580a7278c", size = 6528, upload-time = "2021-10-30T22:12:17.858Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/45/ec96b29162a402fc4c1c5512d114d7b3787b9d1c2ec241d9568b4816ee23/base58-2.1.1-py3-none-any.whl", hash = "sha256:11a36f4d3ce51dfc1043f3218591ac4eb1ceb172919cebe05b52a5bcc8d245c2", size = 5621, upload-time = "2021-10-30T22:12:16.658Z" },
 ]
 
 [[package]]
@@ -346,6 +367,28 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2d/85/aa72d1ffced7402fe41805519dab9935e9ce2bce18a10a55f2273ba8ba59/bubus-1.5.6.tar.gz", hash = "sha256:1a5456f0a576e86613a7bd66e819891b677778320b6e291094e339b0d9df2e0d", size = 60186, upload-time = "2025-08-30T18:20:43.032Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/54/23aae0681500a459fc4498b60754cb8ead8df964d8166e5915edb7e8136c/bubus-1.5.6-py3-none-any.whl", hash = "sha256:254ae37cd9299941f5e9d6afb11f8e3ce069f83e5b9476f88c6b2e32912f237d", size = 52121, upload-time = "2025-08-30T18:20:42.091Z" },
+]
+
+[[package]]
+name = "cdp-sdk"
+version = "1.46.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aiohttp-retry" },
+    { name = "base58" },
+    { name = "cryptography" },
+    { name = "pydantic" },
+    { name = "pyjwt" },
+    { name = "python-dateutil" },
+    { name = "solana" },
+    { name = "solders" },
+    { name = "urllib3" },
+    { name = "web3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/47/73/03a65fad8fbb03061244f3c512fcc4652f107c41ef597b82ead603a45718/cdp_sdk-1.46.0.tar.gz", hash = "sha256:342b7271d86035851ba4065cd0e734244d22f9f00891c63b0cbefc098dd5c4f4", size = 419459, upload-time = "2026-05-21T18:03:26.102Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/84/63da7a610520047a46503b0b61faab450f52b3b5971594820235b4044a98/cdp_sdk-1.46.0-py3-none-any.whl", hash = "sha256:9036e8e3cce1218ace94c6da253d8095612aba7c465ec3f0202660cd760c2309", size = 1100097, upload-time = "2026-05-21T18:03:24.132Z" },
 ]
 
 [[package]]
@@ -790,6 +833,9 @@ dependencies = [
 browser = [
     { name = "browser-use" },
 ]
+cdp = [
+    { name = "cdp-sdk" },
+]
 dev = [
     { name = "hypothesis" },
     { name = "pytest" },
@@ -843,6 +889,7 @@ web3 = [
 [package.metadata]
 requires-dist = [
     { name = "browser-use", marker = "extra == 'browser'", specifier = ">=0.2" },
+    { name = "cdp-sdk", marker = "extra == 'cdp'", specifier = ">=1.0" },
     { name = "cryptography", specifier = ">=42" },
     { name = "e2b", marker = "extra == 'e2b'", specifier = ">=0.17" },
     { name = "fastapi", marker = "extra == 'platform'", specifier = ">=0.110" },
@@ -870,7 +917,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'platform'", specifier = ">=0.30" },
     { name = "web3", marker = "extra == 'web3'", specifier = ">=7.0" },
 ]
-provides-extras = ["graph", "llm", "platform", "postgres", "web3", "hvac", "browser", "e2b", "k8s", "solana", "stellar", "stripe", "pdfwatermark", "dev"]
+provides-extras = ["graph", "llm", "platform", "postgres", "web3", "hvac", "browser", "e2b", "k8s", "solana", "stellar", "stripe", "cdp", "pdfwatermark", "dev"]
 
 [[package]]
 name = "distro"
