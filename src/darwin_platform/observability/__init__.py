@@ -62,6 +62,7 @@ from .sinks import (
 from .snapshot import snapshot, write_snapshot
 from .tracing import (
     annotate_span_with_runtime,
+    configure_otlp_tracing,
     get_tracer,
     is_otel_available,
     span,
@@ -97,6 +98,7 @@ __all__ = [
     "SlackWebhookNotificationSink",
     "StubAnchorBackend",
     "annotate_span_with_runtime",
+    "configure_otlp_tracing",
     "detect_escalation_rate",
     "detect_failure_rate",
     "detect_heartbeat_health",

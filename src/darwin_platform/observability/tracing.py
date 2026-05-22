@@ -57,6 +57,67 @@ def get_tracer():
     return _NoOpTracer()
 
 
+# Module-level guard so a double-call (e.g. test + serve) doesn't stack
+# two exporters on the provider.
+_OTLP_CONFIGURED = False
+
+
+def configure_otlp_tracing(
+    endpoint: str,
+    *,
+    service_name: str = _INSTRUMENTATION_NAME,
+    headers: dict[str, str] | None = None,
+) -> bool:
+    """Wire a real OTLP/HTTP span exporter so the spans the supervisor
+    already emits via :func:`span` actually leave the process.
+
+    ``endpoint`` is the collector's base URL (e.g. ``http://jaeger:4318``
+    in the dev compose stack); the OTLP/HTTP traces path
+    (``/v1/traces``) is appended when absent. Called once at
+    ``darwin-platform serve`` startup when ``--otlp-endpoint`` (or the
+    ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var) is set.
+
+    Returns True when an exporter was installed, False when OpenTelemetry
+    is not available (slim install — tracing stays NoOp). Raises
+    :class:`ImportError` when the OTLP exporter package is missing so the
+    operator gets a clear install hint rather than silent data loss.
+    """
+    global _OTLP_CONFIGURED
+    if not _OTEL_AVAILABLE:
+        return False
+    if _OTLP_CONFIGURED:
+        return True
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+    except ImportError as exc:  # pragma: no cover - missing optional dep
+        raise ImportError(
+            "OTLP trace export requires opentelemetry-exporter-otlp-proto-http "
+            "— `pip install darwin-dna[platform]`"
+        ) from exc
+
+    traces_url = endpoint.rstrip("/")
+    if not traces_url.endswith("/v1/traces"):
+        traces_url = f"{traces_url}/v1/traces"
+
+    provider = TracerProvider(
+        resource=Resource.create({"service.name": service_name})
+    )
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            OTLPSpanExporter(endpoint=traces_url, headers=headers or {})
+        )
+    )
+    _otel_trace.set_tracer_provider(provider)
+    _OTLP_CONFIGURED = True
+    return True
+
+
 @contextmanager
 def span(
     name: str,
