@@ -419,3 +419,61 @@ def test_cli_parse_serve_real_flags():
     assert args.vault_mount == "darwin"
     assert args.browserbase_api_key == "bb-123"
     assert args.e2b_api_key == "e2b-xyz"
+
+
+# ---------------------------------------------------------------------------
+# 8. CLI _build_platform_services — fiat ramp wiring (P2, doc 17)
+# ---------------------------------------------------------------------------
+
+def test_fiat_ramp_absent_by_default():
+    from darwin_platform.__main__ import _build_platform_services, build_parser
+    args = build_parser().parse_args(["serve"])
+    assert "fiat_ramp" not in _build_platform_services(args)
+
+
+def test_fiat_ramp_stub():
+    from darwin_platform.__main__ import _build_platform_services, build_parser
+    from darwin_platform.adapters.fiat import StubFiatRamp
+    args = build_parser().parse_args(["serve", "--fiat-provider", "stub"])
+    assert isinstance(_build_platform_services(args)["fiat_ramp"], StubFiatRamp)
+
+
+def test_fiat_ramp_stripe():
+    from darwin_platform.__main__ import _build_platform_services, build_parser
+    from darwin_platform.adapters.fiat import StripeFiatRamp
+    args = build_parser().parse_args([
+        "serve", "--fiat-provider", "stripe", "--stripe-api-key", "sk_test_x",
+    ])
+    assert isinstance(
+        _build_platform_services(args)["fiat_ramp"], StripeFiatRamp
+    )
+
+
+def test_fiat_ramp_moonpay():
+    from darwin_platform.__main__ import _build_platform_services, build_parser
+    from darwin_platform.adapters.fiat import MoonPayFiatRamp
+    args = build_parser().parse_args([
+        "serve", "--fiat-provider", "moonpay",
+        "--moonpay-api-key", "pk_test_x",
+    ])
+    assert isinstance(
+        _build_platform_services(args)["fiat_ramp"], MoonPayFiatRamp
+    )
+
+
+def test_fiat_stripe_requires_a_key(monkeypatch):
+    from darwin_platform.__main__ import _build_platform_services, build_parser
+    monkeypatch.delenv("STRIPE_API_KEY", raising=False)
+    args = build_parser().parse_args(["serve", "--fiat-provider", "stripe"])
+    with pytest.raises(SystemExit):
+        _build_platform_services(args)
+
+
+def test_fiat_api_key_falls_back_to_env(monkeypatch):
+    from darwin_platform.__main__ import _build_platform_services, build_parser
+    from darwin_platform.adapters.fiat import MoonPayFiatRamp
+    monkeypatch.setenv("MOONPAY_API_KEY", "pk_env_key")
+    args = build_parser().parse_args(["serve", "--fiat-provider", "moonpay"])
+    assert isinstance(
+        _build_platform_services(args)["fiat_ramp"], MoonPayFiatRamp
+    )

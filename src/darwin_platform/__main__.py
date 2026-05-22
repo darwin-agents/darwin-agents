@@ -390,6 +390,58 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
             ),
         )
 
+    # -- fiat ramp (doc 17) ----------------------------------------------
+    fiat_provider = getattr(args, "fiat_provider", "none")
+    if fiat_provider == "stub":
+        from .adapters.fiat import StubFiatRamp
+
+        kwargs["fiat_ramp"] = StubFiatRamp()
+    elif fiat_provider == "stripe":
+        api_key = getattr(args, "stripe_api_key", None) or os.environ.get(
+            "STRIPE_API_KEY"
+        )
+        if not api_key:
+            print(
+                "--fiat-provider stripe requires --stripe-api-key "
+                "(or the STRIPE_API_KEY env var)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        try:
+            import stripe
+        except ImportError as exc:
+            raise ImportError(
+                "Stripe fiat ramp requires the [stripe] extra: "
+                "pip install 'darwin-dna[stripe]'"
+            ) from exc
+        stripe.api_key = api_key
+        from .adapters.fiat import StripeFiatRamp
+
+        kwargs["fiat_ramp"] = StripeFiatRamp(stripe_client=stripe)
+    elif fiat_provider == "moonpay":
+        api_key = getattr(args, "moonpay_api_key", None) or os.environ.get(
+            "MOONPAY_API_KEY"
+        )
+        if not api_key:
+            print(
+                "--fiat-provider moonpay requires --moonpay-api-key "
+                "(or the MOONPAY_API_KEY env var)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        try:
+            import httpx
+        except ImportError as exc:
+            raise ImportError(
+                "MoonPay fiat ramp requires httpx: "
+                "pip install 'darwin-dna[platform]'"
+            ) from exc
+        from .adapters.fiat import MoonPayFiatRamp
+
+        kwargs["fiat_ramp"] = MoonPayFiatRamp(
+            http_client=httpx.Client(timeout=10.0), api_key=api_key,
+        )
+
     return kwargs
 
 
@@ -936,6 +988,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--fcm-project-id", default=None, metavar="ID",
         help="Firebase project id — enables FCM push for escalation "
              "tickets. Env: DARWIN_FCM_PROJECT_ID",
+    )
+    phase2_group.add_argument(
+        "--fiat-provider", default="none",
+        choices=["none", "stub", "stripe", "moonpay"],
+        help="Fiat on/off-ramp for deposits + withdrawals (doc 17). "
+             "Default: none.",
+    )
+    phase2_group.add_argument(
+        "--stripe-api-key", default=None, metavar="KEY",
+        help="Stripe secret key (when --fiat-provider stripe). "
+             "Env: STRIPE_API_KEY",
+    )
+    phase2_group.add_argument(
+        "--moonpay-api-key", default=None, metavar="KEY",
+        help="MoonPay API key (when --fiat-provider moonpay). "
+             "Env: MOONPAY_API_KEY",
     )
     phase2_group.add_argument(
         "--maintenance-interval", default=86400.0, type=float,
