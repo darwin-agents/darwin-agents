@@ -46,9 +46,14 @@ Implemented today in `src/darwin_platform/api.py` (representative list; OpenAPI 
 |----------|----------|
 | `GET /darwins/{id}/anatomy` | Anatomy snapshot (neurons, edges, active nodes) |
 | `WS /darwins/{id}/stream` or split `.../anatomy/stream` + `.../timeline/stream` | Live canvas updates |
-| `GET /darwins/{id}/data/{table}` | Data browser (Phase 2) |
+| `GET /darwins/{id}/data` + `/data/{table}` | Data browser (Phase 2) |
 
-Phase 0 Timeline can poll `GET /events` every 2–5s until WebSocket exists.
+**Partial gaps in existing endpoints:**
+
+- `GET /darwins/{id}/events` is **offset-paginated with no server-side filters** (`limit` + `offset` only). Cursor pagination, `neuron_id` / `category` / `tier` filters, and an incremental `?since=` param are backend tasks — see [`10-phased-delivery.md`](10-phased-delivery.md) register #1 and #10. Until then the Timeline filters client-side and polling refetches page 0.
+- There is no aggregate `GET /escalations`; the inbox fans out per Darwin (`GET /darwins/{id}/escalations`).
+
+Phase 0 Timeline can poll `GET /darwins/{id}/events` every 2–5s until the WebSocket exists.
 
 ## Typed API client
 

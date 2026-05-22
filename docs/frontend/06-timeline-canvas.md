@@ -4,9 +4,11 @@ The **Timeline** answers: *what is the Darwin doing, in order, with evidence?* I
 
 ## Data source
 
-`GET /darwins/{id}/events?cursor=&limit=&neuron_id=&category=&tier=`
+**Today:** `GET /darwins/{id}/events?limit=&offset=` — offset-based pagination only. The endpoint returns `{darwin_id, total, offset, limit, events}` and does **not** support `neuron_id` / `category` / `tier` filters or a `since` cursor. See [`10-phased-delivery.md`](10-phased-delivery.md) backend register #1 and #10.
 
-Response: paginated, cursor-based list of hash-chained audit events (see [`../engineering/23-data-model-reference.md`](../engineering/23-data-model-reference.md) for event shape). The UI treats the platform as authoritative; never merge Darwin-supplied prose.
+**Phase 2 target:** `GET /darwins/{id}/events?cursor=&neuron_id=&category=&tier=` — cursor pagination + server-side filtering.
+
+Response is a paginated list of hash-chained audit events (see [`../engineering/23-data-model-reference.md`](../engineering/23-data-model-reference.md) for event shape). The UI treats the platform as authoritative; never merge Darwin-supplied prose.
 
 ## Event categories (display)
 
@@ -48,9 +50,13 @@ Toolbar:
 - Tier: fast / reasoning / coding / embed
 - Category checkboxes
 - Time range: 1h / 24h / 7d / all
-- Search: full-text on `summary` and `event_id` (client-side on loaded page; server search later)
+- Search: full-text on `summary` and `event_id`
 
-URL query params encode filters for shareable links: `/darwins/[id]/timeline?neuron=content.writer`.
+**Phase 0/1 — client-side only.** The events endpoint has no server filters yet, so every toolbar control narrows the *already-loaded window* (the offset pages fetched so far). This is acceptable for operator soak-watching but will miss matches outside the window.
+
+**Phase 2 — server-side.** Once backend register #1 lands, neuron / category / tier become query params and filtering covers the full history.
+
+URL query params encode filters for shareable links either way: `/darwins/[id]/timeline?neuron=content.writer`.
 
 ## Virtualization
 
@@ -67,7 +73,7 @@ On WebSocket `timeline.event`:
 2. If user is at live edge, auto-scroll; else increment "N new events" chip.
 3. Respect pause-stream: buffer events, apply on resume.
 
-Polling fallback (Phase 0): `GET /events?since={last_event_id}` every 3s when tab visible (`document.visibilityState`).
+Polling fallback (Phase 0): there is no `?since=` param yet, so refetch page 0 (`offset=0`) every 3s when the tab is visible (`document.visibilityState`) and deduplicate against rendered rows by `event_id`. An incremental `?since={event_id}` param is backend register #10 — adopt it for Phase 1 once available.
 
 ## Cost and treasury strip
 
@@ -87,7 +93,7 @@ Default expand shows structured fields. "Raw JSON" tab for support — copies re
 
 Phase 2: "Download visible events as JSONL" for accountant / debugging.
 
-Ledger CSV export is separate (`/ledger?format=csv` when API supports) — see engineering backlog.
+Ledger CSV export is separate and **already available** — `GET /darwins/{id}/ledger.csv` returns a jurisdiction-neutral CSV with a `Content-Disposition` attachment header. Wire it from the billing screen ([`04-screens-and-routing.md`](04-screens-and-routing.md)).
 
 ## Performance
 

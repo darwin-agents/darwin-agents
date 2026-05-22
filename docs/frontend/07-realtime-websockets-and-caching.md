@@ -26,7 +26,7 @@ Alternative split endpoints (`/timeline/stream`, `/anatomy/stream`) if multiplex
 | Concern | Policy |
 |---------|--------|
 | Connect | After REST snapshot loaded; one socket per open Darwin detail page |
-| Reconnect | Exponential backoff 1s → 30s cap; resync via `GET /events?since=` and anatomy snapshot |
+| Reconnect | Exponential backoff 1s → 30s cap; resync by refetching events (`?since=` once backend register #10 lands, else page 0 + dedupe) and the anatomy snapshot |
 | Auth | Pass bearer in query `?token=` only if header unsupported by infra — prefer subprotocol or first message auth |
 | Close on navigate away | Disconnect when leaving `/darwins/[id]` |
 | Tab hidden | Keep socket; reduce UI updates (batch rAF) |

@@ -21,7 +21,7 @@ The frontend never talks to a Darwin directly. Every screen goes through the **D
 | 07 | [`07-realtime-websockets-and-caching.md`](07-realtime-websockets-and-caching.md) | Live updates, pause stream, client state |
 | 08 | [`08-auth-session-and-security.md`](08-auth-session-and-security.md) | Clerk/WorkOS, bearer scopes, CSP, secrets |
 | 09 | [`09-owner-controls-escalations-mobile.md`](09-owner-controls-escalations-mobile.md) | Controls UI, inbox, Browserbase takeover, Expo app |
-| 10 | [`10-phased-delivery.md`](10-phased-delivery.md) | Phase 0 MVP → Phase 2 alpha → deferrals |
+| 10 | [`10-phased-delivery.md`](10-phased-delivery.md) | Per-phase epics + task checklists, backend API work register, risk register, CI gates |
 
 ## Related engineering docs
 
