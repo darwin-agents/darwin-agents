@@ -480,9 +480,47 @@ class DarwinRuntime:
         self.audit.log_event("reproduction.done", result.model_dump())
 
     # -- shutdown paths ----------------------------------------------------
+    def _settle_commitments(self) -> dict:
+        """Death-sequence step 3 (docs/engineering/05): settle or abandon
+        in-flight commitments. A Layer-0 Darwin has no auto-settle path for
+        a parked unit of work — resuming one needs the owner — so it
+        *abandons* them cleanly and records each abandonment. Nothing is
+        silently lost: the owner and the platform escalation router can see
+        every parked ticket was closed by death, not dropped on the floor.
+        Cost-weighted 'settle vs abandon' is a soma refinement."""
+        open_tickets = list(self.state.open_escalations.keys())
+        for ticket in open_tickets:
+            esc = self.state.open_escalations.get(ticket, {})
+            self.audit.log_event(
+                "death.commitment_abandoned",
+                {
+                    "ticket": ticket,
+                    "neuron": esc.get("neuron"),
+                    "blocker_kind": esc.get("blocker_kind"),
+                    "disposition": "abandoned",
+                },
+            )
+        summary = {
+            "abandoned_escalations": len(open_tickets),
+            "abandoned_tickets": open_tickets,
+            "dropped_capability_requests": len(
+                self.state.pending_capability_requests
+            ),
+            "dropped_resume_queue": len(self.state.resume_queue),
+        }
+        self.state.open_escalations.clear()
+        self.state.pending_escalations.clear()
+        self.state.resume_queue.clear()
+        self.state.pending_capability_requests.clear()
+        self.audit.log_event("death.commitments_settled", summary)
+        return summary
+
     def _die(self, reason: str) -> None:
         """Death by bankruptcy (docs/engineering/05). Clean, not a crash."""
         self.audit.log_event("death.begin", {"reason": reason})
+        # Step 3: settle/abandon in-flight commitments before the final root
+        # so the abandonments are inside the anchored chain.
+        settled = self._settle_commitments()
         self.audit.anchor(self._p.anchor_store, self._anchor_day())  # final root
         self._p.escalation.post(
             {
@@ -490,6 +528,7 @@ class DarwinRuntime:
                 "kind": "death",
                 "reason": reason,
                 "final_balance_usdc": self.state.balance_usdc,
+                "abandoned_commitments": settled["abandoned_escalations"],
             }
         )
         self.audit.log_event("death.end", {"final_balance_usdc": self.state.balance_usdc})
