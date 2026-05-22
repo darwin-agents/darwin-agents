@@ -14,10 +14,10 @@ The strategy is a *continuously metabolising* organism: a content/affiliate
 blog compounds — more indexed pages means more organic traffic means more
 affiliate revenue — so the founding strategy keeps writing and publishing
 for the whole of the Darwin's life. It seeds an initial library, then grows
-it one piece at a time, publishing each as it goes. (An earlier Layer 0
-returned ``wait`` once the seed library was up, which left the organism
-inert ~100% of its life — a living organism metabolises; an idle one is
-just a slow death.)
+it one piece at a time, publishing each as it goes. An earlier Layer 0
+returned ``wait`` *forever* once the seed library was up, which left the
+organism inert ~100% of its life — a living organism metabolises; an idle
+one is just a slow death.
 """
 
 from __future__ import annotations
