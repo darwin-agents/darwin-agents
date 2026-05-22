@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+- chore(release): `make release` commits, tags, and pushes; opt out with `NO_COMMIT` / `NO_PUSH`
+- chore(deps): `opentelemetry-exporter-otlp-proto-http` on `[platform]` extra for Jaeger/OTLP tracing
+- docs: engineering backlog `TODO.md` from docs 01–30 audit
 - feat(tools): Phase 0 soak driver with six doc-20 acceptance-criterion assertions
 - feat(cli): `--heartbeat-seconds` on `serve` for soak and production pacing
 - test(integration): subprocess e2e smoke for `darwin-platform serve` (uvicorn + SQLite resume)
