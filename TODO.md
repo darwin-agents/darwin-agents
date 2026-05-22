@@ -81,9 +81,12 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
       adapters are now CLI-wired: `--fiat-provider {stub,stripe,moonpay}` +
       `STRIPE_API_KEY` / `MOONPAY_API_KEY`, built in `_build_platform_services` and
       passed to the Supervisor. Doc 17. +6 tests. _(done 2026-05-22)_
-- [ ] **Coinbase CDP / Agentic Wallet** — currently a generic `RealWallet` over
-      `Web3ChainClient` (web3.py, local key signing); no CDP SDK, no TEE.
-      Docs 05, 07, 11, 17.
+- [x] **Coinbase CDP / Agentic Wallet** — `CdpChainClient` implements the genome's
+      `ChainClient` contract over a Coinbase CDP account (private key in Coinbase's
+      TEE, never in-process); `--wallet-provider cdp` + `CDP_API_KEY_*` wire it; the
+      async cdp-sdk is driven through an async→sync bridge. `[cdp]` extra. +16 tests.
+      → `src/darwin_platform/adapters/coinbase_cdp.py` Docs 05, 07, 11, 17.
+      _(done 2026-05-22)_
 - [x] **LiteLLM self-hosted proxy** — `--litellm-url` / `--litellm-master-key` route
       every genome LLM call through a self-hosted proxy via a `LiteLLMTransport`
       factory (all 5 tiers mapped to `openai/tier-*`); covered by `test_platform_wiring`.
