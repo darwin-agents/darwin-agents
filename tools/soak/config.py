@@ -36,7 +36,11 @@ class SoakConfig:
     url: str = "http://127.0.0.1:8000"
     duration_seconds: float = 24 * 3600.0
     poll_interval_seconds: float = 60.0
-    opening_usdc: float = 100.0
+    # Soaks fund the Darwin generously: the founding strategy metabolises
+    # every heartbeat, so a fast soak runs through many thousands of
+    # dispatches. A wide budget keeps bankruptcy (a separate concern)
+    # from truncating the run before the criteria are measured.
+    opening_usdc: float = 1000.0
     auth_token: str | None = None
 
     # -- pass-criteria thresholds (doc 20 §"Pass criteria") -----------

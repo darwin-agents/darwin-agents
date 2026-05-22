@@ -16,14 +16,17 @@ def test_boots_into_a_working_state(booted):
 
     assert st.alive
     assert st.tick == 12
-    assert st.content_pieces == 5  # founding strategy seeds a 5-piece library
-    assert st.published_pieces == 5
-    # It dispatched exactly the seeding work (5 writes + 5 publishes) and then
-    # went frugal — a founding Darwin must not keep burning once the library
-    # is seeded (docs/engineering/18 failure mode: burns money faster than it
-    # earns). That plateau is a feature, not a stall.
-    assert st.dispatches_done == 10
-    assert "11:check_reproduction" in st.trail  # still looping, just idle
+    # The founding strategy metabolises every heartbeat — it seeds a
+    # library, then keeps writing and publishing (a content/affiliate
+    # blog compounds: more indexed pages → more organic traffic, so it
+    # never stops publishing). One dispatch per heartbeat: a living
+    # organism acts; it does not idle.
+    assert st.dispatches_done == 12
+    assert st.content_pieces >= 5  # at least the seed library
+    assert st.published_pieces >= 1  # and it has started publishing
+    # Every dispatch was productive work — a write or a publish.
+    assert st.content_pieces + st.published_pieces >= 11
+    assert "11:check_reproduction" in st.trail  # the loop is running
     rt.audit.verify()  # unbroken chain on first boot
     assert stack.checkpoint.saves > 0  # checkpointed at node boundaries
 

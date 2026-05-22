@@ -252,8 +252,9 @@ def _parse_args(argv: list[str] | None) -> SoakConfig:
         help="Status poll interval (default: 60s)",
     )
     p.add_argument(
-        "--opening-usdc", type=float, default=100.0,
-        help="Opening balance for the spawned Darwin (default: 100.0)",
+        "--opening-usdc", type=float, default=1000.0,
+        help="Opening balance for the spawned Darwin (default: 1000.0 — "
+             "soaks fund generously so bankruptcy does not truncate the run)",
     )
     p.add_argument(
         "--auth-token", default=None,
