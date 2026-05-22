@@ -363,6 +363,7 @@ class Supervisor:
         cross_pollination_archive: CrossPollinationArchive | None = None,
         cross_pollination_per_scope_limit: int = 3,
         fiat_ramp: FiatRamp | None = None,
+        sms_client: Any | None = None,
         resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
         leader_election: Any | None = None,
@@ -659,6 +660,10 @@ class Supervisor:
         # via the same provider. Default None means the platform is
         # crypto-only — owners pre-fund Darwins manually.
         self._fiat_ramp: FiatRamp | None = fiat_ramp
+        # Twilio SMS inbox for inbound 2FA codes (doc 15). None = the
+        # platform has no shared phone number; accounts.manager escalates
+        # every code to the owner instead of the platform auto-answering.
+        self._sms_client: Any | None = sms_client
         # Non-LLM resource throttles (doc 09 level 2). The LLM tier
         # throttle lives on the genome's LLMRouter; sandbox / browser /
         # egress live here because their substrates are platform-side.
@@ -2040,6 +2045,18 @@ class Supervisor:
         if not hasattr(wallet, "policy"):
             raise SupervisorError("wallet does not expose policy")
         return wallet.policy()
+
+    # -- SMS 2FA inbox (doc 15) -------------------------------------------
+    def sms_verification_code(
+        self, *, number: str | None = None,
+    ) -> dict[str, Any] | None:
+        """The latest inbound SMS 2FA code from the platform's Twilio
+        inbox (doc 15) — ``{"code", "from", "received_at", "message_sid"}``
+        — or ``None`` when none has arrived. Raises :class:`SupervisorError`
+        when no Twilio client is configured."""
+        if self._sms_client is None:
+            raise SupervisorError("no Twilio SMS client configured")
+        return self._sms_client.latest_verification_code(to_number=number)
 
     # -- owner runtime controls (doc 09) ----------------------------------
     async def set_spend_lock(

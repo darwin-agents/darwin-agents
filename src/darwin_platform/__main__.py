@@ -508,6 +508,25 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
             http_client=httpx.Client(timeout=10.0), api_key=api_key,
         )
 
+    # -- SMS 2FA inbox (doc 15) ------------------------------------------
+    twilio_sid = getattr(args, "twilio_account_sid", None) or os.environ.get(
+        "TWILIO_ACCOUNT_SID"
+    )
+    twilio_token = getattr(args, "twilio_auth_token", None) or os.environ.get(
+        "TWILIO_AUTH_TOKEN"
+    )
+    if twilio_sid and twilio_token:
+        from .adapters.twilio_sms import TwilioSmsClient
+
+        kwargs["sms_client"] = TwilioSmsClient(
+            account_sid=twilio_sid,
+            auth_token=twilio_token,
+            phone_number=(
+                getattr(args, "twilio_phone_number", None)
+                or os.environ.get("TWILIO_PHONE_NUMBER")
+            ),
+        )
+
     return kwargs
 
 
@@ -1130,6 +1149,21 @@ def build_parser() -> argparse.ArgumentParser:
     phase2_group.add_argument(
         "--kyc-onfido-region", default="eu", choices=["eu", "us", "ca"],
         help="Onfido data region (default: eu).",
+    )
+    phase2_group.add_argument(
+        "--twilio-account-sid", default=None, metavar="SID",
+        help="Twilio account SID — enables the SMS 2FA inbox (doc 15). "
+             "Env: TWILIO_ACCOUNT_SID",
+    )
+    phase2_group.add_argument(
+        "--twilio-auth-token", default=None, metavar="TOKEN",
+        help="Twilio auth token (paired with --twilio-account-sid). "
+             "Env: TWILIO_AUTH_TOKEN. Never log this value.",
+    )
+    phase2_group.add_argument(
+        "--twilio-phone-number", default=None, metavar="NUMBER",
+        help="Default platform Twilio number that 2FA texts land on. "
+             "Env: TWILIO_PHONE_NUMBER",
     )
     phase2_group.add_argument(
         "--fcm-project-id", default=None, metavar="ID",

@@ -1150,6 +1150,26 @@ def build_app(
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
 
+    # -- SMS 2FA inbox (doc 15) -------------------------------------------
+    @app.get("/platform/sms/verification-code")
+    async def sms_verification_code(
+        request: Request,
+        number: str | None = Query(None),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Latest inbound 2FA code from the platform's Twilio inbox — the
+        operator (or an automation) reads it to answer an accounts.manager
+        'need the SMS code' escalation. Platform-operator scope: the Twilio
+        number is shared, so codes are not owner-readable."""
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            result = _sup(request).sms_verification_code(number=number)
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        if result is None:
+            raise HTTPException(404, "no verification code in the inbox")
+        return result
+
     # -- internal: throttle (doc 09 level 2) ------------------------------
     @app.post("/platform/darwins/{darwin_id}/throttle")
     async def install_throttle(
