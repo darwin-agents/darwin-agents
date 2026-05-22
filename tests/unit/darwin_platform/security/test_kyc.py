@@ -15,10 +15,12 @@ import pytest
 
 from darwin_platform.security.kyc import (
     KYCError,
+    KYCProvider,
     KYCService,
     KYCStatus,
     KYCTier,
     KYCVerdict,
+    OnfidoKYCProvider,
     PersonaKYCProvider,
     StubKYCProvider,
 )
@@ -149,6 +151,142 @@ def test_persona_post_failure_surfaces_as_kyc_error():
                            client=http)
     with pytest.raises(KYCError, match="503"):
         p.start_inquiry(subject="alice")
+
+
+# ---------------------------------------------------------------------------
+# OnfidoKYCProvider (with stub HTTP client)
+# ---------------------------------------------------------------------------
+
+class _OnfidoStubHTTP:
+    """Mimics the Onfido v3.6 endpoints the adapter calls — applicant
+    create, workflow-run create, workflow-run poll."""
+
+    def __init__(
+        self, *, run_status="processing", run_get_status="approved",
+        status=200,
+    ):
+        self.status = status
+        self.run_status = run_status
+        self.run_get_status = run_get_status
+        self.posts: list = []
+        self.gets: list = []
+
+    def post(self, url, json=None):
+        self.posts.append((url, json))
+        if url == "/applicants":
+            body: dict = {"id": "applicant-1"}
+        elif url == "/workflow_runs":
+            body = {
+                "id": "wfr-1", "status": self.run_status,
+                "link": {"url": "https://onfido.app/wfr-1"},
+            }
+        else:
+            body = {}
+        return types.SimpleNamespace(
+            status_code=self.status, json=lambda: body,
+        )
+
+    def get(self, url):
+        self.gets.append(url)
+        body = {"id": "wfr-1", "status": self.run_get_status,
+                "reason": "auto"}
+        return types.SimpleNamespace(
+            status_code=self.status, json=lambda: body,
+        )
+
+
+def test_onfido_requires_api_token():
+    with pytest.raises(KYCError, match="api_token"):
+        OnfidoKYCProvider(
+            api_token="", workflow_id="wf", client=_OnfidoStubHTTP(),
+        )
+
+
+def test_onfido_requires_workflow_id():
+    with pytest.raises(KYCError, match="workflow_id"):
+        OnfidoKYCProvider(
+            api_token="t", workflow_id="", client=_OnfidoStubHTTP(),
+        )
+
+
+def test_onfido_rejects_unknown_region():
+    with pytest.raises(KYCError, match="region"):
+        OnfidoKYCProvider(
+            api_token="t", workflow_id="wf", region="antarctica",
+            client=_OnfidoStubHTTP(),
+        )
+
+
+def test_onfido_satisfies_the_kyc_provider_protocol():
+    p = OnfidoKYCProvider(
+        api_token="t", workflow_id="wf", client=_OnfidoStubHTTP(),
+    )
+    assert isinstance(p, KYCProvider)
+
+
+def test_onfido_start_inquiry_creates_applicant_then_workflow_run():
+    http = _OnfidoStubHTTP()
+    p = OnfidoKYCProvider(api_token="t", workflow_id="wf-99", client=http)
+    out = p.start_inquiry(subject="alice", tier=KYCTier.ENHANCED)
+    assert out["inquiry_id"] == "wfr-1"
+    assert out["redirect_url"] == "https://onfido.app/wfr-1"
+    assert [u for u, _ in http.posts] == ["/applicants", "/workflow_runs"]
+    wf_body = http.posts[1][1]
+    assert wf_body["applicant_id"] == "applicant-1"
+    assert wf_body["workflow_id"] == "wf-99"
+    assert "tier:enhanced" in wf_body["tags"]
+
+
+def test_onfido_poll_maps_approved_and_recovers_subject():
+    http = _OnfidoStubHTTP(run_get_status="clear")
+    p = OnfidoKYCProvider(api_token="t", workflow_id="wf", client=http)
+    p.start_inquiry(subject="alice")
+    v = p.poll_inquiry("wfr-1")
+    assert v.status == KYCStatus.APPROVED
+    assert v.subject == "alice"  # from the adapter's run→subject map
+
+
+def test_onfido_poll_maps_declined_and_review():
+    p1 = OnfidoKYCProvider(
+        api_token="t", workflow_id="wf",
+        client=_OnfidoStubHTTP(run_get_status="declined"),
+    )
+    p1.start_inquiry(subject="bob")
+    assert p1.poll_inquiry("wfr-1").status == KYCStatus.REJECTED
+
+    p2 = OnfidoKYCProvider(
+        api_token="t", workflow_id="wf",
+        client=_OnfidoStubHTTP(run_get_status="review"),
+    )
+    p2.start_inquiry(subject="cara")
+    assert p2.poll_inquiry("wfr-1").status == KYCStatus.REQUIRES_REVIEW
+
+
+def test_onfido_http_failure_surfaces_as_kyc_error():
+    http = _OnfidoStubHTTP(status=503)
+    p = OnfidoKYCProvider(api_token="t", workflow_id="wf", client=http)
+    with pytest.raises(KYCError, match="503"):
+        p.start_inquiry(subject="alice")
+
+
+def test_onfido_revoke_is_a_noop():
+    p = OnfidoKYCProvider(
+        api_token="t", workflow_id="wf", client=_OnfidoStubHTTP(),
+    )
+    p.revoke(subject="alice", reason="x")  # no raise
+
+
+def test_cli_parses_onfido_flags():
+    from darwin_platform.__main__ import build_parser
+    args = build_parser().parse_args([
+        "serve", "--kyc-provider", "onfido",
+        "--kyc-onfido-api-token", "tok",
+        "--kyc-onfido-workflow-id", "wf-1",
+        "--kyc-onfido-region", "us",
+    ])
+    assert args.kyc_provider == "onfido"
+    assert args.kyc_onfido_api_token == "tok"
+    assert args.kyc_onfido_region == "us"
 
 
 # ---------------------------------------------------------------------------

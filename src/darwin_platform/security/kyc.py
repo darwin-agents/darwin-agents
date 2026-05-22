@@ -304,6 +304,164 @@ def _map_persona_status(s: str) -> KYCStatus:
 
 
 # ---------------------------------------------------------------------------
+# Onfido provider skeleton
+# ---------------------------------------------------------------------------
+_ONFIDO_REGIONS = {
+    "eu": "https://api.onfido.com/v3.6",
+    "us": "https://api.us.onfido.com/v3.6",
+    "ca": "https://api.ca.onfido.com/v3.6",
+}
+
+
+class OnfidoKYCProvider:
+    """Onfido Studio-workflow API adapter skeleton — the second KYC
+    provider alongside :class:`PersonaKYCProvider`, behind the same
+    :class:`KYCProvider` Protocol (doc 22 evaluated Persona *or* Onfido).
+
+    ``start_inquiry`` creates an Onfido applicant and a workflow run;
+    ``poll_inquiry`` reads the run's status. Like the Persona adapter this
+    is an HTTP skeleton — coverage is via an injected stub transport
+    returning canned JSON; production wires a real ``httpx.Client``. The
+    endpoint shapes track Onfido's v3.6 API.
+
+    Onfido applicants carry no caller-supplied reference field, so the
+    adapter keeps an in-memory ``workflow-run id → subject`` map for
+    verdict attribution. KYC documents never pass through here.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_token: str,
+        workflow_id: str,
+        region: str = "eu",
+        client: Any | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        if not api_token:
+            raise KYCError("OnfidoKYCProvider requires api_token")
+        if not workflow_id:
+            raise KYCError("OnfidoKYCProvider requires workflow_id")
+        base_url = _ONFIDO_REGIONS.get(region.lower())
+        if base_url is None:
+            raise KYCError(
+                f"unknown Onfido region {region!r}; expected one of "
+                f"{sorted(_ONFIDO_REGIONS)}"
+            )
+        if client is None:
+            try:
+                import httpx  # type: ignore[import]
+            except ImportError as exc:
+                raise KYCError(
+                    "OnfidoKYCProvider requires httpx (or an injected "
+                    "client): `pip install httpx`"
+                ) from exc
+            client = httpx.Client(
+                base_url=base_url,
+                headers={
+                    "Authorization": f"Token token={api_token}",
+                    "Accept": "application/json",
+                },
+                timeout=20.0,
+            )
+        self._client = client
+        self._workflow_id = workflow_id
+        self._clock = clock
+        self._subjects: dict[str, str] = {}
+
+    def start_inquiry(
+        self, *, subject: str, tier: KYCTier = KYCTier.STANDARD
+    ) -> dict[str, Any]:
+        # 1. Create the applicant — identity data is collected later by the
+        #    Onfido SDK / hosted flow, so the create body is minimal.
+        try:
+            applicant = self._client.post("/applicants", json={})
+        except Exception as exc:
+            raise KYCError(f"Onfido create-applicant failed: {exc}") from exc
+        if not (200 <= getattr(applicant, "status_code", 500) < 300):
+            raise KYCError(
+                f"Onfido create-applicant returned "
+                f"{getattr(applicant, 'status_code', 'unknown')}"
+            )
+        a_body = applicant.json() if hasattr(applicant, "json") else {}
+        applicant_id = str(a_body.get("id") or "")
+        if not applicant_id:
+            raise KYCError("Onfido returned no applicant id")
+        # 2. Launch the Studio workflow run for that applicant.
+        try:
+            run = self._client.post(
+                "/workflow_runs",
+                json={
+                    "applicant_id": applicant_id,
+                    "workflow_id": self._workflow_id,
+                    "tags": [f"tier:{tier.value}"],
+                },
+            )
+        except Exception as exc:
+            raise KYCError(
+                f"Onfido create-workflow-run failed: {exc}"
+            ) from exc
+        if not (200 <= getattr(run, "status_code", 500) < 300):
+            raise KYCError(
+                f"Onfido create-workflow-run returned "
+                f"{getattr(run, 'status_code', 'unknown')}"
+            )
+        body = run.json() if hasattr(run, "json") else {}
+        run_id = str(body.get("id") or "")
+        if not run_id:
+            raise KYCError("Onfido returned no workflow-run id")
+        self._subjects[run_id] = subject
+        link = body.get("link") or {}
+        return {
+            "inquiry_id": run_id,
+            "redirect_url": (
+                (link.get("url") if isinstance(link, dict) else "")
+                or body.get("dashboard_url")
+                or ""
+            ),
+            "status": _map_onfido_status(str(body.get("status", ""))).value,
+        }
+
+    def poll_inquiry(self, inquiry_id: str) -> KYCVerdict:
+        try:
+            resp = self._client.get(f"/workflow_runs/{inquiry_id}")
+        except Exception as exc:
+            raise KYCError(f"Onfido poll failed: {exc}") from exc
+        if not (200 <= getattr(resp, "status_code", 500) < 300):
+            raise KYCError(
+                f"Onfido poll returned "
+                f"{getattr(resp, 'status_code', 'unknown')}"
+            )
+        body = resp.json() if hasattr(resp, "json") else {}
+        return KYCVerdict(
+            subject=self._subjects.get(inquiry_id, ""),
+            status=_map_onfido_status(str(body.get("status", ""))),
+            tier=KYCTier.STANDARD,
+            inquiry_id=inquiry_id,
+            reason=str(body.get("reason") or body.get("status") or ""),
+            verified_at=self._clock(),
+        )
+
+    def revoke(self, *, subject: str, reason: str) -> None:
+        # Onfido has no revoke API — revocation is platform-side state, the
+        # same as the Persona adapter. KYCService.revoke is authoritative.
+        return None
+
+
+def _map_onfido_status(s: str) -> KYCStatus:
+    s = s.lower()
+    if s in ("approved", "clear", "complete", "completed", "passed"):
+        return KYCStatus.APPROVED
+    if s in ("declined", "rejected", "failed", "fail", "abandoned"):
+        return KYCStatus.REJECTED
+    if s in ("review", "awaiting_review", "manual_review"):
+        return KYCStatus.REQUIRES_REVIEW
+    if s in ("expired",):
+        return KYCStatus.EXPIRED
+    return KYCStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
 # KYCService — the platform-side cache + audit + gate
 # ---------------------------------------------------------------------------
 @dataclass
