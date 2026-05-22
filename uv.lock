@@ -867,6 +867,7 @@ platform = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "uvicorn" },
 ]
 postgres = [
@@ -905,6 +906,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'platform'", specifier = ">=1.20" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2,<3" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'platform'", specifier = ">=2.8" },
     { name = "pypdf", marker = "extra == 'pdfwatermark'", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
