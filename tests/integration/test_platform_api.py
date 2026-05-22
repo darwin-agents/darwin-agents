@@ -136,6 +136,24 @@ async def test_owner_control_endpoints(client) -> None:
     assert r.status_code == 404
 
 
+async def test_ledger_csv_export(client) -> None:
+    """The doc-05/17 jurisdiction-neutral ledger CSV export."""
+    c, sup = client
+    r = await c.post("/darwins", json={"opening_usdc": 60.0})
+    did = r.json()["darwin_id"]
+    h = sup._darwins[did]  # noqa: SLF001
+    await _wait_until(lambda: h.runtime.state.tick >= 5)
+
+    r = await c.get(f"/darwins/{did}/ledger.csv")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers.get("content-disposition", "")
+    assert r.text.splitlines()[0].startswith("seq,timestamp_utc,type")
+
+    r = await c.get("/darwins/does-not-exist/ledger.csv")
+    assert r.status_code == 404
+
+
 async def test_escalation_response_endpoint(client) -> None:
     c, sup = client
     r = await c.post(

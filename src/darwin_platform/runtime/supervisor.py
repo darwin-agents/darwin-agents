@@ -2496,6 +2496,15 @@ class Supervisor:
             "movements": page,
         }
 
+    async def ledger_csv(self, darwin_id: str) -> str:
+        """The full ledger as a CSV string (docs/engineering/05, 17) — a
+        jurisdiction-neutral movement export the owner hands to their
+        accountant. Not paginated: a year-end export wants every row."""
+        from ..payments.ledger_export import movements_to_csv
+
+        h = self._get(darwin_id)
+        return movements_to_csv(list(h.stack.wallet.movements()))
+
     # -- events (doc 08: GET /darwins/{id}/events) ------------------------
     async def events(
         self, darwin_id: str, *, limit: int = 100, offset: int = 0

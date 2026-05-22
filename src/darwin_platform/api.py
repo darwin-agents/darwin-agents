@@ -570,6 +570,33 @@ def build_app(
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
 
+    @app.get("/darwins/{darwin_id}/ledger.csv")
+    async def ledger_csv(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ):
+        """Jurisdiction-neutral CSV export of the ledger (docs 05, 17) — the
+        owner hands this to their accountant; the platform does not file
+        taxes."""
+        from fastapi.responses import Response
+
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            csv_text = await _sup(request).ledger_csv(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        return Response(
+            content=csv_text,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="darwin-{darwin_id}-ledger.csv"'
+                ),
+            },
+        )
+
     @app.get("/darwins/{darwin_id}/events")
     async def events(
         darwin_id: str,
