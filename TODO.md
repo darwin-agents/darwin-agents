@@ -2,7 +2,7 @@
 
 Audit of `docs/engineering/01–30` against the codebase. Last updated **2026-05-22**.
 
-**~469 specified features DONE · ~91 PARTIAL · ~44 MISSING.** The Python core is
+**~476 specified features DONE · ~85 PARTIAL · ~43 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
 `darwin_dna/` or `darwin_platform/`. Nearly every remaining gap is *outside* the
 Python monorepo: frontend, infra-as-code, third-party SaaS adapters, and process
@@ -14,19 +14,23 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
 ## P0 — Safety & correctness (close before any real-money or public run)
 
-- [ ] **Kill-switch fail-safe** — `KillSwitch.check()` calls `self._source.is_killed()`
-      with no `try/except`; an unreachable source raises instead of treating the
-      Darwin as killed. Docs 24 & 28 both require "source unreachable → killed".
-      → `src/darwin_dna/machinery/kill_switch.py:61`
-- [ ] **Outbound content-safety classifier** — no filter intercepts neuron-published
-      content before it goes live. Doc 10 (alignment).
-      → new platform-side filter around `content.publisher`
-- [ ] **Owner controls** — Doc 09 specifies four runtime controls that don't exist:
-  - [ ] spend-lock (pause all outbound payments while Darwin keeps running)
-  - [ ] block-reproduction flag (prevent autonomous child spawn)
-  - [ ] disable-a-neuron / disable-a-category at runtime
-  - [ ] standalone force-compaction trigger
-      → `src/darwin_platform/runtime/supervisor.py`, `src/darwin_platform/api.py`
+- [x] **Kill-switch fail-safe** — `KillSwitch.check()` now fails closed: any
+      exception polling the source trips the kill (docs 24 & 28). +5 tests.
+      → `src/darwin_dna/machinery/kill_switch.py:55`  *(done 2026-05-22)*
+- [x] **Outbound content-safety classifier** — `ContentSafetyGate` screens every
+      `content.publisher` publish (title+body): deterministic backstop + optional
+      platform classifier, fails closed, blocks + escalates. Doc 10. +17 tests.
+      → `src/darwin_dna/machinery/content_safety.py`  *(done 2026-05-22)*
+- [x] **Owner controls** — Doc 09 runtime controls. Supervisor methods + owner-scoped
+      HTTP routes under `/darwins/{id}/controls/*`, bridged into the genome's working
+      memory each heartbeat. +14 tests.  *(done 2026-05-22)*
+  - [x] spend-lock — wallet refuses outbound payments; metered LLM/compute exempt
+  - [x] block-reproduction — `check_reproduction` skips natural spawn; a platform
+        force still overrides
+  - [x] disable-neuron / disable-category — `dispatch` drops them from selection
+  - [x] force-compaction — resolved by design: layers are read-only at runtime (P1),
+        so in-place compaction is impossible; compaction is intrinsic to reproduction
+        past `generation_soft_cap` and reachable today via `force_reproduce`
 - [ ] **Quarantine state not persisted** — in-memory only on `QuarantineState`;
       lost on supervisor restart. Doc 23 state machine treats it as durable.
       → `darwin_lifecycle` table + `src/darwin_platform/runtime/supervisor.py:144`
@@ -135,8 +139,8 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 | 06 evolution-and-reproduction | 20 | 2 | 0 |
 | 07 isolation-and-multi-tenancy | 21 | 3 | 1 |
 | 08 platform-control-plane | 22 | 2 | 3 |
-| 09 kill-switches-and-owner-controls | 21 | 5 | 4 |
-| 10 alignment-and-anti-wireheading | 18 | 3 | 3 |
+| 09 kill-switches-and-owner-controls | 25 | 1 | 4 |
+| 10 alignment-and-anti-wireheading | 19 | 3 | 2 |
 | 11 tech-stack-at-a-glance | 15 | 5 | 5 |
 | 12 orchestration-langgraph | 7 | 3 | 3 |
 | 13 llm-routing-litellm | 9 | 4 | 2 |
@@ -150,11 +154,11 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 | 21 phase-one-evolution-build-plan | 12 | 4 | 1 |
 | 22 phase-two-multi-tenant-build-plan | 17 | 5 | 4 |
 | 23 data-model-reference | 14 | 2 | 0 |
-| 24 security-threat-model | 12 | 2 | 0 |
+| 24 security-threat-model | 13 | 1 | 0 |
 | 25 operational-runbook | 15 | 3 | 1 |
 | 26 testing-strategy | 14 | 1 | 0 |
 | 27 configuration-reference | 13 | 0 | 0 |
-| 28 cross-cutting-contracts | 13 | 5 | 1 |
+| 28 cross-cutting-contracts | 14 | 4 | 1 |
 | 29 incident-postmortem-template | 5 | 0 | 1 |
 | 30 evolution-tuning-guide | 11 | 3 | 0 |
 

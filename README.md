@@ -1,17 +1,17 @@
-# Darwin Agent
+# Darwin Agents
 
 **Self-modifying AI organisms with programmable wallets, isolated compute, and evolutionary fitness.**
 
-A Darwin is an autonomous agent that earns money, manages its own treasury, rewrites its own code, and
-spawns better-adapted offspring — all under a signed, immutable constitution it cannot violate. This
-repository contains the entire stack: the genome (Layer 0), the platform control plane, real provider
-adapters, and deployment tooling.
+Darwin Agents is a platform for launching **economically autonomous digital organisms** — not one-shot agent scripts that wake up, run a task, and disappear, but persistent workers with real stakes. Each user spawns a _Darwin_ with a starting budget; the organism earns revenue through online ventures its **neurons** operate, pays its own infrastructure and API costs from a programmable **treasury**, and either stays alive or dies when capital runs out. Profitable lineages **reproduce**, sealing what worked into the next generation's DNA; unprofitable ones die. That selection pressure is the point.
 
 ---
 
 ## About Darwin
 
-Darwin is a platform for launching **economically autonomous digital organisms** — not one-shot agent scripts that wake up, run a task, and disappear, but persistent workers with real stakes. Each user spawns a _Darwin_ with a starting budget; the organism earns revenue through online ventures its **neurons** operate, pays its own infrastructure and API costs from a programmable **treasury**, and either stays alive or dies when capital runs out. Profitable lineages **reproduce**, sealing what worked into the next generation's DNA; unprofitable ones die. That selection pressure is the point.
+A Darwin is an autonomous agent that earns money, manages its own treasury, rewrites its own code, and
+spawns better-adapted offspring — all under a signed, immutable constitution it cannot violate. This
+repository contains the entire stack: the genome (Layer 0), the platform control plane, real provider
+adapters, and deployment tooling.
 
 The architecture splits cleanly into two layers:
 
@@ -33,6 +33,54 @@ It is explicitly **not** AGI, a get-rich-quick scheme, or fully unsupervised ope
 **This repository** contains the full implementation stack: the Layer 0 genome (`darwin_dna`), the platform control plane (`darwin_platform`), real provider adapters, in-memory fakes for tests, simulation tooling, and deployment charts.
 
 **Documentation** is split into two folders — read [`docs/overview/`](docs/overview/) for the _why_ and product context, then [`docs/engineering/`](docs/engineering/) for the _how_.
+
+### Names, packages, and where mutation lives
+
+Three names show up in different places; they refer to different scopes:
+
+| Scope | Name | What it is |
+| ----- | ---- | ---------- |
+| Product / GitHub | **Darwin Agents** (`darwin-agent` repo) | The full platform plus organisms |
+| Python distribution | **`darwin-dna`** (`pyproject.toml`) | The installable wheel — ships genome, platform, and fakes together |
+| Python modules | `darwin_dna`, `darwin_platform`, `darwin_fakes` | Source packages under `src/` |
+
+The PyPI-style name `darwin-dna` reflects the founding **Layer 0 genome** artifact, not “this repo is DNA only.” The product name is Darwin Agents.
+
+**Genoma (DNA core)** and **soma** are runtime roles, not three equal top-level folders:
+
+```mermaid
+flowchart LR
+    subgraph REPO["This monorepo"]
+        DNA_PKG["darwin_dna\nLayer 0 template"]
+        PLAT["darwin_platform\nSaaS control plane"]
+        FAKES["darwin_fakes\ntest doubles"]
+    end
+
+    subgraph RUNTIME["Per Darwin at runtime (E2B sandbox)"]
+        DNA_RO["DNA mount\nread-only"]
+        SOMA_RW["soma/\nread-write"]
+    end
+
+    DNA_PKG -->|"copied + signed"| DNA_RO
+    DNA_PKG -->|"orchestrator_skeleton\n→ seed copy"| SOMA_RW
+    PLAT -->|"spawn · kill · sign layers\n· stage patches"| RUNTIME
+```
+
+| Part | Mutable during life? | Where in this repo | Where at runtime |
+| ---- | -------------------- | ------------------ | ---------------- |
+| **DNA (genome)** | No — read-only mount | `src/darwin_dna/` (constitution, machinery, evolution loop, neurons, `orchestrator_skeleton/` as **boot seed**) | Signed package + layer stack; verified on every boot |
+| **Soma** | Yes — self-mod patches | No `darwin_soma` package; seed in `darwin_dna/orchestrator_skeleton/`, promotion in `darwin_platform/evolution/` | `soma/` tree inside the Darwin's sandbox (strategies, orchestrator copy, memory, workspace) |
+| **Platform** | Ops evolve the repo | `src/darwin_platform/` | One multi-tenant supervisor per deployment |
+
+**Does `darwin_dna` evolve?** Two different meanings:
+
+1. **Within one Darwin's lifetime** — the genome does **not** change in place. The soma does: strategies, orchestrator nodes, and related files under `soma/`. The evolution loop and self-mod nodes live in the genome because they are **rules and machinery**; they drive soma changes but cannot rewrite `darwin_dna/` paths (the patch validator in DNA rejects that).
+
+2. **Across generations** — at **reproduction**, lessons distill into a **new signed DNA layer** (Layer 1, 2, …). The child inherits a stack of immutable layers; only the **platform** signs new layers. That is genome evolution **between** organisms, not self-editing Layer 0 from inside a running agent.
+
+Code under `darwin_dna/orchestrator_skeleton/` looks like “agent logic in the genome,” but architecturally it is the **founding soma template**: a Darwin boots from it, then mutates its **copy** in `soma/`. Built-in **neurons** in `darwin_dna/neurons/` are Layer 0 implementations with a stable contract; the soma chooses _when_ and _how_ to dispatch them.
+
+See [DNA core](docs/engineering/02-dna-core.md) and [Soma and orchestrator](docs/engineering/03-soma-and-orchestrator.md) for the full design.
 
 ---
 
@@ -112,34 +160,66 @@ flowchart TB
 
 ## Repository layout
 
-| Path                   | Description                                                                                                                             |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/darwin_dna/`      | **Layer 0 genome** — signed, immutable Python package (≤ 5 k lines, curated-allowlist deps)                                             |
-| `  constitution/`      | Immutable rule set encoded as pydantic models, signed at build time                                                                     |
-| `  evolution/`         | Main loop, lesson distillation, reproduction event                                                                                      |
-| `  neurons/`           | Neuron contract + built-in specialised workers                                                                                          |
-| `  machinery/`         | Kill switch, audit logger, treasury policy                                                                                              |
-| `  manifest.py`        | SHA-256 + Ed25519 trust root                                                                                                            |
-| `  signature.py`       | Layer signing and verification                                                                                                          |
-| `src/darwin_platform/` | **Platform control plane** — FastAPI supervisor                                                                                         |
-| `  supervisor.py`      | Spawn / monitor / kill Darwin instances, wires real adapters at spawn                                                                   |
-| `  api.py`             | REST surface: `/darwins`, `/healthz`, `/readyz`, `/metrics`                                                                             |
-| `  leadership.py`      | HA leader election via Postgres advisory locks — failover ≈ 5 s                                                                         |
-| `  persistence.py`     | Dual-backend: SQLite file path or `postgres://` DSN                                                                                     |
-| `  billing.py`         | Per-Darwin USDC billing integrated with treasury policy                                                                                 |
-| `  auth.py`            | Bearer-token auth with `owner` and `platform_operator` scopes                                                                           |
-| `  escalation.py`      | Owner-approval tickets for sensitive-tier vault reads                                                                                   |
-| `  monitoring.py`      | Prometheus metrics and alert counters                                                                                                   |
-| `  tracing.py`         | OpenTelemetry / OTLP tracing (no-op shim when OTel is absent)                                                                           |
-| `  adapters/`          | Real provider adapters: `Web3ChainClient`, `HvacVaultClient`, `BrowserUseClient`, `X402PaymentClient`, `E2BSandbox`, `LiteLLMTransport` |
-| `src/darwin_fakes/`    | **In-memory fakes** — deterministic, no network, no API keys required                                                                   |
-| `tests/`               | Tiered: `unit/`, `property/`, `redteam/`, `integration/`, `simulation/`, `fixtures/` — see [`tests/README.md`](tests/README.md)         |
-| `tools/sim/`           | Simulated world — runs a Darwin for N days and asserts invariants                                                                       |
-| `docker/`              | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger                                                                    |
-| `deploy/helm/`         | Kubernetes Helm chart (see [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md))                            |
-| `deploy/OPERATOR_RUNBOOK.md` | Provider enablement matrix, env vars, and failure-response checklist for production deploys                                         |
-| `docs/overview/`       | Vision, design principles, prior art, market, legal, roadmap, infrastructure                                                            |
-| `docs/engineering/`    | Technical architecture and build plans (see [`docs/engineering/00-README.md`](docs/engineering/00-README.md))                           |
+Runtime soma lives outside this tree (per-Darwin sandbox); see [Names, packages, and where mutation lives](#names-packages-and-where-mutation-lives). Below is what ships in git.
+
+### `src/darwin_dna/` — Layer 0 genome (immutable)
+
+Signed founding genome. Curated dependency allowlist; the organism reads it, never writes it.
+
+| Path | Role |
+| ---- | ---- |
+| `constitution/` | Allowed categories, forbidden actions, spend limits, escalation rules, P1–P10 assertions |
+| `layers/` | Sealed lesson layers (Layer 0 template + stack loader) |
+| `machinery/` | Kill switch, pause switch, audit logger, ledger, treasury policy, vault facade, patch validator, eval harness, fitness, LLM router, memory, content safety, neuron loader/proposal |
+| `evolution/` | Boot + main loop, lesson distiller, reproduction, archive |
+| `orchestrator_skeleton/` | Founding LangGraph loop (**soma seed**): `graph.py`, `state.py`, `nodes/`, `prompts/` |
+| `strategies/` | Founding strategy priors (e.g. `content_affiliate`) — copied into mutable `soma/strategies/` |
+| `neurons/` | Neuron contract (`_base.py`, `_registry.py`) + built-in workers (content, browser, payments, ads, trading, …) |
+| `manifest.py`, `signature.py`, `identity.py` | Trust root, Ed25519 verification, lineage metadata |
+| `hyperparameters.py` | Frozen hard caps + tunable defaults (soma may tune within bounds via its own copy) |
+
+### `src/darwin_platform/` — Platform control plane (habitat)
+
+Multi-tenant SaaS side: spawns and supervises organisms, wires real providers, never makes business decisions for them. Organised as **bounded contexts** (each subpackage mirrors `tests/unit/darwin_platform/`):
+
+| Package | Role |
+| ------- | ---- |
+| **`api.py`** | FastAPI REST surface (`/darwins`, `/healthz`, `/readyz`, `/metrics`) — thin wiring over the supervisor |
+| **`__main__.py`** | `darwin-platform serve` CLI entry (`[platform]` extra) |
+| **`runtime/`** | `supervisor.py` (lifecycle, quotas, anomaly), `orchestrator.py`, `driver.py`, `persistence.py` (SQLite or Postgres), `leadership.py` (HA advisory locks) |
+| **`tenancy/`** | Per-Darwin provisioning, Vault admin, K8s namespace provisioner, cross-pollination |
+| **`payments/`** | Billing, omnibus wallet, Stripe on-ramp, harvest scheduler, sanctions screening |
+| **`security/`** | Bearer auth (`owner` / `platform_operator`), KYC, signing service client, key rotation, PDF watermarking |
+| **`observability/`** | OpenTelemetry tracing (no-op without OTel), Prometheus metrics, operator audit, drift detector, Merkle anchor, snapshots, alert sinks |
+| **`escalations/`** | Owner-approval router + FCM push delivery |
+| **`evolution/`** | Sandbox patch staging (`patch_staging.py`) and eval runner — promotes soma patches after E2B harness |
+| **`infra/`** | Egress proxy, resource throttles, browser session cache |
+| **`adapters/`** | Real externals behind Protocols: wallet/chain (`web3`, `solana`, `stellar`, `multichain`), vault (`hvac`), browser (`browser-use`), sandbox (`e2b`), LLM (`litellm`), x402, fiat (`stripe`), Stagehand |
+| **`k8s/`** | Kubernetes driver + manifest builders for per-Darwin workloads |
+
+See [`docs/engineering/08-platform-control-plane.md`](docs/engineering/08-platform-control-plane.md).
+
+### `src/darwin_fakes/` — Test and sim doubles
+
+In-memory implementations of external deps (`FakeLLM`, `FakeWallet`, `FakeVault`, `FakeSandbox`, `FakePlatform`). Used by default in unit tests and `tools/sim/` — no API keys.
+
+### Tests, tools, deploy, docs
+
+| Path | Description |
+| ---- | ----------- |
+| `tests/` | Five tiers — `unit/`, `property/`, `redteam/`, `integration/`, `simulation/`, `fixtures/`; unit tree mirrors `src/` bounded contexts — see [`tests/README.md`](tests/README.md) |
+| `tools/sim/` | Multi-day simulated world (`run_sim.py`, `world.py`, `calibration.py`) |
+| `tools/soak/` | Long-run soak harness for supervisor invariants |
+| `tools/evolution_test/` | End-to-end evolution / patch pipeline exercises |
+| `scripts/changelog.py` | `git-cliff` integration for `CHANGELOG.md` (via `make changelog`) |
+| `docker/` | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger — [`docker/README.md`](docker/README.md) |
+| `deploy/helm/darwin-platform/` | Production Kubernetes chart |
+| `deploy/grafana/` | Dashboard JSON for platform metrics |
+| `deploy/OPERATOR_RUNBOOK.md` | Provider matrix, env vars, failure-response checklist |
+| `docs/overview/` | Vision, principles, prior art, market, legal, roadmap |
+| `docs/engineering/` | Architecture and build plans — [`docs/engineering/00-README.md`](docs/engineering/00-README.md) |
+| `docs/marketing/` | Product-facing copy assets |
+| `.github/workflows/` | CI (lint, test tiers, etc.) |
 
 ---
 
@@ -372,7 +452,7 @@ Read [`docs/overview/`](docs/overview/) first for the idea; read [`docs/engineer
 | [17 — Payments providers](docs/engineering/17-payments-providers.md)                             | Concrete provider choices: Coinbase Agentic Wallets, x402 protocol, Stripe fiat ramps, and AgentCore Payments.          |
 | [18 — Layer 0 build plan](docs/engineering/18-layer-zero-build-plan.md)                          | Engineering build plan for the founding genome: file layout, module sketches, package decisions, and testing strategy.  |
 | [19 — System diagrams](docs/engineering/19-system-diagrams.md)                                   | ASCII reference renderings of the platform and the organism.                                                            |
-| [20–27 — Build plans & reference](docs/engineering/00-README.md)                                  | Phase build plans, data model, threat model, runbooks, testing strategy, and configuration reference.                   |
+| [20–27 — Build plans & reference](docs/engineering/00-README.md)                                 | Phase build plans, data model, threat model, runbooks, testing strategy, and configuration reference.                   |
 
 ---
 
@@ -412,13 +492,13 @@ tests/
 └── fixtures/              # static test data
 ```
 
-| Tier            | Marker        | Run command                                | What it covers                                                                                                                                       |
-| --------------- | ------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Unit**        | `unit`        | `uv run pytest tests/unit`                 | Single-module tests against fakes — the four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) live here.        |
-| **Property**    | `property`    | `uv run pytest tests/property`             | Hypothesis-generated random inputs over each hot-path invariant.                                                                                     |
-| **Red-team**    | `redteam`     | `uv run pytest tests/redteam`              | Adversarial scenarios scripted from doc 24's threat-model table — one file per threat class.                                                         |
-| **Integration** | `integration` | `uv run pytest tests/integration`          | Multi-module in-process flows: boot → loop → kill, supervisor lifecycle, HTTP API, runtime resume, Path-C pipeline, cross-pollination wiring.        |
-| **Simulation**  | `simulation`  | `uv run pytest tests/simulation` (or `-m slow`) | Multi-day in-sim runs asserting invariants over an entire lifecycle. Slow (minutes); excluded from the fast loop.                                |
+| Tier            | Marker        | Run command                                     | What it covers                                                                                                                                |
+| --------------- | ------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unit**        | `unit`        | `uv run pytest tests/unit`                      | Single-module tests against fakes — the four hot paths (`signature`, `manifest`, `kill_switch`, `audit_logger`, `treasury_policy`) live here. |
+| **Property**    | `property`    | `uv run pytest tests/property`                  | Hypothesis-generated random inputs over each hot-path invariant.                                                                              |
+| **Red-team**    | `redteam`     | `uv run pytest tests/redteam`                   | Adversarial scenarios scripted from doc 24's threat-model table — one file per threat class.                                                  |
+| **Integration** | `integration` | `uv run pytest tests/integration`               | Multi-module in-process flows: boot → loop → kill, supervisor lifecycle, HTTP API, runtime resume, Path-C pipeline, cross-pollination wiring. |
+| **Simulation**  | `simulation`  | `uv run pytest tests/simulation` (or `-m slow`) | Multi-day in-sim runs asserting invariants over an entire lifecycle. Slow (minutes); excluded from the fast loop.                             |
 
 Tier markers are auto-applied by per-tier `conftest.py` — no decorators required on individual test files.
 
@@ -507,11 +587,11 @@ Ruff is enforced in CI. The genome's dependency allowlist (`pyproject.toml [proj
 
 **Changelog & releases** — requires [git-cliff](https://git-cliff.org) on `PATH`. Config: [`cliff.toml`](cliff.toml); automation: [`scripts/changelog.py`](scripts/changelog.py) via the [Makefile](Makefile).
 
-| Command | What it does |
-| ------- | ------------ |
-| `make changelog-sync` (alias `make changelog`) | Rewrite `## [Unreleased]` from conventional commits since the latest tag |
-| `make changelog-preview` | Same content as sync, stdout only |
-| `make release VERSION=0.0.2` | Promote commits to `## [0.0.2]`, clear `[Unreleased]`, bump `pyproject.toml`, `git commit`, annotated tag, `git push` + `git push --tags` |
+| Command                                        | What it does                                                                                                                              |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `make changelog-sync` (alias `make changelog`) | Rewrite `## [Unreleased]` from conventional commits since the latest tag                                                                  |
+| `make changelog-preview`                       | Same content as sync, stdout only                                                                                                         |
+| `make release VERSION=0.0.2`                   | Promote commits to `## [0.0.2]`, clear `[Unreleased]`, bump `pyproject.toml`, `git commit`, annotated tag, `git push` + `git push --tags` |
 
 Typical flow:
 
@@ -523,7 +603,6 @@ make release VERSION=0.0.2             # when shipping (needs clean auth to orig
 `changelog-sync` **replaces** the entire `[Unreleased]` section — write release notes in commit subjects, or edit the file after sync. Release commit message: `chore(release): prepare vX.Y.Z`. Opt out of git steps: `NO_COMMIT=1`, `NO_PUSH=1`, `NO_TAG=1`, or `NO_BUMP=1` (e.g. `make release VERSION=0.0.2 NO_PUSH=1` for a dry run). Details: [`docs/engineering/25-operational-runbook.md`](docs/engineering/25-operational-runbook.md) § Repository releases.
 
 ---
-
 
 ## License
 
