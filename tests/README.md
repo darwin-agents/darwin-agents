@@ -59,12 +59,14 @@ tests/
 
 ## Running
 
+From the repo root, [`Makefile`](../Makefile) targets mirror these commands (`make test-fast`, `make test-unit`, …). See `make help`.
+
 ```bash
 # Fast loop — every push (unit + property + redteam + integration)
-uv run pytest -m "not slow"
+uv run pytest -m "not slow"    # make test-fast
 
 # Single tier by path
-uv run pytest tests/unit
+uv run pytest tests/unit       # make test-unit
 uv run pytest tests/integration
 
 # Single tier by marker (works across paths if you ever move a test)
@@ -72,10 +74,10 @@ uv run pytest -m unit
 uv run pytest -m property
 uv run pytest -m redteam
 uv run pytest -m integration
-uv run pytest -m simulation        # = -m slow
+uv run pytest -m simulation        # = -m slow  (make test-slow)
 
 # Full suite including the slow sim tier (CI on main + nightly)
-uv run pytest
+uv run pytest                  # make test-all
 
 # Coverage report on the genome and platform
 uv run pytest --cov=darwin_dna --cov=darwin_platform --cov-report=term-missing

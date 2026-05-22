@@ -32,7 +32,7 @@ cp tokens.example.json tokens.json
 # Then uncomment the tokens.json mount + --auth-tokens lines in
 # docker-compose.yml.
 
-# 3. Start the stack.
+# 3. Start the stack (from repo root: make docker-up does steps 1–3).
 docker compose up --build
 
 # 4. Verify.

@@ -251,7 +251,7 @@ uv run python -m tools.soak.run_soak --duration 24h \
 
 | Outcome | Meaning | Action |
 | ------- | ------- | ------ |
-| All 6 criteria pass | Phase 0 gate met | Celebrate, tag the release |
+| All 6 criteria pass | Phase 0 gate met | Cut a repo release (`make release VERSION=…`) and/or tag the deploy image |
 | Criterion 1 fails (crash within 24h) | Unhandled exception in the loop | Read the crash log; fix; re-run |
 | Criterion 2 fails (< 50 dispatches or < 80% success) | Darwin is stuck or failing too much | Check FM-1 (vague planner) or FM-3 (over-mutating) |
 | Criterion 3 fails (broken hash chain) | Audit integrity issue | Check FM-5 |
@@ -350,6 +350,30 @@ With Jaeger running, find a slow/failed operation:
 2. Service: `darwin-platform`.
 3. Tag: `darwin_id=<id>`.
 4. Sort by duration descending — the longest span is usually the bottleneck.
+
+## Repository releases (semver)
+
+Package version (`pyproject.toml`), `CHANGELOG.md`, and git tags for this repo are managed from the root Makefile — not the Layer 0 DNA signing flow in doc 18.
+
+**Prerequisites:** [git-cliff](https://git-cliff.org) on `PATH`; commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/) (see root `README.md`).
+
+| Step | Command |
+| ---- | ------- |
+| Sync `[Unreleased]` from commits since the latest tag | `make changelog-sync` (alias `make changelog`) |
+| Preview without writing the file | `make changelog-preview` |
+| Cut a release (CHANGELOG + version bump + commit + tag + push) | `make release VERSION=0.0.2` |
+
+What `make release` does:
+
+1. Inserts `## [X.Y.Z] - <date>` from git history since the previous tag and clears `[Unreleased]`.
+2. Sets `version = "X.Y.Z"` in `pyproject.toml`.
+3. `git add CHANGELOG.md pyproject.toml` → `git commit -m "chore(release): prepare vX.Y.Z"`.
+4. `git tag -a vX.Y.Z` on that commit.
+5. `git push && git push --tags`.
+
+`changelog-sync` **replaces** the whole `[Unreleased]` section; put narrative in commit messages or edit after sync. Opt out of git remotes locally: `NO_PUSH=1`, `NO_COMMIT=1`, `NO_TAG=1`, or `NO_BUMP=1`. Implementation: `scripts/changelog.py` + `cliff.toml`.
+
+After a passing Phase 0 soak (above), a platform deploy may still use a container image tag (`helm install … --set image.tag=…`) — that is independent of this repo semver.
 
 ## Periodic operational tasks
 

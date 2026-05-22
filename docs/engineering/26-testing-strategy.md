@@ -200,12 +200,16 @@ When deciding what to test next, consult these sources in order:
 
 ## Running tests
 
+The repo root [`Makefile`](../../Makefile) wraps the commands below (`make test-fast`, `make test-all`, `make test-unit`, …). Run `make help` for the full list.
+
 ```bash
 # Fast tier (every push):
 uv run pytest -m "not slow"
+# or: make test-fast
 
 # Full suite including simulation:
 uv run pytest
+# or: make test-all
 
 # Just the red-team suite (by path):
 uv run pytest tests/redteam -v
