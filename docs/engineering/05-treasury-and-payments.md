@@ -60,7 +60,7 @@ We are not inventing a payment rail. The agentic-payments ecosystem matured betw
 
 - **x402.** Coinbase's HTTP-native payment protocol. When a service returns HTTP 402 with a price, the agent's wallet automatically authorizes a USDC payment and the service unlocks. This is what makes "the agent pays for its own API calls" actually work, at machine speed. x402 V2 (Dec 2025) added reusable sessions and multi-chain routing.
 - **Coinbase Agentic Wallets.** Non-custodial wallets purpose-built for autonomous agents. Built-in spending limits, gasless transactions on Base, programmable guardrails, TEE-secured key material. We use these as the per-Darwin wallet.
-- **AWS Bedrock AgentCore Payments.** Amazon's wrapper around x402 + Stripe Privy that gives us spend-limit enforcement at the SDK level. Useful as a secondary integration path and as a fallback if Coinbase has an outage.
+- **AWS Bedrock AgentCore Payments.** Amazon's wrapper around x402 + Stripe — *descoped for the MVP* (see [`17-payments-providers.md`](17-payments-providers.md)). It would only re-wrap Coinbase and Stripe, which the platform integrates directly, behind an AWS dependency we avoid.
 - **Stripe + MoonPay.** Fiat on-ramps. User deposits a credit card; we get USDC. Standard, regulated, KYC'd at this edge so the per-Darwin transactions don't have to be.
 
 For an external comparison of these protocols see [`../overview/03-prior-art.md`](../overview/03-prior-art.md).

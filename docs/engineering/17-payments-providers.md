@@ -90,15 +90,14 @@ The policy engine is a Python module living in the DNA core. Every outbound paym
 
 The policy engine never has the private key. It produces *intents* that the wallet SDK turns into transactions. The wallet enforces a second-layer policy (Coinbase Agentic Wallet's built-in limits) — both must approve.
 
-## AWS Bedrock AgentCore Payments — secondary
+## AWS Bedrock AgentCore Payments — descoped for the MVP
 
-We register a secondary payment integration via AWS Bedrock AgentCore Payments (Coinbase + Stripe Privy under the hood). Use cases:
+AWS Bedrock AgentCore Payments (launched late 2025; Coinbase + Stripe under the hood) would be a *secondary* payment rail. It is **not integrated for the MVP**, deliberately:
 
-- Some merchants (e.g. large content/SaaS providers) integrate with AgentCore first; Darwin transacts there.
-- AWS-side fallback if Coinbase has an outage.
-- AgentCore supports both x402 and (forthcoming) larger transactions like hotel and travel bookings — useful as the merchant ecosystem expands.
+- It would only re-wrap Coinbase and Stripe — both of which the platform already integrates **directly** (the Coinbase CDP wallet and the Stripe fiat ramp). AgentCore is an AWS-shaped abstraction over rails we already have.
+- The platform is provider-neutral and runs without an AWS account; taking an AWS dependency for a redundant rail works against a lean, low-cost launch.
 
-We don't make AgentCore primary because it adds an AWS-shaped abstraction over what is already a working x402+wallet flow. Operating two payment SDKs is acceptable when one is the default and the other is the fallback.
+Revisit only if a meaningful merchant ecosystem standardises on AgentCore-first checkout — an adapter can then slot in behind the existing `payments.facilitator` / x402 abstraction.
 
 ## Compliance
 
