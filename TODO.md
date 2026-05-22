@@ -105,7 +105,10 @@ Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
       and keeps per-user Darwin ownership keyed by Clerk user id; `--clerk-issuer` /
       `--clerk-jwks-url` wire it. `pyjwt[crypto]` added to `[platform]`. +19 tests.
       → `src/darwin_platform/security/clerk.py` Docs 08, 11, 22. _(done 2026-05-22)_
-- [ ] **Onfido KYC** — second provider; only `PersonaKYCProvider` exists. Docs 11, 16.
+- [x] **Onfido KYC** — `OnfidoKYCProvider` (Onfido v3.6 Studio-workflow API skeleton)
+      implements the same `KYCProvider` Protocol as Persona; `--kyc-provider onfido`
+      + `ONFIDO_API_TOKEN` / `ONFIDO_WORKFLOW_ID` wire it (eu/us/ca regions). +11 tests.
+      → `src/darwin_platform/security/kyc.py` Docs 11, 16. _(done 2026-05-22)_
 - [ ] **Temporal** — durable billing/harvest/reproduce jobs; runs in-process now.
       Docs 11, 19.
 - [x] **Modal / Northflank** — secondary sandbox runtimes. **Won't do (decision
