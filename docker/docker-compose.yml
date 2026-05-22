@@ -80,11 +80,26 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # -- redis: LiteLLM response cache + cross-replica rate limits -------
+  redis:
+    image: redis:7-alpine
+    container_name: darwin-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   # -- litellm: real LLM gateway (doc 13) ------------------------------
-  # Available on :4000 for experimentation. NOTE: the supervisor runs
-  # against the deterministic FakeLLM by default — there is no
-  # --litellm-url wiring yet (doc 20 adapter matrix marks it "future"),
-  # so this service is provided but not auto-consumed.
+  # On :4000. The supervisor routes through it when started with
+  # --litellm-url; otherwise it uses the deterministic FakeLLM. The
+  # Redis-backed response cache is configured in litellm.config.yaml.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     container_name: darwin-litellm
@@ -99,6 +114,12 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Redis connection for the response cache (see litellm.config.yaml).
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    depends_on:
+      - redis
     restart: unless-stopped
 
   # -- prometheus: scrapes supervisor /metrics every 15s ---------------
@@ -134,3 +155,4 @@ volumes:
   supervisor-data:
   postgres-data:
   prometheus-data:
+  redis-data:

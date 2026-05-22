@@ -50,6 +50,20 @@ router_settings:
     - tier-reasoning: ["tier-fast"]
     - tier-coding: ["tier-reasoning"]
 
+litellm_settings:
+  # Redis-backed response cache (docs/engineering/13, 19). Identical
+  # tier+prompt requests are served from cache — repeat planner / research
+  # calls stop costing money. The same Redis coordinates cross-replica
+  # rate limits when the proxy is scaled out. Connection comes from the
+  # environment (docker-compose wires the bundled redis service); if Redis
+  # is unreachable the proxy still boots — it just runs uncached.
+  cache: true
+  cache_params:
+    type: redis
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    password: os.environ/REDIS_PASSWORD
+
 general_settings:
   # No master key in dev — relies on docker-compose network isolation. A
   # real deployment puts LiteLLM behind an auth proxy (or sets
