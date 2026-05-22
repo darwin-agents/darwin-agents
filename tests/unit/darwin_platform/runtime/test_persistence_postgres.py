@@ -12,7 +12,7 @@ starting the docker-compose Postgres or any other instance::
       -e POSTGRES_USER=darwin -e POSTGRES_PASSWORD=test \\
       -e POSTGRES_DB=darwin postgres:16-alpine
     export DARWIN_POSTGRES_TEST_DSN="postgresql://darwin:test@127.0.0.1:5434/darwin"
-    uv run pytest tests/test_persistence_postgres.py
+    uv run pytest tests/unit/darwin_platform/runtime/test_persistence_postgres.py
 
 Each test drops the platform tables before running so prior state from
 a previous test (or aborted run) never bleeds in. Tests are NOT
