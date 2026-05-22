@@ -275,6 +275,8 @@ The simulation is its own non-trivial piece of code (lives in `tools/sim/`, not 
 
 ## Signing and release process
 
+**Repo semver** (`CHANGELOG.md`, `pyproject.toml`, git tags on this repository) is automated separately — see [`25-operational-runbook.md`](25-operational-runbook.md) § Repository releases (`make changelog-sync`, `make release`).
+
 When Layer 0 is ready for a release:
 
 1. The code is reviewed, tested, and tagged in git (`darwin-dna-l0-v1.0.0`).
