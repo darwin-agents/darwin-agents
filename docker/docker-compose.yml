@@ -5,9 +5,10 @@
 #
 #     cd docker && docker compose up --build
 #
-# Compose auto-loads ./.env (copy it from .env.example) for the ${...}
-# substitutions below. Everything has a dev-only default so the stack
-# comes up even with no .env at all — see docker/README.md.
+# Compose auto-loads ./.env for the ${...} substitutions below — create it
+# with `cp ../.env.example .env` (the repo-root .env.example is the single
+# source of truth). Everything has a dev-only default so the stack comes up
+# even with no .env at all — see docker/README.md.
 
 name: darwin-platform
 

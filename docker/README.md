@@ -24,7 +24,8 @@ there).
 cd docker
 
 # 1. (Optional) Seed provider API keys so LiteLLM works.
-cp .env.example .env
+#    .env.example lives at the repo root — the single source of truth.
+cp ../.env.example .env
 $EDITOR .env
 
 # 2. (Optional) Enable bearer auth on the supervisor.

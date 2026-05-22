@@ -7,7 +7,7 @@ SHELL := /bin/bash
 UV              := uv
 RUFF_PATHS      := src tests tools
 DB              ?= state.db
-COMPOSE         := docker compose
+COMPOSE         := docker compose -f docker/docker-compose.yml
 HELM_CHART      := deploy/helm/darwin-platform
 POSTGRES_DSN    ?= postgresql://darwin:test@127.0.0.1:5432/darwin
 SIM_DAYS        ?= 90
@@ -49,8 +49,8 @@ serve-postgres: install-serve ## Run supervisor against POSTGRES_DSN
 # --- Docker Compose stack -----------------------------------------------------
 
 .PHONY: docker-env docker-up docker-down docker-logs docker-build docker-ps
-docker-env: ## Copy docker/.env.example → docker/.env
-	@test -f docker/.env || cp docker/.env.example docker/.env
+docker-env: ## Copy .env.example → docker/.env
+	@test -f docker/.env || cp .env.example docker/.env
 	@echo "Edit docker/.env for LLM provider keys (optional)."
 
 docker-up: docker-env ## Build and start supervisor + Postgres + LiteLLM + metrics

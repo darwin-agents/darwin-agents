@@ -24,7 +24,8 @@ darwin-platform serve --db state.db \
 ### Docker Compose (local stack)
 
 ```bash
-cp docker/.env.example docker/.env   # add LLM provider keys
+cd docker
+cp ../.env.example .env   # add LLM provider keys (.env.example: repo root)
 docker compose up --build
 ```
 
