@@ -10,29 +10,36 @@ Platform ships an in-memory bearer token store (`darwin_platform/security/auth.p
 
 No Clerk in Phase 0. Do not commit tokens.
 
-## Phase 2 — production auth
+## Production auth — Clerk (backend already wired)
+
+Clerk is the chosen and implemented auth vendor on the platform side (`src/darwin_platform/security/clerk.py`):
+
+- `ClerkVerifier` validates Clerk RS256 JWTs against the issuer's JWKS.
+- `ClerkTokenStore` is a drop-in for the `TokenStore` Protocol that `get_auth` already uses — claims map to scopes, and per-user Darwin ownership is keyed by Clerk user id.
+- CLI wiring: `--clerk-issuer` / `--clerk-jwks-url`.
 
 ```
-User → Clerk/WorkOS sign-in → Next.js session
-     → Server action or API route exchanges identity for platform JWT
-     → Platform JWT scoped: owner, owned_darwins=[uuid,...]
+User → Clerk sign-in → Next.js session
+     → useAuth().getToken() returns Clerk RS256 JWT
+     → Send as Authorization: Bearer to FastAPI (no exchange step needed)
+     → ClerkTokenStore maps the JWT to AuthContext + owned Darwins
 ```
 
-Requirements:
+Frontend requirements:
 
-- Multi-tenant: one Clerk user maps to one platform `owner_id`.
-- JWT short TTL (15–60 min) with refresh via Clerk session refresh.
-- Platform continues to enforce Darwin ownership on every route — frontend hiding links is not security.
+- One Clerk user maps to one platform `owner_id` (Clerk's `sub` claim).
+- Short token TTL (Clerk default ~60 min) refreshed via `getToken()`; the FE re-fetches before every request rather than caching long.
+- The platform enforces Darwin ownership on every route — hiding links in the FE is not security.
 
-WorkOS vs Clerk: decide at Phase 2 kickoff per [`../engineering/11-tech-stack-at-a-glance.md`](../engineering/11-tech-stack-at-a-glance.md); integration shape is identical for the dashboard.
+WorkOS is **not** wired and is no longer a planned alternative; if multi-IdP support is ever needed, add a second `TokenStore` implementation matching the same Protocol.
 
 ## Token storage in the browser
 
-| Approach | Phase | Notes |
-|----------|-------|-------|
-| Memory only | 0 | Simplest; lost on refresh — acceptable for dev |
-| httpOnly cookie via Next.js BFF | 2+ | Preferred if we add route handlers to hold platform JWT |
-| Clerk session + fetch token on demand | 2 | `getToken()` pattern |
+| Approach | Milestone | Notes |
+|----------|-----------|-------|
+| Memory only | M0 dev shim | Simplest; lost on refresh — acceptable for dev token paste |
+| Clerk session + `getToken()` on every request | M0-B onward | The default for the production path; Clerk SDK handles refresh in its own session |
+| httpOnly cookie via Next.js BFF route handler | Optional, M3+ | Only if we ever want to hide the bearer from the browser; backend doesn't require it |
 
 Never store platform operator tokens in the owner app.
 

@@ -45,13 +45,15 @@ Quarantine copy explains wallet and egress locked; link to support.
 
 ### Ticket classes
 
-| Class | Deadline UX | Primary action |
-|-------|-------------|----------------|
-| `captcha` | Countdown minutes | Open Browserbase takeover |
-| `kyc` | Up to 72h | Upload / link Persona flow |
-| `approval` | 24h | Approve / Deny + note |
-| `info` | 7d | Free-text response |
-| `data` | varies | Provide structured fields |
+| Class | Deadline UX | Primary action | Backend provider |
+|-------|-------------|----------------|------------------|
+| `captcha` | Countdown minutes | Open live browser takeover | Browserbase **or** Browser Use Cloud (deploy-time `--browser-provider`) |
+| `kyc` | Up to 72h | Hand off to a hosted KYC flow | Persona **or** Onfido (deploy-time `--kyc-provider`) |
+| `approval` | 24h | Approve / Deny + note | — |
+| `info` | 7d | Free-text response | — |
+| `data` | varies | Provide structured fields | — |
+
+The FE renders the same UX for both captcha providers and both KYC providers; the difference is the embed URL / handoff URL the platform returns in the ticket payload. There is also a Twilio-backed SMS-2FA path (`GET /platform/sms/verification-code`) but it is **operator scope only** — it is **not** exposed in the owner UI.
 
 ### Inbox list (`/escalations`)
 
@@ -68,12 +70,12 @@ Sort: soonest deadline first. Row shows Darwin name, class, summary, time remain
 
 Flow:
 
-1. User opens escalation; UI fetches `GET /darwins/{id}/browser/sessions` for active session id.
-2. Embed Browserbase live view per [`../engineering/15-browser-stack.md`](../engineering/15-browser-stack.md) (dashboard iframe or pop-out).
+1. User opens escalation; UI fetches `GET /darwins/{id}/browser/sessions` for the active session id.
+2. Embed the provider's live view per [`../engineering/15-browser-stack.md`](../engineering/15-browser-stack.md) / [`../engineering/31-browser-use-evaluation.md`](../engineering/31-browser-use-evaluation.md). The platform exposes the chosen provider in the session payload; the FE picks the right iframe / pop-out renderer.
 3. User completes captcha; clicks "Done — resume Darwin".
 4. POST respond with `{ "action": "approved", "note": "captcha solved" }`.
 
-Do not integrate third-party captcha-solving services.
+CSP `frame-src` must allowlist **both** Browserbase and Browser Use Cloud domains, regardless of which is active at deploy time. Do not integrate third-party captcha-solving services.
 
 ## Mobile app (Expo, Phase 2)
 
