@@ -833,6 +833,9 @@ dependencies = [
 browser = [
     { name = "browser-use" },
 ]
+browser-use-cloud = [
+    { name = "browser-use-sdk" },
+]
 cdp = [
     { name = "cdp-sdk" },
 ]
@@ -893,6 +896,7 @@ web3 = [
 [package.metadata]
 requires-dist = [
     { name = "browser-use", marker = "extra == 'browser'", specifier = ">=0.2" },
+    { name = "browser-use-sdk", marker = "extra == 'browser-use-cloud'", specifier = ">=3.4,<4" },
     { name = "cdp-sdk", marker = "extra == 'cdp'", specifier = ">=1.0" },
     { name = "cryptography", specifier = ">=42" },
     { name = "e2b", marker = "extra == 'e2b'", specifier = ">=0.17" },
@@ -923,7 +927,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'platform'", specifier = ">=0.30" },
     { name = "web3", marker = "extra == 'web3'", specifier = ">=7.0" },
 ]
-provides-extras = ["graph", "llm", "platform", "postgres", "web3", "hvac", "browser", "e2b", "k8s", "solana", "stellar", "stripe", "cdp", "pdfwatermark", "lancedb", "dev"]
+provides-extras = ["graph", "llm", "platform", "postgres", "web3", "hvac", "browser", "e2b", "k8s", "solana", "stellar", "stripe", "cdp", "pdfwatermark", "lancedb", "browser-use-cloud", "dev"]
 
 [[package]]
 name = "deprecation"

@@ -100,6 +100,11 @@ pdfwatermark = ["pypdf>=4.0"]
 # LanceDB, per-Darwin directory, vector recall. Optional and lazy: the
 # import only runs when the platform actually chooses LanceDB.
 lancedb = ["lancedb>=0.13"]
+# Browser Use Cloud V3 Agent (docs/engineering/15, 31). Alternative to
+# the existing OSS browser-use library on Browserbase wiring — the
+# cloud's managed agent runs against Stealth Browsers + bundled
+# proxies. Picked at deploy time via --browser-provider browser-use-cloud.
+browser-use-cloud = ["browser-use-sdk>=3.4,<4"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",

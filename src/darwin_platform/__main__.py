@@ -217,26 +217,64 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             return RealVaultBackend(client=client)
         factories["vault_factory"] = _vault_factory
 
-    # -- browser (doc 15: BrowserUseClient on Browserbase) ------------------
-    bb_url = args.browserbase_url or os.environ.get("BROWSERBASE_URL")
-    bb_key = args.browserbase_api_key or os.environ.get("BROWSERBASE_API_KEY")
-    if bb_url or bb_key:
-        def _browser_factory(wallet, *, _url=bb_url, _key=bb_key):
-            from .adapters.browser import BrowserUseClient
+    # -- browser (docs 15, 31) ---------------------------------------------
+    # Two providers: browserbase (OSS browser_use lib + Browserbase runtime)
+    # or browser-use-cloud (V3 Agent API). Picked via --browser-provider.
+    browser_provider = getattr(args, "browser_provider", "browserbase")
+    if browser_provider == "browser-use-cloud":
+        bu_key = (
+            getattr(args, "browser_use_api_key", None)
+            or os.environ.get("BROWSER_USE_API_KEY")
+        )
+        if not bu_key:
+            print(
+                "--browser-provider browser-use-cloud requires "
+                "--browser-use-api-key or BROWSER_USE_API_KEY",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        bu_model = getattr(args, "browser_use_model", None)
+        bu_max_cost = float(getattr(args, "browser_use_max_cost_usdc", 0.10))
+
+        def _browser_factory(
+            wallet, *, _key=bu_key, _model=bu_model, _cap=bu_max_cost,
+        ):
+            from .adapters.browser_use_cloud import BrowserUseCloudClient
             try:
-                import browser_use  # noqa: F401
+                import browser_use_sdk  # noqa: F401
             except ImportError as exc:
                 raise ImportError(
-                    "Real browser requires the [browser] extra: "
-                    "pip install 'darwin-dna[browser]'"
+                    "--browser-provider browser-use-cloud requires the "
+                    "[browser-use-cloud] extra: "
+                    "pip install 'darwin-dna[browser-use-cloud]'"
                 ) from exc
-            def _agent_factory(*, url=_url, key=_key):
-                import browser_use as bu
-                if key:
-                    return bu.Agent(browserbase_api_key=key)
-                return bu.Agent(browserbase_ws_endpoint=url)
-            return BrowserUseClient(wallet=wallet, browser_factory=_agent_factory)
+            return BrowserUseCloudClient(
+                wallet=wallet,
+                api_key=_key,
+                model=_model,
+                max_cost_usdc=_cap,
+            )
         factories["browser_factory"] = _browser_factory
+    else:
+        bb_url = args.browserbase_url or os.environ.get("BROWSERBASE_URL")
+        bb_key = args.browserbase_api_key or os.environ.get("BROWSERBASE_API_KEY")
+        if bb_url or bb_key:
+            def _browser_factory(wallet, *, _url=bb_url, _key=bb_key):
+                from .adapters.browser import BrowserUseClient
+                try:
+                    import browser_use  # noqa: F401
+                except ImportError as exc:
+                    raise ImportError(
+                        "Real browser requires the [browser] extra: "
+                        "pip install 'darwin-dna[browser]'"
+                    ) from exc
+                def _agent_factory(*, url=_url, key=_key):
+                    import browser_use as bu
+                    if key:
+                        return bu.Agent(browserbase_api_key=key)
+                    return bu.Agent(browserbase_ws_endpoint=url)
+                return BrowserUseClient(wallet=wallet, browser_factory=_agent_factory)
+            factories["browser_factory"] = _browser_factory
 
     # -- sandbox (doc 14: E2BSandbox) ---------------------------------------
     e2b_key = args.e2b_api_key or os.environ.get("E2B_API_KEY")
@@ -1040,12 +1078,39 @@ def build_parser() -> argparse.ArgumentParser:
         "When omitted the in-memory FakeBrowser is used.",
     )
     browser_group.add_argument(
+        "--browser-provider", default="browserbase",
+        choices=["browserbase", "browser-use-cloud"],
+        help="Real browser substrate (doc 31). 'browserbase' wires the "
+             "OSS browser-use library against Browserbase (default). "
+             "'browser-use-cloud' wires the V3 Agent API against Browser "
+             "Use Cloud's Stealth Browsers (requires [browser-use-cloud] "
+             "extra).",
+    )
+    browser_group.add_argument(
         "--browserbase-url", default=None, metavar="URL",
         help="Browserbase WS endpoint. Env: BROWSERBASE_URL",
     )
     browser_group.add_argument(
         "--browserbase-api-key", default=None, metavar="KEY",
         help="Browserbase API key. Env: BROWSERBASE_API_KEY",
+    )
+    browser_group.add_argument(
+        "--browser-use-api-key", default=None, metavar="KEY",
+        help="Browser Use Cloud API key (when "
+             "--browser-provider browser-use-cloud). Env: BROWSER_USE_API_KEY",
+    )
+    browser_group.add_argument(
+        "--browser-use-model", default=None, metavar="MODEL",
+        help="Optional model name passed to Browser Use Cloud — e.g. a "
+             "BU custom model (doc 31). Default: cloud picks.",
+    )
+    browser_group.add_argument(
+        "--browser-use-max-cost-usdc", type=float, default=0.10,
+        metavar="USD",
+        help="Per-session spend cap for the Browser Use Cloud V3 Agent. "
+             "Pre-debited from the wallet and passed to the SDK as "
+             "max_cost_usd so cloud billing matches the ledger debit. "
+             "Default: 0.10",
     )
 
     sandbox_group = serve.add_argument_group(
