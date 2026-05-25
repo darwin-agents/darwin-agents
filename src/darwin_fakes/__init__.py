@@ -93,6 +93,11 @@ class FakeStack:
         # so the 90-day sim never touches a real e2b microVM. Tests that want
         # to drive the real adapter inject a stub via stack.sandbox.
         self.sandbox = FakeSandbox()
+        # Episodic memory substrate (doc 03). Default None — the genome falls
+        # back to its deterministic in-process EpisodicMemory (sim parity).
+        # Supervisor/tests inject a real substrate (e.g. ``LanceDbEpisodicMemory``)
+        # via ``stack.episodic_memory = ...`` before ``stack.platform()``.
+        self.episodic_memory = None
         self.manifest, self.layer_blobs, self.layer_names, self.identity = (
             mint_genesis(self.signer, birth_ts=clock())
         )
@@ -118,6 +123,7 @@ class FakeStack:
             browser=self.browser,
             x402_client=self.x402_client,
             sandbox=self.sandbox,
+            episodic_memory=self.episodic_memory,
         )
 
 

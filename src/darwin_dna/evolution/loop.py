@@ -79,6 +79,7 @@ class Platform:
         pause_source=None,
         x402_client=None,
         sandbox=None,
+        episodic_memory=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -112,6 +113,14 @@ class Platform:
         # NeuronContext.sandbox. The eval_harness also picks it up to run
         # candidate mutations in a clean substrate.
         self.sandbox = sandbox
+        # Episodic memory substrate (doc 03). When None the genome uses its
+        # deterministic default — ``EpisodicMemory`` with exact-signature +
+        # token-overlap recall, on which the 90-day sim and cross-engine
+        # parity depend. The platform MAY inject a per-Darwin vector store
+        # (e.g. ``LanceDbEpisodicMemory``) with the same surface; embeddings
+        # cannot live in the DNA itself (model lock-in P6, heavy dep P9), so
+        # this is the seam they enter through.
+        self.episodic_memory = episodic_memory
 
 
 class DarwinRuntime:
@@ -144,7 +153,22 @@ class DarwinRuntime:
         # sandbox-replacement resume, like the ledger and the archive: the
         # durable, replayable record of a life is the audit chain, not these
         # in-life caches. Semantic is the staging ground for the next layer.
-        self.episodic = EpisodicMemory(hp.episodic_max_entries)
+        #
+        # The deterministic EpisodicMemory is the genome default (the sim and
+        # cross-engine parity depend on it). The platform MAY inject a
+        # production substrate via ``platform.episodic_memory`` — a per-Darwin
+        # LanceDB vector store with the same surface — without changing this
+        # boot path. Embeddings cannot live in the DNA itself (P6, P9), so
+        # they enter through this seam.
+        # `is None`, NOT `or` — an empty injected substrate (e.g. a fresh
+        # LanceDbEpisodicMemory whose __len__ is 0) is truthy-falsy in
+        # Python and `or` would silently fall back to the default.
+        _injected_episodic = getattr(platform, "episodic_memory", None)
+        self.episodic = (
+            _injected_episodic
+            if _injected_episodic is not None
+            else EpisodicMemory(hp.episodic_max_entries)
+        )
         self.semantic = SemanticMemory(hp.semantic_max_staged)
         # The tiered vault wraps the raw per-Darwin namespace and enforces the
         # public/scoped/sensitive read model (doc 16). Each neuron is handed a
