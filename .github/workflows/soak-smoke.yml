@@ -1,0 +1,76 @@
+# Phase 0 soak smoke — exercises the same end-to-end path as the real
+# 24-hour soak (`tools/soak/run_soak.py`), shrunk to a 60-second CI run.
+# Catches regressions in the soak driver itself and in the server's
+# heartbeat / event-log / kill-switch paths between releases.
+#
+# The "real" Phase-0 24h gate (docs/engineering/20) is an operator-run
+# soak against a long-lived dev platform; this CI job is the smoke
+# that proves the same driver works end-to-end before that gate runs.
+
+name: soak-smoke
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main, "release/**"]
+  workflow_dispatch: {}
+
+concurrency:
+  group: soak-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: 60-second end-to-end soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install deps
+        run: uv sync --all-extras --dev
+
+      - name: Start platform (fast heartbeat, in-memory)
+        # Heartbeat tuned for CI: a 60s soak covers ~1200 ticks at
+        # 0.05s — well past the 100-dispatch criterion-2 floor.
+        run: |
+          uv run python -m darwin_platform serve \
+            --host 127.0.0.1 --port 8000 \
+            --heartbeat-seconds 0.05 \
+            > soak-server.log 2>&1 &
+          echo $! > soak-server.pid
+          # Wait for the server's readiness endpoint.
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/healthz && break || sleep 1
+          done
+
+      - name: Run soak driver (60s)
+        run: |
+          uv run python -m tools.soak.run_soak \
+            --url http://127.0.0.1:8000 \
+            --duration 60s --poll 5s
+
+      - name: Stop platform
+        if: always()
+        run: |
+          if [ -f soak-server.pid ]; then
+            kill "$(cat soak-server.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-server-log
+          path: soak-server.log

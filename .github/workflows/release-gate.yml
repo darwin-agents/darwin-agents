@@ -1,0 +1,53 @@
+# Release gate — runs the adversarial red-team suite before any
+# release-tagged commit ships (docs/engineering/10, 22, 24).
+#
+# Doc 22 names "red-team suite as a CI release gate" as a Phase-2
+# commitment; doc 24 §"Red-team scenarios" enumerates the eight families
+# (audit tamper, cross-pollination poison, fence escape, manifest forgery,
+# Path-C escalation, sanctions evasion, spread-spend evasion, vault
+# cross-read, watermark forgery). All live in `tests/redteam/`.
+#
+# Scope: red-team only. The fast tier (`test.yml`) and the 90-day
+# simulation tier (`slow.yml`) gate ordinary merges to main; this
+# workflow exists so a release tag or a `release/**` branch *cannot*
+# advance with any adversarial scenario failing.
+
+name: release-gate
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["release/**"]
+  pull_request:
+    branches: ["release/**"]
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a release-gate run mid-flight
+
+jobs:
+  redteam:
+    name: pytest -m redteam (doc 24 adversarial scenarios)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install deps
+        run: uv sync --all-extras --dev
+
+      - name: Red-team suite
+        # -v so a failure in CI logs prints which adversarial scenario
+        # tripped — the audit trail for the release decision.
+        run: uv run pytest -m redteam -v
