@@ -351,6 +351,7 @@ class Supervisor:
         x402_factory: Callable[[Any], Any] | None = None,
         sandbox_factory: Callable[[Any], Any] | None = None,
         stagehand_factory: Callable[[Any], Any] | None = None,
+        episodic_memory_factory: Callable[[str], Any] | None = None,
         provisioning_backend: ProvisioningBackend | None = None,
         provisioning_quotas: ProvisioningQuotas | None = None,
         vault_sensitive_ttl_seconds: float = DEFAULT_SENSITIVE_TTL_SECONDS,
@@ -583,6 +584,16 @@ class Supervisor:
         self._x402_factory: Callable[[Any], Any] | None = x402_factory
         self._sandbox_factory: Callable[[Any], Any] | None = sandbox_factory
         self._stagehand_factory: Callable[[Any], Any] | None = stagehand_factory
+        # episodic_memory_factory(darwin_id) -> EpisodicMemory-compatible
+        #   substrate (doc 03). When set, the supervisor installs the result on
+        #   the per-Darwin Platform (``stack.episodic_memory``) before boot, so
+        #   the genome's DarwinRuntime picks it up in place of the deterministic
+        #   default. The only real implementation today is
+        #   ``LanceDbEpisodicMemory``; with this None the genome stays
+        #   deterministic (sim + cross-engine parity unchanged).
+        self._episodic_memory_factory: Callable[[str], Any] | None = (
+            episodic_memory_factory
+        )
         # Platform-mediated provisioning (doc 04, 07). Replaces the fake
         # in-memory provisioner with a service that records per-Darwin
         # resources, enforces quotas, and lets operators deprovision via
@@ -955,6 +966,13 @@ class Supervisor:
             # Wallet is passed for per-session billing inside the adapter.
             if self._sandbox_factory is not None:
                 stack.sandbox = self._sandbox_factory(stack.wallet)
+            # Episodic memory substrate (doc 03). When configured, install the
+            # per-Darwin vector store (LanceDB today) on the Platform before
+            # boot so the genome's injection seam picks it up in place of the
+            # deterministic in-process default. Per-Darwin so each life owns
+            # its own table; the factory carries the per-Darwin key out.
+            if self._episodic_memory_factory is not None:
+                stack.episodic_memory = self._episodic_memory_factory(darwin_id_now)
             # Sanctions screener (doc 17). Installed on every wallet so
             # outbound payments are OFAC-checked at the wallet layer
             # before any chain submit. The wallet's `set_sanctions_screener`

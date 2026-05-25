@@ -322,6 +322,62 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
 
         factories["llm_transport_factory"] = _llm_factory
 
+    # LanceDB-backed episodic memory (doc 03, 11). Per-Darwin vector
+    # substrate; the genome keeps its deterministic default unless this
+    # factory is installed. Each Darwin gets its own LanceDB table at
+    # <base>/<darwin_id> so lifetimes stay isolated on disk; embeddings
+    # are produced via litellm.embedding (routed through the proxy when
+    # --litellm-url is set, direct otherwise).
+    episodic_choice = getattr(args, "episodic_memory", "deterministic")
+    lancedb_path = getattr(args, "lancedb_path", None) or os.environ.get(
+        "DARWIN_LANCEDB_PATH"
+    )
+    if episodic_choice == "lancedb" and lancedb_path:
+        embed_model = (
+            getattr(args, "lancedb_embedding_model", None)
+            or "openai/text-embedding-3-small"
+        )
+        litellm_base = getattr(args, "litellm_url", None) or os.environ.get(
+            "DARWIN_LITELLM_URL"
+        )
+        litellm_key = (
+            getattr(args, "litellm_master_key", None)
+            or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
+        )
+        try:
+            import litellm  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "LanceDB episodic memory needs litellm for embeddings: "
+                "pip install 'darwin-dna[llm,lancedb]'"
+            ) from exc
+
+        def _embed(
+            text: str,
+            *,
+            _model=embed_model,
+            _url=litellm_base,
+            _key=litellm_key,
+        ) -> list[float]:
+            import litellm as _litellm
+            kwargs: dict[str, Any] = {"model": _model, "input": text}
+            if _url:
+                kwargs["api_base"] = _url.rstrip("/")
+            if _key:
+                kwargs["api_key"] = _key
+            resp = _litellm.embedding(**kwargs)
+            return list(resp["data"][0]["embedding"])
+
+        def _lancedb_factory(
+            darwin_id: str, *, _base=lancedb_path, _embed=_embed,
+        ):
+            from .adapters.lancedb_memory import LanceDbEpisodicMemory
+            db_path = os.path.join(_base, darwin_id)
+            os.makedirs(db_path, exist_ok=True)
+            return LanceDbEpisodicMemory(embed=_embed, db_path=db_path)
+
+        factories["episodic_memory_factory"] = _lancedb_factory
+
     return factories
 
 
@@ -1185,6 +1241,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--moonpay-api-key", default=None, metavar="KEY",
         help="MoonPay API key (when --fiat-provider moonpay). "
              "Env: MOONPAY_API_KEY",
+    )
+    phase2_group.add_argument(
+        "--episodic-memory", default="deterministic",
+        choices=["deterministic", "lancedb"],
+        help="Per-Darwin episodic memory substrate (doc 03). "
+             "'deterministic' keeps the in-process EpisodicMemory the "
+             "genome ships with (sim + cross-engine parity). 'lancedb' "
+             "installs a LanceDbEpisodicMemory per Darwin under "
+             "--lancedb-path with embeddings via the LiteLLM "
+             "tier-embedding model. Default: deterministic.",
+    )
+    phase2_group.add_argument(
+        "--lancedb-path", default=None, metavar="DIR",
+        help="Base directory for per-Darwin LanceDB tables (one subdir "
+             "per darwin_id) when --episodic-memory lancedb. "
+             "Env: DARWIN_LANCEDB_PATH",
+    )
+    phase2_group.add_argument(
+        "--lancedb-embedding-model", default=None, metavar="MODEL",
+        help="LiteLLM model for episodic-memory embeddings (when "
+             "--episodic-memory lancedb). "
+             "Default: openai/text-embedding-3-small.",
     )
     phase2_group.add_argument(
         "--maintenance-interval", default=86400.0, type=float,
