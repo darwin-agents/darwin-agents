@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+### Added
+- feat(platform): LanceDB-backed `LanceDbEpisodicMemory` substrate with an
+  injectable embedder, behind the new `[lancedb]` extra
+- feat(dna): `Platform.episodic_memory` injection seam — the genome's
+  deterministic `EpisodicMemory` stays the default, the platform may swap
+  in a per-Darwin vector store without touching the DNA
+- feat(platform): supervisor `episodic_memory_factory` + CLI flags
+  `--episodic-memory {deterministic,lancedb}`, `--lancedb-path`,
+  `--lancedb-embedding-model` (env `DARWIN_LANCEDB_PATH`); embeddings
+  routed through `litellm.embedding` (honours `--litellm-url` when set)
+
+### Changed
+- docs(engineering): descope AWS Bedrock AgentCore Payments for the MVP
+  (redundant with direct Coinbase + Stripe integrations; avoid AWS
+  dependency) and de-AWS the cloud-provider row to "provider-neutral"
+
 ### Fixed
 - fix(changelog): scope release to commits since previous tag
 

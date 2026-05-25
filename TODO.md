@@ -75,7 +75,13 @@ notification carries the abandoned count. Doc 05. +3 tests. ("Child inherits
 open revenue streams" stays out — doc 05 itself marks it TBD.)
 → `src/darwin_dna/evolution/loop.py` *(done 2026-05-22)*
 
-## P2 — Third-party integrations (named in docs, no adapter)
+## P2 — Third-party integrations (named in docs, no adapter) — ✅ COMPLETE
+
+All 13 items resolved (2026-05-23): 8 built (fiat ramps, LiteLLM proxy, CDP
+wallet, Clerk auth, Redis cache, Onfido KYC, Twilio SMS, LanceDB episodic
+memory) and 5 deliberately won't-do with reasons (Modal/Northflank,
+LangGraph-native, Temporal, AWS Bedrock AgentCore Payments, CloudWatch
+in-app log sink).
 
 - **Fiat ramp wiring — Stripe + MoonPay** — the `StripeFiatRamp` / `MoonPayFiatRamp`
 adapters are now CLI-wired: `--fiat-provider {stub,stripe,moonpay}` +
@@ -132,8 +138,17 @@ scope) reads codes to answer `accounts.manager` 2FA escalations. Doc 15.
 CloudWatch: **won't do as app code** (decision 2026-05-22) — in-app log shipping
 is an anti-pattern; stdout → cluster log agent → CloudWatch is the standard, an
 infra/Helm concern folded into the P3 Terraform/EKS item. Doc 22.
-- **Real LanceDB client** — K8s sidecar is provisioned; genome memory uses
-in-process deterministic recall. Docs 03, 07, 11, 19.
+- **Real LanceDB client** — `LanceDbEpisodicMemory` (embedded LanceDB +
+injected embedder) implements the same surface as the genome's
+deterministic `EpisodicMemory`. A new injection seam on `Platform` —
+`platform.episodic_memory` — lets the supervisor swap a per-Darwin
+vector store in for the deterministic default *without touching the DNA*
+(sim + cross-engine parity untouched when no factory is configured).
+Wired through Supervisor `episodic_memory_factory` and CLI
+(`--episodic-memory lancedb`, `--lancedb-path`, `--lancedb-embedding-model`,
+`DARWIN_LANCEDB_PATH`); embeddings via `litellm.embedding` (routed through
+`--litellm-url` when set). `[lancedb]` extra. +12 tests (10 adapter + 2
+injection-seam). Docs 03, 11, 19. *(done 2026-05-23)*
 - **LangGraph native features** — **Won't do (decision 2026-05-22)** — the custom
 `PersistentCheckpointStore` + state-routing works and is fully tested;
 converting to LangGraph-native (`PostgresSaver`, `interrupt()`, time-travel) is
