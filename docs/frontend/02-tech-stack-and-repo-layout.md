@@ -14,8 +14,8 @@ Aligned with [`../engineering/11-tech-stack-at-a-glance.md`](../engineering/11-t
 | Data fetching | **TanStack Query** | Server state, polling, cache invalidation on mutation |
 | Forms | **react-hook-form** + **zod** | Escalation responses, harvest rules, spawn wizard |
 | Realtime | Native **WebSocket** (browser) | Thin wrapper in `lib/ws.ts`; reconnect with backoff |
-| Auth (prod) | **Clerk** or **WorkOS** | Pick at Phase 2 kickoff; org/multi-tenant ready |
-| Mobile | **Expo** (React Native) | Phase 2; shares types and API client with `web/` |
+| Auth (prod) | **Clerk** | Wired on backend (`security/clerk.py`); RS256 JWTs verified against the issuer's JWKS |
+| Mobile | **Expo** (React Native) | Milestone M4; shares types and API client with `web/` |
 
 ## Deployment targets
 
@@ -29,7 +29,7 @@ No Darwin code runs in the frontend bundle. Environment variables are only platf
 ```
 web/                              # Next.js dashboard (new)
   app/
-    (auth)/                       # Clerk/WorkOS callback routes
+    (auth)/                       # Clerk callback routes
     (dashboard)/
       page.tsx                    # Fleet home — Darwin list
       darwins/
