@@ -94,6 +94,12 @@ cdp = ["cdp-sdk>=1.0"]
 # document still carries the trace. Optional — the trailer is the
 # baseline; pypdf is the upgrade path.
 pdfwatermark = ["pypdf>=4.0"]
+# Per-Darwin vector memory (docs/engineering/03, 11). The genome ships a
+# deterministic EpisodicMemory (sim parity, no model lock-in). With this
+# extra the platform can inject ``LanceDbEpisodicMemory`` — embedded
+# LanceDB, per-Darwin directory, vector recall. Optional and lazy: the
+# import only runs when the platform actually chooses LanceDB.
+lancedb = ["lancedb>=0.13"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
