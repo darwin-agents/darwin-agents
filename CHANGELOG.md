@@ -18,11 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--episodic-memory {deterministic,lancedb}`, `--lancedb-path`,
   `--lancedb-embedding-model` (env `DARWIN_LANCEDB_PATH`); embeddings
   routed through `litellm.embedding` (honours `--litellm-url` when set)
+- feat(platform): `BrowserUseCloudClient` adapter for Browser Use Cloud's
+  V3 Agent API, alongside the existing Browserbase wiring; selected via
+  `--browser-provider {browserbase,browser-use-cloud}` with spend cap
+  parity (pre-debit + SDK `max_cost_usd`). `[browser-use-cloud]` extra
+- docs(engineering): new doc 31 (`31-browser-use-evaluation.md`) with
+  verified pricing comparison and provider recommendation
+- ci: red-team CI release gate (`release-gate.yml`) — runs
+  `pytest -m redteam` on every `release/**` push and `v*` tag
+- ci: end-to-end soak smoke (`soak-smoke.yml`) — exercises the same
+  driver as the real 24h gate, shrunk to 60s on every push/PR
+- ops: `tools/drills/` — kill-switch (locally verified), DR failover,
+  and Vault seal/unseal exercises + operator README
+- docs: `docs/postmortems/` directory + README (resolves the
+  doc-29 template's dangling reference)
 
 ### Changed
 - docs(engineering): descope AWS Bedrock AgentCore Payments for the MVP
   (redundant with direct Coinbase + Stripe integrations; avoid AWS
   dependency) and de-AWS the cloud-provider row to "provider-neutral"
+- docs: `.env.example` consolidated — won't-do blocks removed, all
+  remaining entries are [LIVE] or [PENDING] (226 → 199 lines)
 
 ### Fixed
 - fix(changelog): scope release to commits since previous tag

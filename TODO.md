@@ -1,6 +1,6 @@
 # Darwin — Engineering Backlog
 
-Audit of `docs/engineering/01–30` against the codebase. Last updated **2026-05-22**.
+Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-25**.
 
 **~487 specified features DONE · ~79 PARTIAL · ~38 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
@@ -154,6 +154,17 @@ injection-seam). Docs 03, 11, 19. *(done 2026-05-23)*
 converting to LangGraph-native (`PostgresSaver`, `interrupt()`, time-travel) is
 churn with no behaviour gain. Doc 12.
 
+## Provider-neutral browser stack — ✅ COMPLETE
+
+- **Browser Use Cloud adapter** — `BrowserUseCloudClient` alongside the
+existing `BrowserUseClient(Browserbase)` so the operator picks at deploy
+time. Same `BrowserClient` Protocol; CLI `--browser-provider
+{browserbase,browser-use-cloud}` (+ `--browser-use-api-key`,
+`--browser-use-model`, `--browser-use-max-cost-usdc`); spend cap is
+both pre-debited to the wallet AND passed to the SDK as `max_cost_usd`
+so cloud billing matches the ledger debit. Optional BU custom model.
+`[browser-use-cloud]` extra. +11 tests. Docs 15, 31. *(done 2026-05-25)*
+
 ## P3 — Frontend & infrastructure (never started)
 
 - **Next.js web dashboard** — Anatomy + Timeline canvases. REST/WS API is complete;
@@ -164,17 +175,32 @@ Vault, observability, dev/staging/prod envs. Docs 20, 22.
 
 ## P4 — Process / non-code commitments
 
-- [~] **24h soak in CI** — harness now exists (`tools/soak/`, uncommitted) +
-`tests/integration/test_soak_assertions.py`. Remaining: commit it, wire into CI,
-run the gate. Docs 20, 25.
+- [~] **24h soak in CI** — harness committed (`tools/soak/run_soak.py` +
+`tools/soak/assertions.py` + `tools/soak/config.py`, 21 unit tests in
+`tests/integration/test_soak_assertions.py`). End-to-end 60-second CI smoke
+wired in `.github/workflows/soak-smoke.yml` — exercises the same driver +
+six acceptance criteria the real 24h gate uses; verified locally (6/6 PASS,
+0.07s kill latency). The *real* 24-hour gate remains an operator-run
+process commitment against a long-lived dev platform. Docs 20, 25.
+*(harness + smoke done 2026-05-25)*
+- **`docs/postmortems/` directory** — created with a README pointing to the
+doc-29 template. Intentionally empty until the first real incident.
+*(done 2026-05-25)*
 - **7-day testnet soak run** — Layer-0 exit criterion. Docs 18, 20.
 - **Outside reviewer of the planner system prompt**. Doc 18.
 - **Legal/compliance review of the constitution**. Doc 18.
-- **Quarterly safety reviews · external security audit · red-team suite as a CI
-release gate**. Docs 10, 22.
-- **Operational drills** — kill-switch, DR failover, Vault seal/unseal. Doc 09.
+- [~] **Quarterly safety reviews · external security audit · red-team
+suite as a CI release gate**. CI release gate **done 2026-05-25**:
+`.github/workflows/release-gate.yml` runs `pytest -m redteam` (18 tests
+covering doc-24's eight adversarial families) on every push to
+`release/**` or `v*` tag. Quarterly reviews + external audit remain
+process commitments. Docs 10, 22.
+- [~] **Operational drills** — kill-switch, DR failover, Vault seal/unseal.
+**Drill scripts done 2026-05-25**: `tools/drills/{kill_switch,dr_failover,vault_seal}.py`
++ README. Kill-switch locally verified (PASS, 0.21s latency). DR + Vault
+drills code-reviewed but not locally exercised (need Postgres + Vault
+respectively) — first operator run is the test. Doc 09.
 - **Real economic activity** — Darwin earns ≥ $1 USDC live. Doc 21.
-- **`docs/postmortems/` directory** — referenced by the doc-29 template.
 
 ## Doc-drift cleanup (code is fine — fix the docs) — ✅ COMPLETE
 
@@ -189,13 +215,32 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 
 ---
 
-## Recently progressed (your background work, 2026-05-22)
+## Shipped since 2026-05-22
 
-- `tools/soak/` soak harness (`run_soak.py`, `assertions.py`, `config.py`) +
-`tests/integration/test_soak_assertions.py` — created, **not yet committed**.
-- `Makefile`, `cliff.toml` (git-cliff), `docker/docker-compose.yml` — added/moved.
-- Modified: `CHANGELOG.md`, `README.md`, `docker/README.md`,
-`src/darwin_platform/__main__.py` — uncommitted.
+- **LanceDB episodic memory** — `LanceDbEpisodicMemory` adapter, genome
+injection seam (`platform.episodic_memory`), Supervisor factory + CLI
+flags, `[lancedb]` extra, +12 tests. Last P2 integration done.
+- **AgentCore Payments descoped** — docs 05/11/17 updated to mark won't-do
+(redundant with direct Coinbase + Stripe; avoid AWS dependency).
+- **`.env.example` consolidated** — won't-do blocks removed
+(AgentCore handle, Temporal, Modal/Northflank, WorkOS, AWS shared
+credentials); descriptions corrected for already-LIVE adapters; legend
+trimmed. 226 → 199 lines.
+- **Browser Use Cloud — research + adapter** — new doc 31 (verified
+pricing vs Browserbase, BU-model skepticism flagged, three options
+weighed); `BrowserUseCloudClient` shipped with `--browser-provider
+{browserbase,browser-use-cloud}` deploy-time selection and full spend
+cap parity (pre-debit + SDK `max_cost_usd`). +11 tests.
+- **Soak harness + CI smoke** — `tools/soak/` committed; new
+`.github/workflows/soak-smoke.yml` runs the 60-second end-to-end soak
+on every push/PR. Verified locally 6/6 PASS.
+- **Red-team CI release gate** — new `.github/workflows/release-gate.yml`
+runs `pytest -m redteam` (18 adversarial scenarios) on every
+`release/**` push + `v*` tag.
+- **Operational drill scripts** — `tools/drills/` with kill-switch
+(locally verified), DR failover, and Vault seal/unseal exercises +
+operator-facing README.
+- **`docs/postmortems/`** — directory created with README.
 
 ---
 
@@ -234,6 +279,7 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 | 28 cross-cutting-contracts           | 19   | 0       | 0       |
 | 29 incident-postmortem-template      | 5    | 0       | 1       |
 | 30 evolution-tuning-guide            | 11   | 3       | 0       |
+| 31 browser-use                       | —    | —       | —       | research note (2026-05-25), not a feature spec
 
 
 **Fully DONE, no real gaps:** 02 (DNA core), 03 (soma/orchestrator), 04 (neurons),
