@@ -10,14 +10,14 @@
 └──────┬──────┘                       └────────┬─────────┘
        │                                       │
        │  WSS /darwins/{id}/stream             │ Supervisor,
-       │  (Phase 2 — spec below)               │ persistence,
+       │  (M3 — spec below, backend TODO)      │ persistence,
        └──────────────────────────────────────►│ read-only DB
 ```
 
-1. User signs in via Clerk/WorkOS (Phase 2) or pastes a dev token (Phase 0).
-2. Next.js server or client obtains a **platform bearer token** with `scope=owner` and `owned_darwins=[...]`.
+1. User signs in via Clerk (production) or pastes a dev token (local dev only).
+2. Clerk's RS256 JWT is sent directly as `Authorization: Bearer` — the backend's `ClerkTokenStore` (`security/clerk.py`) maps claims → `scope=owner` and `owned_darwins=[...]`. No exchange step.
 3. All data mutations and reads use that token against `NEXT_PUBLIC_API_BASE_URL`.
-4. Realtime views open a WebSocket after the REST snapshot loads (see [`07-realtime-websockets-and-caching.md`](07-realtime-websockets-and-caching.md)).
+4. Realtime views open a WebSocket after the REST snapshot loads (see [`07-realtime-websockets-and-caching.md`](07-realtime-websockets-and-caching.md)) — currently TODO on the backend; see milestone M3.
 
 ## API surface the UI depends on
 
@@ -26,34 +26,38 @@ Implemented today in `src/darwin_platform/api.py` (representative list; OpenAPI 
 | Area | Methods | Purpose |
 |------|---------|---------|
 | Lifecycle | `POST/GET /darwins`, `GET /darwins/{id}`, pause, resume, kill, force reproduce | Fleet and per-Darwin status |
-| Events | `GET /darwins/{id}/events` | Timeline (paginated) |
-| Ledger | `GET /darwins/{id}/ledger` | Money trail |
-| Escalations | `GET`, `GET/{id}`, `POST .../respond` | Inbox and resolution |
+| Events | `GET /darwins/{id}/events` (offset-paged) | Timeline |
+| Ledger | `GET /darwins/{id}/ledger`, `GET /darwins/{id}/ledger.csv` | Money trail + accountant export |
+| Escalations | per-Darwin `GET`, `GET/{id}`, `POST .../respond` | Inbox and resolution |
 | Lineage | `GET /darwins/{id}/lineage`, `/lineage/tree` | Tree visualization |
-| Owner controls | `POST /controls/*`, `GET /controls` | Spend lock, blocks, disabled neurons |
-| Harvest | `POST /harvest`, harvest rules CRUD | Profit extraction |
+| Owner controls | `POST /controls/*`, `GET /controls` | Spend lock, blocks, disabled neurons/categories |
+| Harvest | `POST /harvest`, `harvest_rules` CRUD | Profit extraction |
+| Proposals | `GET /darwins/{id}/proposals` | Mutation sandbox detail (deep-link from Timeline) |
 | Billing | `GET /darwins/{id}/billing` | Cost breakdown |
 | Vault | `GET/POST/DELETE /darwins/{id}/vault` | Credential browser |
 | Resources | `GET/DELETE /darwins/{id}/resources` | Provisioned DBs, buckets |
 | Alerts | `GET /darwins/{id}/alerts` | Graded response badges |
-| Browser | `GET /darwins/{id}/browser/sessions` | Live session list for takeover |
-| Fiat | `POST /platform/fiat/*` | Deposits (platform-scoped) |
-| Health | `GET /healthz`, `/readyz` | Shell connectivity indicator |
+| Browser | `GET /darwins/{id}/browser/sessions` | Live session list for Browserbase / Browser Use Cloud takeover |
+| Fiat | `POST /platform/fiat/{deposit_quote,confirm_deposit,withdraw}` | Stripe + MoonPay deposits + withdraws |
+| Health | `GET /healthz`, `/readyz`, `/metrics` | Connectivity + Prometheus scrape |
 
-**Not yet implemented (frontend spec, backend TODO):**
+**Not yet implemented (frontend spec, backend TODO — see [`10-phased-delivery.md`](10-phased-delivery.md) "Backend API work register"):**
 
-| Endpoint | Consumer |
-|----------|----------|
-| `GET /darwins/{id}/anatomy` | Anatomy snapshot (neurons, edges, active nodes) |
-| `WS /darwins/{id}/stream` or split `.../anatomy/stream` + `.../timeline/stream` | Live canvas updates |
-| `GET /darwins/{id}/data` + `/data/{table}` | Data browser (Phase 2) |
+| # | Endpoint | Consumer |
+|---|----------|----------|
+| 1 | `GET /darwins/{id}/events?cursor=&neuron_id=&category=&tier=` (filtering + cursor) | Timeline M3-B |
+| 2 | `GET /darwins/{id}/anatomy` | Anatomy snapshot M3-A |
+| 3 | `WSS /darwins/{id}/stream` (multiplexed `timeline` / `anatomy` / `status`) | Live canvases M3-C |
+| 4 | `GET /darwins/{id}/data` + `/data/{table}` | Data browser M3-E |
+| 5 | `GET /escalations` (owner-scoped aggregate, optional) | Inbox M2-B |
+| 6 | `?since={event_id}` on events endpoint | Polling + WS resync |
+| 7 | FCM notification sink + push payload | Mobile M4 |
 
-**Partial gaps in existing endpoints:**
+**Current shape of `GET /darwins/{id}/events`:** offset-paginated, `limit` + `offset` only, returns `{darwin_id,total,offset,limit,events}`. Until #1 / #6 land, the Timeline filters client-side over a loaded window and polling refetches page 0 with `event_id` dedupe.
 
-- `GET /darwins/{id}/events` is **offset-paginated with no server-side filters** (`limit` + `offset` only). Cursor pagination, `neuron_id` / `category` / `tier` filters, and an incremental `?since=` param are backend tasks — see [`10-phased-delivery.md`](10-phased-delivery.md) register #1 and #10. Until then the Timeline filters client-side and polling refetches page 0.
-- There is no aggregate `GET /escalations`; the inbox fans out per Darwin (`GET /darwins/{id}/escalations`).
+**Already shipped — no longer blockers:** Clerk RS256 auth + token store, OpenAPI publication, Stripe/MoonPay fiat ramps, Persona/Onfido KYC, Twilio SMS inbox, Browserbase + Browser Use Cloud, ledger CSV, owner controls, harvest rules CRUD, PagerDuty sink.
 
-Phase 0 Timeline can poll `GET /darwins/{id}/events` every 2–5s until the WebSocket exists.
+Phase M1 Timeline polls `GET /darwins/{id}/events` every 3s until the WebSocket exists.
 
 ## Typed API client
 
@@ -71,7 +75,7 @@ Generate types from FastAPI OpenAPI:
 openapi-typescript http://localhost:8000/openapi.json -o web/lib/api.generated.ts
 ```
 
-Hand-maintained DTOs are acceptable for Phase 0 only; generated types before Phase 2 alpha.
+Generated types from M0-B onward (the FastAPI app already serves `/openapi.json`); hand-maintained DTOs are not part of the plan.
 
 ## Error handling UX
 
@@ -92,7 +96,7 @@ Never retry `POST .../kill` automatically.
 |---------|-----|
 | Server Component | Static layout shells, legal copy, initial auth gate |
 | Client Component | Timeline, Anatomy, charts, WebSocket, any polling |
-| Route handlers (`app/api/`) | Optional BFF to hide token from browser — **defer** until we need to hide secrets; Phase 0 passes bearer from client for simplicity |
+| Route handlers (`app/api/`) | Optional BFF to hide the Clerk token behind an httpOnly cookie — **defer** unless needed; M0–M2 pass the Clerk JWT from the client for simplicity |
 
 ## CORS and cookies
 
