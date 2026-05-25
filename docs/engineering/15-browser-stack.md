@@ -28,14 +28,14 @@ Browser-Use is the right primary for Darwin specifically:
 
 Stagehand's killer feature is **action caching with self-healing replay**. First run of a workflow costs LLM tokens; subsequent runs hit the cache and execute at near-zero LLM cost. The cache is "write-once, run-forever" — when a cached selector eventually breaks, Stagehand re-invokes the LLM, updates the cache, and continues.
 
-This is a perfect fit for the *repetitive* half of Darwin's workload:
+This is a perfect fit for the _repetitive_ half of Darwin's workload:
 
 - `content.publisher` posting a daily blog to WordPress
 - `analytics.measurer` reading the same dashboard every morning
 - `ads.manager` adjusting bids on configured campaigns
 - Any flow the Darwin has run successfully N times and is now stable
 
-The pattern we adopt: Darwin discovers a workflow exploratively with Browser-Use, observes that it succeeds repeatedly, and the reflect node decides to *promote* the workflow to a cached Stagehand or `workflow-use` replay. This is a learnable, evolvable behavior — a Darwin discovering when to switch tools to save money. From Layer 0 we set the gate (e.g. ≥ 5 consecutive successes on the same target) and the cost-savings calculation; lessons can tune them.
+The pattern we adopt: Darwin discovers a workflow exploratively with Browser-Use, observes that it succeeds repeatedly, and the reflect node decides to _promote_ the workflow to a cached Stagehand or `workflow-use` replay. This is a learnable, evolvable behavior — a Darwin discovering when to switch tools to save money. From Layer 0 we set the gate (e.g. ≥ 5 consecutive successes on the same target) and the cost-savings calculation; lessons can tune them.
 
 `workflow-use` (the Browser-Use team's own extension for the same purpose) is an alternative to Stagehand for this caching layer — same idea, different framework. We start with Stagehand and revisit once `workflow-use` matures. Both can coexist; the promotion target is "cached replay", not specifically "Stagehand".
 
@@ -46,12 +46,13 @@ This is the part that determines whether Browser-Use works at our scale. Concret
 **Per-step LLM cost.** A Browser-Use step is one LLM round-trip to interpret the page and decide the next action. On a balanced-tier model (Claude Haiku, Gemini Flash, GPT-5.5 mini), per-step input is ~5K tokens (DOM-derived accessibility tree + history), output ~200 tokens. Cost roughly $0.005–0.02 per step.
 
 **A typical workflow.**
+
 - Publishing a blog post: ~10 steps → $0.05–0.20 per run
 - Signing up for a new service: ~15-30 steps → $0.08–0.60 per attempt (heavy because captchas/KYC introduce extra exploration)
 - Reading an analytics dashboard: ~5 steps → $0.03–0.10 per run
 - Filling out a sign-up form: ~8 steps → $0.04–0.16 per run
 
-**Scale impact.** A content-publishing Darwin doing 3 publishes/day on 2 platforms (6 sessions, ~10 steps each) burns $0.30–$1.20/day in Browser-Use LLM tokens, *before caching*. With cached replay for stable workflows, this drops to near-zero amortized cost after the first successful run. Affordable for any Darwin earning even modest affiliate revenue.
+**Scale impact.** A content-publishing Darwin doing 3 publishes/day on 2 platforms (6 sessions, ~10 steps each) burns $0.30–$1.20/day in Browser-Use LLM tokens, _before caching_. With cached replay for stable workflows, this drops to near-zero amortized cost after the first successful run. Affordable for any Darwin earning even modest affiliate revenue.
 
 **Three cost-mitigation levers we build in:**
 
@@ -140,3 +141,27 @@ A few things the Darwin code has to handle that aren't immediately obvious:
 - **Cache invalidation.** Cached Stagehand workflows can break when the target site changes. We rely on Stagehand's self-healing for routine drift, and the reflect node demotes a workflow back to Browser-Use exploration if the cache produces N consecutive failures.
 - **Cost attribution per session.** LiteLLM returns per-request cost; we tag each call with the neuron, target URL, and trace ID so the dashboard's Timeline can show "this browser session cost $0.14".
 - **The reflect node's promotion logic** is one of the most concrete learnable behaviors a Darwin has. Phase 1's evolution-loop demonstrations should show this working — a Darwin self-modifying its routing to prefer cached replays for stable workflows.
+
+## Browser Use Cloud
+
+Browser Use Cloud didn't exist when this doc's approach was set — see [`31-browser-use-evaluation.md`](31-browser-use-evaluation.md) for a deep-dive and current head-to-head eval.
+
+**Summary:**
+
+- **Current default:** Browser-Use OSS library as orchestration (agent loop, DOM interface), running on Browserbase as the browser/runtime/proxy substrate.
+- **Alternative:** Browser Use Cloud now offers a fully managed runtime (browser, agent, proxies, custom LLM, API) at a significant cost advantage with a generous free tier.
+- **Decision (as of 2026-05-25):**
+  - Don't migrate outright yet; results are promising but we haven't fully production-tested it.
+  - Add a provider adapter. Support both Browserbase and Browser Use Cloud as drop-in backends (see provider-neutral client pattern in `31-browser-use-evaluation.md`). Operator picks via a flag/env.
+  - Test the BU model (Browser Use's custom automation-focused LLM) for real tasks; only commit once data supports the claimed cost/performance gains.
+  - Keep all provisioning behind the existing treasury policy and capability-approval flows (see §Agent self-registration in [`31-browser-use-evaluation.md`](31-browser-use-evaluation.md)) — never let agents sign up/account-spend unmediated.
+
+**If you're evolving this stack:**
+
+- Ship an MVP on the existing Browserbase/Browser-Use path.
+- Add `BrowserUseCloudClient` against the same protocol as the current client, configurable at deploy time.
+- Route costs through the spend-policy engine, never direct vendor-side account creation by agents.
+- Escalate any agent self-registration to an owner for explicit sign-off.
+
+**For worked numbers, migration step-by-step, and risk notes:**  
+→ See [`31-browser-use-evaluation.md`](31-browser-use-evaluation.md) for pricing, reliability, security, and next-steps recommendations.
