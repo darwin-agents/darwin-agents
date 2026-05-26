@@ -1,0 +1,23 @@
+node_modules/
+.next/
+.next-types/
+out/
+dist/
+coverage/
+.turbo/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# misc
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts

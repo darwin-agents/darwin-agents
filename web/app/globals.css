@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/*
+ * Darwin design tokens — status semantics, density spacing, monospaced ids.
+ * Mapped directly from docs/frontend/02-tech-stack-and-repo-layout.md "Visual
+ * language" and docs/frontend/09-owner-controls-escalations-mobile.md "Graded
+ * response indicators".
+ */
+@theme {
+  /* Base palette — neutral surface + accent */
+  --color-background: oklch(0.14 0.02 240);
+  --color-foreground: oklch(0.96 0.02 240);
+  --color-muted: oklch(0.22 0.02 240);
+  --color-muted-foreground: oklch(0.66 0.02 240);
+  --color-border: oklch(0.28 0.02 240);
+  --color-card: oklch(0.18 0.02 240);
+  --color-accent: oklch(0.72 0.18 230);
+  --color-accent-foreground: oklch(0.14 0.02 240);
+  --color-destructive: oklch(0.62 0.22 25);
+  --color-destructive-foreground: oklch(0.98 0.02 25);
+
+  /* Status semantics (Darwin lifecycle) */
+  --color-status-alive: oklch(0.74 0.18 150);
+  --color-status-alive-soft: oklch(0.34 0.10 150);
+  --color-status-paused: oklch(0.84 0.15 80);
+  --color-status-paused-soft: oklch(0.36 0.08 80);
+  --color-status-quarantined: oklch(0.70 0.18 40);
+  --color-status-quarantined-soft: oklch(0.34 0.12 40);
+  --color-status-dead: oklch(0.56 0.02 240);
+  --color-status-dead-soft: oklch(0.26 0.02 240);
+  --color-status-killed: oklch(0.62 0.22 25);
+  --color-status-killed-soft: oklch(0.30 0.12 25);
+
+  /* Alert tiers (docs/frontend/09 graded response) */
+  --color-alert-warning: oklch(0.84 0.15 95);
+  --color-alert-throttle: oklch(0.80 0.16 65);
+  --color-alert-pause: oklch(0.74 0.18 40);
+  --color-alert-quarantine: oklch(0.62 0.22 25);
+
+  /* Density + radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  /* Typography — monospaced ids */
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family:
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      Roboto,
+      "Helvetica Neue",
+      sans-serif;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
+  }
+
+  /* Monospace for ids and event_ids — anywhere we use the .mono utility or
+     a <code>/<kbd>/<samp>. */
+  code,
+  kbd,
+  samp,
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Reduced-motion: respect throughout the app (docs/frontend/05 anatomy). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Pulse animation for "alive" status badge. */
+@keyframes darwin-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.darwin-pulse {
+  animation: darwin-pulse 2s ease-in-out infinite;
+}
