@@ -160,6 +160,33 @@ helm-template: ## Render chart with default values to /tmp/darwin-default.yaml
 build-image: ## Build supervisor image (docker/Dockerfile)
 	docker build -f docker/Dockerfile -t darwin-platform:local .
 
+# --- Web dashboard (Next.js) --------------------------------------------------
+
+WEB_DIR := web
+PNPM    := pnpm
+
+.PHONY: web-install web-dev web-build web-lint web-typecheck web-test web-codegen
+web-install: ## Install web/ dependencies
+	cd $(WEB_DIR) && $(PNPM) install
+
+web-dev: ## Run Next.js dev server on :3000
+	cd $(WEB_DIR) && $(PNPM) dev
+
+web-build: ## Build the web bundle
+	cd $(WEB_DIR) && $(PNPM) build
+
+web-lint: ## ESLint + Prettier check for web/
+	cd $(WEB_DIR) && $(PNPM) lint
+
+web-typecheck: ## tsc --noEmit for web/
+	cd $(WEB_DIR) && $(PNPM) typecheck
+
+web-test: ## Vitest unit tests for web/
+	cd $(WEB_DIR) && $(PNPM) test
+
+web-codegen: ## Regenerate web/lib/api.generated.ts from a running platform
+	cd $(WEB_DIR) && $(PNPM) codegen
+
 # --- Cleanup ------------------------------------------------------------------
 
 .PHONY: clean
