@@ -1,0 +1,62 @@
+# Web dashboard (Next.js 15) — lint / typecheck / test / build.
+# Triggers on changes under web/** and on the workflow file itself.
+
+name: web
+
+on:
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    branches: [main, "release/**"]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  build:
+    name: lint + typecheck + test + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+        run: pnpm build
