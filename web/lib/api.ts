@@ -15,11 +15,19 @@ import type {
   DarwinEvent,
   DarwinListResponse,
   DarwinStatus,
+  EscalationResponseRequest,
   EscalationsResponse,
   EventsResponse,
+  FiatConfirmDepositRequest,
+  FiatDepositQuoteRequest,
+  FiatWithdrawRequest,
+  HarvestRequest,
+  HarvestRuleRequest,
   LedgerResponse,
   LineageTreeResponse,
   OwnerControls,
+  SpawnRequest,
+  VaultPutRequest,
 } from "./types";
 
 const BASE_URL =
@@ -155,7 +163,7 @@ export const api = {
   // Lifecycle
   listDarwins: () => apiFetch<DarwinListResponse>("/darwins"),
   getDarwin: (id: string) => apiFetch<DarwinStatus>(`/darwins/${id}`),
-  spawn: (req: { opening_usdc: number; escalation_auto?: string | null; parent_id?: string | null }) =>
+  spawn: (req: SpawnRequest) =>
     apiFetch<DarwinStatus>("/darwins", { method: "POST", body: req, mutating: true }),
   pause: (id: string, reason?: string) =>
     apiFetch<{ status: string }>(`/darwins/${id}/pause`, {
@@ -228,12 +236,18 @@ export const api = {
     escalationId: string,
     decision: "approve" | "deny" | "data",
     data?: Record<string, unknown>,
-  ) =>
-    apiFetch<{ status: string }>(`/darwins/${id}/escalations/${escalationId}/respond`, {
-      method: "POST",
-      body: { decision, data: data ?? null },
-      mutating: true,
-    }),
+  ) => {
+    const body: EscalationResponseRequest = { decision, data: data ?? null };
+    return apiFetch<{ status: string }>(
+      `/darwins/${id}/escalations/${escalationId}/respond`,
+      { method: "POST", body, mutating: true },
+    );
+  },
+
+  escalation: (id: string, escalationId: string) =>
+    apiFetch<Record<string, unknown>>(
+      `/darwins/${id}/escalations/${escalationId}`,
+    ),
 
   // Lineage
   lineageTree: (id: string, maxDepth = 16) =>
@@ -245,10 +259,79 @@ export const api = {
   alerts: (id: string) => apiFetch<AlertsResponse>(`/darwins/${id}/alerts`),
 
   // Harvest
-  harvest: (id: string, amount_usdc: number, destination: string) =>
+  harvest: (id: string, req: HarvestRequest) =>
     apiFetch<{ status: string }>(`/darwins/${id}/harvest`, {
       method: "POST",
-      body: { amount_usdc, destination },
+      body: req,
+      mutating: true,
+    }),
+
+  listHarvestRules: (id: string) =>
+    apiFetch<{ darwin_id: string; rules: Array<Record<string, unknown>> }>(
+      `/darwins/${id}/harvest_rules`,
+    ),
+  addHarvestRule: (id: string, req: HarvestRuleRequest) =>
+    apiFetch<Record<string, unknown>>(`/darwins/${id}/harvest_rules`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  deleteHarvestRule: (id: string, ruleId: string) =>
+    apiFetch<{ status: string }>(`/darwins/${id}/harvest_rules/${ruleId}`, {
+      method: "DELETE",
+      mutating: true,
+    }),
+
+  // Vault / resources
+  listVault: (id: string) =>
+    apiFetch<{ darwin_id: string; entries: Array<Record<string, unknown>> }>(
+      `/darwins/${id}/vault`,
+    ),
+  putVault: (id: string, req: VaultPutRequest) =>
+    apiFetch<Record<string, unknown>>(`/darwins/${id}/vault`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  deleteVault: (id: string, tier: string, key: string) =>
+    apiFetch<{ status: string }>(`/darwins/${id}/vault`, {
+      method: "DELETE",
+      query: { tier, key },
+      mutating: true,
+    }),
+  listResources: (id: string) =>
+    apiFetch<{ darwin_id: string; resources: Array<Record<string, unknown>> }>(
+      `/darwins/${id}/resources`,
+    ),
+  deleteResource: (id: string, resourceId: string) =>
+    apiFetch<{ status: string }>(`/darwins/${id}/resources/${resourceId}`, {
+      method: "DELETE",
+      mutating: true,
+    }),
+
+  // Browser sessions (M2-B captcha takeover)
+  browserSessions: (id: string) =>
+    apiFetch<{ darwin_id: string; sessions: Array<Record<string, unknown>> }>(
+      `/darwins/${id}/browser/sessions`,
+    ),
+
+  // Fiat (M2-D)
+  fiatDepositQuote: (req: FiatDepositQuoteRequest) =>
+    apiFetch<Record<string, unknown>>(`/platform/fiat/deposit_quote`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  fiatConfirmDeposit: (req: FiatConfirmDepositRequest) =>
+    apiFetch<Record<string, unknown>>(`/platform/fiat/confirm_deposit`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  fiatWithdraw: (req: FiatWithdrawRequest) =>
+    apiFetch<Record<string, unknown>>(`/platform/fiat/withdraw`, {
+      method: "POST",
+      body: req,
       mutating: true,
     }),
 

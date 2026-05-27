@@ -1,9 +1,34 @@
 /**
- * Hand-maintained DTOs mirroring the FastAPI surface in
- * `src/darwin_platform/api.py`. These will be superseded by
- * `lib/api.generated.ts` once `pnpm codegen` runs against a live platform.
- * Keep this file narrow — only types the UI actually consumes.
+ * Response DTOs the UI consumes.
+ *
+ * Why this file isn't generated: the platform's FastAPI handlers return
+ * `dict[str, Any]`, so the OpenAPI schema marks every response as `unknown`.
+ * `lib/api.generated.ts` (refreshed via `pnpm codegen`) covers request bodies
+ * and path/query parameters — we re-export those below. Response shapes live
+ * here, mirroring the dataclasses in `src/darwin_platform/`.
  */
+import type { components } from "./api.generated";
+
+/* Generated request bodies — typed against the live schema. */
+export type SpawnRequest = components["schemas"]["SpawnRequest"];
+export type KillRequest = components["schemas"]["KillRequest"];
+export type PauseRequest = components["schemas"]["PauseRequest"];
+export type SpendLockRequest = components["schemas"]["SpendLockRequest"];
+export type ReproductionBlockRequest =
+  components["schemas"]["ReproductionBlockRequest"];
+export type DisabledNeuronsRequest = components["schemas"]["DisabledNeuronsRequest"];
+export type DisabledCategoriesRequest =
+  components["schemas"]["DisabledCategoriesRequest"];
+export type EscalationResponseRequest =
+  components["schemas"]["EscalationResponseRequest"];
+export type HarvestRequest = components["schemas"]["HarvestRequest"];
+export type HarvestRuleRequest = components["schemas"]["HarvestRuleRequest"];
+export type VaultPutRequest = components["schemas"]["VaultPutRequest"];
+export type FiatDepositQuoteRequest =
+  components["schemas"]["FiatDepositQuoteRequest"];
+export type FiatConfirmDepositRequest =
+  components["schemas"]["FiatConfirmDepositRequest"];
+export type FiatWithdrawRequest = components["schemas"]["FiatWithdrawRequest"];
 
 export type Lifecycle = "alive" | "paused" | "quarantined" | "dead" | "killed";
 
@@ -84,17 +109,30 @@ export interface OwnerControls {
   [k: string]: unknown;
 }
 
+/**
+ * Real shape from `RoutedTicket.to_dict()` in
+ * `src/darwin_platform/escalations/escalation.py`. Timestamps are unix
+ * seconds (floats), not ISO strings.
+ */
 export interface EscalationTicket {
-  escalation_id: string;
+  ticket_id: string;
   darwin_id: string;
-  class?: string;
-  klass?: string;
-  summary?: string;
-  status?: string;
-  opened_at?: string;
-  deadline_at?: string | null;
-  evidence_uris?: string[];
-  proposed_action?: Record<string, unknown>;
+  neuron?: string;
+  ticket_class?: string;
+  status?: "open" | "responded" | "expired" | string;
+  opened_ts?: number;
+  deadline_ts?: number;
+  age_seconds?: number;
+  remaining_seconds?: number;
+  past_deadline?: boolean;
+  tick?: number | null;
+  detail?: Record<string, unknown>;
+  response?: {
+    decision: string;
+    data: Record<string, unknown>;
+    responded_ts: number;
+  } | null;
+  notification_sent_ts?: number | null;
   [k: string]: unknown;
 }
 
