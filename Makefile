@@ -10,6 +10,9 @@ DB              ?= state.db
 COMPOSE         := docker compose -f docker/docker-compose.yml
 HELM_CHART      := deploy/helm/darwin-platform
 POSTGRES_DSN    ?= postgresql://darwin:test@127.0.0.1:5432/darwin
+# Origins allowed to call the platform from a browser. Space-separated.
+# Override: `make serve CORS_ORIGINS="http://localhost:3000 https://app.example.com"`.
+CORS_ORIGINS    ?= http://localhost:3000
 SIM_DAYS        ?= 90
 GIT_CLIFF       := git-cliff
 CHANGELOG       := CHANGELOG.md
@@ -39,12 +42,15 @@ lock: ## Refresh uv.lock after pyproject changes
 # --- Local platform (bare metal) ----------------------------------------------
 
 .PHONY: serve serve-postgres
+# CORS_ORIGINS is space-separated; map it to repeated --cors-origin flags.
+CORS_FLAGS = $(foreach o,$(CORS_ORIGINS),--cors-origin $(o))
+
 serve: install-serve ## Run supervisor on SQLite (default: state.db)
-	$(UV) run darwin-platform serve --db $(DB)
+	$(UV) run darwin-platform serve --db $(DB) $(CORS_FLAGS)
 
 serve-postgres: install-serve ## Run supervisor against POSTGRES_DSN
 	test -n "$(POSTGRES_DSN)"
-	$(UV) run darwin-platform serve --db "$(POSTGRES_DSN)"
+	$(UV) run darwin-platform serve --db "$(POSTGRES_DSN)" $(CORS_FLAGS)
 
 # --- Docker Compose stack -----------------------------------------------------
 

@@ -172,6 +172,7 @@ def build_app(
     supervisor: Supervisor | None = None,
     *,
     token_store: TokenStore | None = None,
+    cors_origins: list[str] | None = None,
 ) -> FastAPI:
     """Build a FastAPI app bound to ``supervisor`` (or a fresh one).
 
@@ -181,6 +182,11 @@ def build_app(
     unsafe for any real exposure. Real deployments construct an
     :class:`InMemoryTokenStore` (or a Postgres-backed equivalent) and pass
     it in.
+
+    ``cors_origins`` opts the dashboard's separate-origin browser into the
+    API. Pass the Next.js dev origin (``http://localhost:3000``) — when
+    empty the app refuses cross-origin requests (preflight OPTIONS 405s),
+    which is the safe production default.
 
     Tests use this directly with an ASGI client; the module-level ``app``
     below is the default singleton for the standard uvicorn entry point.
@@ -209,6 +215,24 @@ def build_app(
     )
     app.state.supervisor = sup
     app.state.token_store = token_store
+
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "Idempotency-Key",
+                "X-Darwin-Client",
+            ],
+            expose_headers=["Content-Disposition"],
+            max_age=600,
+        )
 
     def _sup(request: Request) -> Supervisor:
         return request.app.state.supervisor

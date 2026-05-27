@@ -883,7 +883,11 @@ def _serve(args: argparse.Namespace) -> int:
             )
             token_store = ClerkTokenStore(verifier=verifier)
 
-    app = build_app(sup, token_store=token_store)
+    app = build_app(
+        sup,
+        token_store=token_store,
+        cors_origins=list(getattr(args, "cors_origins", None) or []),
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
@@ -942,6 +946,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--log-level", default="info",
         choices=["critical", "error", "warning", "info", "debug", "trace"],
+    )
+    serve.add_argument(
+        "--cors-origin", dest="cors_origins", action="append", default=[],
+        metavar="ORIGIN",
+        help=(
+            "Allow this origin to make CORS requests. Repeat for multiple "
+            "(e.g. --cors-origin http://localhost:3000 --cors-origin https://app.example.com). "
+            "Required when the Next.js dashboard runs on a separate port; "
+            "without it the browser preflight OPTIONS gets a 405. "
+            "Defaults to empty — same-origin only."
+        ),
     )
     serve.add_argument(
         "--leader-election", action="store_true",
