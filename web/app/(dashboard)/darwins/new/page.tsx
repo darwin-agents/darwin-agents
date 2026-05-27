@@ -18,7 +18,13 @@ export default function SpawnPage() {
   const [acknowledged, setAcknowledged] = useState(false);
 
   const spawn = useMutation({
-    mutationFn: () => api.spawn({ opening_usdc: Number(budget) }),
+    mutationFn: () =>
+      api.spawn({
+        opening_usdc: Number(budget),
+        // Backend default: auto-approve owner inbox for unattended runs.
+        escalation_auto: "approve",
+        parent_id: null,
+      }),
     onSuccess: (status) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.darwins() });
       router.push(`/darwins/${status.darwin_id}`);

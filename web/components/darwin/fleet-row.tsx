@@ -37,7 +37,8 @@ export function FleetRow({ darwinId }: { darwinId: string }) {
 
   const balance =
     (status?.balance_usdc as number | undefined) ?? (status?.treasury_usdc as number | undefined);
-  const openCount = escalations?.tickets?.filter((t) => t.status !== "resolved").length ?? 0;
+  const openCount =
+    escalations?.tickets?.filter((t) => t.status === "open" || t.status === undefined).length ?? 0;
   const heartbeat = status?.last_heartbeat_at;
 
   return (
