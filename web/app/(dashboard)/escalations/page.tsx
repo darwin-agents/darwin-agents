@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useState } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { Flag } from "lucide-react";
 import { api } from "@/lib/api";
@@ -8,12 +8,9 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelative, shortId } from "@/lib/format";
+import { RespondDialog } from "@/components/darwin/respond-dialog";
+import type { EscalationTicket } from "@/lib/types";
 
-/**
- * Cross-Darwin escalation inbox — fans `GET /darwins/{id}/escalations` out
- * across every Darwin the operator owns. M2-B aggregate endpoint (backend
- * register #5) would collapse this into a single request.
- */
 export default function EscalationsPage() {
   const { data: list, isLoading } = useQuery({
     queryKey: queryKeys.darwins(),
@@ -35,12 +32,14 @@ export default function EscalationsPage() {
     .flatMap((id, i) =>
       (escalations[i]?.data?.tickets ?? []).map((t) => ({ darwinId: id, ticket: t })),
     )
-    .filter(({ ticket }) => ticket.status !== "resolved")
+    .filter(({ ticket }) => ticket.status === "open" || ticket.status === undefined)
     .sort((a, b) => {
-      const ad = a.ticket.deadline_at ? new Date(a.ticket.deadline_at).getTime() : Infinity;
-      const bd = b.ticket.deadline_at ? new Date(b.ticket.deadline_at).getTime() : Infinity;
+      const ad = a.ticket.deadline_ts ?? Infinity;
+      const bd = b.ticket.deadline_ts ?? Infinity;
       return ad - bd;
     });
+
+  const [active, setActive] = useState<EscalationTicket | null>(null);
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
@@ -70,36 +69,60 @@ export default function EscalationsPage() {
           </CardHeader>
           <CardContent className="p-0">
             <ul className="divide-y divide-[var(--color-border)]">
-              {open.map(({ darwinId, ticket }) => (
-                <li key={ticket.escalation_id}>
-                  <Link
-                    href={{ pathname: `/darwins/${darwinId}` }}
-                    className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--color-muted)]/40"
+              {open.map(({ darwinId, ticket }, idx) => (
+                <li key={`${darwinId}:${ticket.ticket_id ?? idx}`}>
+                  <button
+                    type="button"
+                    onClick={() => setActive(ticket)}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--color-muted)]/40"
                   >
                     <Flag className="size-4 text-[var(--color-alert-pause)]" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 text-sm">
                         <span className="font-medium">
-                          {ticket.class ?? ticket.klass ?? "ticket"}
+                          {ticket.ticket_class ?? "ticket"}
                         </span>
+                        {ticket.neuron && (
+                          <span className="mono text-xs text-[var(--color-muted-foreground)]">
+                            {ticket.neuron}
+                          </span>
+                        )}
                         <span className="mono text-xs text-[var(--color-muted-foreground)]">
                           {shortId(darwinId, 8, 4)}
                         </span>
                       </div>
                       <p className="truncate text-xs text-[var(--color-muted-foreground)]">
-                        {ticket.summary ?? "(no summary)"}
+                        {ticketSummary(ticket)}
                       </p>
                     </div>
                     <span className="text-xs text-[var(--color-muted-foreground)]">
-                      {ticket.deadline_at ? `due ${formatRelative(ticket.deadline_at)}` : "—"}
+                      {ticket.deadline_ts ? `due ${formatRelative(ticket.deadline_ts)}` : "—"}
                     </span>
-                  </Link>
+                  </button>
                 </li>
               ))}
             </ul>
           </CardContent>
         </Card>
       )}
+
+      <RespondDialog
+        ticket={active}
+        open={!!active}
+        onOpenChange={(o) => {
+          if (!o) setActive(null);
+        }}
+      />
     </div>
   );
+}
+
+function ticketSummary(t: { ticket_class?: string; detail?: Record<string, unknown> }): string {
+  const detail = t.detail ?? {};
+  const candidates = ["summary", "message", "reason", "title"];
+  for (const k of candidates) {
+    const v = detail[k];
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return t.ticket_class ? `${t.ticket_class} ticket` : "(no summary)";
 }
