@@ -9,12 +9,10 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DisabledEditors } from "@/components/darwin/disabled-editors";
+import { HarvestDialog } from "@/components/darwin/harvest-dialog";
+import { HarvestRules } from "@/components/darwin/harvest-rules";
 
-/**
- * Owner controls — M2-A first cut. Spend lock, reproduction block, and
- * disabled-neuron / disabled-category surfaces are wired against the existing
- * /controls endpoints. Harvest rules CRUD is M2-A finishing work.
- */
 export default function SettingsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const queryClient = useQueryClient();
@@ -52,7 +50,7 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
 
       <Card>
         <CardHeader>
-          <CardTitle>Owner controls</CardTitle>
+          <CardTitle>Lifecycle & budget</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {isLoading ? (
@@ -96,40 +94,39 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
               </div>
             </>
           )}
+        </CardContent>
+      </Card>
 
-          {data?.disabled_neurons && data.disabled_neurons.length > 0 && (
-            <Section title="Disabled neurons">
-              <div className="flex flex-wrap gap-1">
-                {data.disabled_neurons.map((n) => (
-                  <span
-                    key={n}
-                    className="mono rounded-full bg-[var(--color-muted)] px-2 py-0.5 text-xs"
-                  >
-                    {n}
-                  </span>
-                ))}
-              </div>
-            </Section>
-          )}
-          {data?.disabled_categories && data.disabled_categories.length > 0 && (
-            <Section title="Disabled categories">
-              <div className="flex flex-wrap gap-1">
-                {data.disabled_categories.map((n) => (
-                  <span key={n} className="rounded-full bg-[var(--color-muted)] px-2 py-0.5 text-xs">
-                    {n}
-                  </span>
-                ))}
-              </div>
-            </Section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Capabilities</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : (
+            <DisabledEditors
+              darwinId={id}
+              initialNeurons={data?.disabled_neurons ?? []}
+              initialCategories={data?.disabled_categories ?? []}
+            />
           )}
         </CardContent>
       </Card>
 
-      <p className="text-xs text-[var(--color-muted-foreground)]">
-        Multi-select editors for disabled neurons / categories, harvest rules CRUD, and force
-        harvest land in M2-A. Lifecycle controls (pause, resume, terminate) live in the Darwin
-        header.
-      </p>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Harvest</CardTitle>
+          <HarvestDialog darwinId={id} />
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            Rules trigger automatic profit extraction. Force harvest moves funds right now —
+            both reflect in the ledger and timeline within one heartbeat.
+          </p>
+          <HarvestRules darwinId={id} />
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -161,16 +158,5 @@ function Toggle({
         onChange={(e) => onChange(e.target.checked)}
       />
     </label>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1 text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
-        {title}
-      </div>
-      {children}
-    </div>
   );
 }
