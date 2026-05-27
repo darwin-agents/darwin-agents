@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { TreasuryChart } from "@/components/darwin/treasury-chart";
+import { FiatDialog } from "@/components/darwin/fiat-dialog";
 import { formatTimestamp, formatUsdc } from "@/lib/format";
 
 export default function BillingPage({ params }: { params: Promise<{ id: string }> }) {
@@ -58,12 +59,15 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
               Running balance reconstructed from the platform ledger.
             </p>
           </div>
-          <Button asChild variant="outline" size="sm">
-            {/* External-style anchor so the browser uses Content-Disposition. */}
-            <a href={csvUrl} download={`darwin-${id}-ledger.csv`}>
-              <Download className="mr-1 size-4" /> Ledger CSV
-            </a>
-          </Button>
+          <div className="flex items-center gap-2">
+            <FiatDialog darwinId={id} />
+            <Button asChild variant="outline" size="sm">
+              {/* External-style anchor so the browser uses Content-Disposition. */}
+              <a href={csvUrl} download={`darwin-${id}-ledger.csv`}>
+                <Download className="mr-1 size-4" /> Ledger CSV
+              </a>
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? <Skeleton className="h-56 w-full" /> : <TreasuryChart entries={entries} />}
