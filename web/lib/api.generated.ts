@@ -209,6 +209,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/escalations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Escalations Fleet
+         * @description Owner-scoped fleet view. Platform operators see every Darwin;
+         *     owners see only their owned set. Sorted by deadline (soonest first).
+         */
+        get: operations["list_escalations_fleet_escalations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/darwins/{darwin_id}/escalations": {
         parameters: {
             query?: never;
@@ -235,6 +256,27 @@ export interface paths {
         };
         /** Get Escalation */
         get: operations["get_escalation_darwins__darwin_id__escalations__escalation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/anatomy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Anatomy
+         * @description Live organism map. Sourced from runtime catalog + recent audit
+         *     log; cheap enough to refetch on every WS reconnect.
+         */
+        get: operations["anatomy_darwins__darwin_id__anatomy_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1654,6 +1696,41 @@ export interface operations {
             };
         };
     };
+    list_escalations_fleet_escalations_get: {
+        parameters: {
+            query?: {
+                include_resolved?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_escalations_darwins__darwin_id__escalations_get: {
         parameters: {
             query?: {
@@ -1700,6 +1777,41 @@ export interface operations {
             path: {
                 darwin_id: string;
                 escalation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    anatomy_darwins__darwin_id__anatomy_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
             };
             cookie?: never;
         };
@@ -1875,6 +1987,16 @@ export interface operations {
             query?: {
                 limit?: number;
                 offset?: number;
+                /** @description Tail cursor: return only events with seq > since, oldest-first. Use for incremental polling and WS resync. */
+                since?: number | null;
+                /** @description Head cursor: return events with seq < cursor, newest-first. Omit to start from the head. */
+                cursor?: number | null;
+                /** @description Audit-log kind prefix filter (e.g. 'event:payment'). */
+                kind?: string | null;
+                /** @description Filter to events emitted by or about this neuron. */
+                neuron_id?: string | null;
+                /** @description LLM tier filter (payload.tier match). */
+                tier?: string | null;
             };
             header?: {
                 authorization?: string | null;

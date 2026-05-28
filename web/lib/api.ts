@@ -186,10 +186,65 @@ export const api = {
     }),
 
   // Events
-  events: (id: string, params: { limit?: number; offset?: number } = {}) =>
-    apiFetch<EventsResponse>(`/darwins/${id}/events`, {
-      query: { limit: params.limit ?? 100, offset: params.offset ?? 0 },
-    }),
+  events: (
+    id: string,
+    params: {
+      limit?: number;
+      offset?: number;
+      since?: number;
+      cursor?: number;
+      kind?: string;
+      neuron_id?: string;
+      tier?: string;
+    } = {},
+  ) =>
+    apiFetch<EventsResponse & { next_cursor?: number | null }>(
+      `/darwins/${id}/events`,
+      {
+        query: {
+          limit: params.limit ?? 100,
+          offset: params.since === undefined && params.cursor === undefined ? (params.offset ?? 0) : undefined,
+          since: params.since,
+          cursor: params.cursor,
+          kind: params.kind,
+          neuron_id: params.neuron_id,
+          tier: params.tier,
+        },
+      },
+    ),
+
+  // Anatomy (M3-A)
+  anatomy: (id: string) =>
+    apiFetch<{
+      darwin_id: string;
+      orchestrator: { id: string; label: string; state: string; tick: number | null };
+      neurons: Array<{
+        id: string;
+        label: string;
+        category: string;
+        version: string | null;
+        status: "idle" | "active" | "disabled" | "error";
+        last_dispatch_at: number | null;
+        last_error_at: number | null;
+        dispatch_count_recent: number;
+      }>;
+      edges: Array<{
+        from: string;
+        to: string;
+        kind: string;
+        active: boolean;
+        weight: number;
+      }>;
+      heatmap: Record<string, number>;
+      dna: { generation: number | null; layers: string[] };
+    }>(`/darwins/${id}/anatomy`),
+
+  // Aggregate fleet inbox (M2-B optimization)
+  fleetEscalations: (includeResolved = false) =>
+    apiFetch<{
+      include_resolved: boolean;
+      tickets: Array<Record<string, unknown>>;
+    }>("/escalations", { query: { include_resolved: includeResolved } }),
 
   // Ledger / billing
   ledger: (id: string, params: { limit?: number; offset?: number } = {}) =>
@@ -346,12 +401,17 @@ export type Api = typeof api;
 export { buildUrl as buildApiUrl };
 
 // Convenience helper used by the events table to merge polled pages.
+// `seq` is the canonical identifier from the runtime; `hash` and the
+// pre-codegen `event_id` are accepted as fallbacks so older payloads
+// (or third-party event injectors) still dedupe correctly.
 export function dedupeEvents(rows: DarwinEvent[]): DarwinEvent[] {
-  const seen = new Set<string>();
+  const seen = new Set<string | number>();
   const out: DarwinEvent[] = [];
   for (const ev of rows) {
-    if (!ev || seen.has(ev.event_id)) continue;
-    seen.add(ev.event_id);
+    if (!ev) continue;
+    const key = ev.seq ?? ev.hash ?? ev.event_id;
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
     out.push(ev);
   }
   return out;

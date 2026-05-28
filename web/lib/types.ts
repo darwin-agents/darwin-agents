@@ -50,15 +50,26 @@ export interface DarwinListResponse {
   darwins: string[];
 }
 
+/**
+ * One hash-chained audit record. Field names mirror the runtime — `seq`
+ * (monotonic int, canonical identity) and `kind` (event taxonomy string).
+ * Legacy `event_id` / `category` / `type` are tolerated for older callsites
+ * that haven't been migrated yet.
+ */
 export interface DarwinEvent {
-  event_id: string;
-  ts: string;
+  seq?: number;
+  hash?: string;
+  prev_hash?: string;
+  ts: string | number;
+  kind?: string;
+  payload?: Record<string, unknown>;
+  // Legacy compatibility — pre-codegen UI code used these names.
+  event_id?: string;
   category?: string;
   type?: string;
   neuron_id?: string;
   summary?: string;
   cost_usdc?: number;
-  payload?: Record<string, unknown>;
   [k: string]: unknown;
 }
 

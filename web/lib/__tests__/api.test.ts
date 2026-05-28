@@ -54,7 +54,14 @@ describe("ApiError shape", () => {
 });
 
 describe("dedupeEvents", () => {
-  it("drops duplicates by event_id and preserves order", () => {
+  it("drops duplicates by seq and preserves order", () => {
+    const a = { seq: 1, ts: 1 };
+    const b = { seq: 2, ts: 2 };
+    const a2 = { seq: 1, ts: 3 };
+    expect(dedupeEvents([a, b, a2])).toEqual([a, b]);
+  });
+
+  it("falls back to event_id when seq is missing (legacy payloads)", () => {
     const a = { event_id: "a", ts: "1" };
     const b = { event_id: "b", ts: "2" };
     const a2 = { event_id: "a", ts: "3" };
