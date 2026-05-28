@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { use } from "react";
-import { GitBranch, Lock, Receipt, Server, Settings } from "lucide-react";
+import { Activity, GitBranch, Lock, Receipt, Server, Settings } from "lucide-react";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { DarwinHeader } from "@/components/darwin/darwin-header";
@@ -32,6 +32,7 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
       <TreasuryStrip status={status} billing={billing} />
 
       <div className="flex flex-wrap gap-2 text-xs">
+        <SubNav href={`/darwins/${id}/anatomy`} icon={Activity} label="Anatomy" />
         <SubNav href={`/darwins/${id}/lineage`} icon={GitBranch} label="Lineage" />
         <SubNav href={`/darwins/${id}/billing`} icon={Receipt} label="Billing & ledger" />
         <SubNav href={`/darwins/${id}/vault`} icon={Lock} label="Vault" />
