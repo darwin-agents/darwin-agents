@@ -377,14 +377,37 @@ def test_ws_stream_initial_snapshots_and_events() -> None:
         with TestClient(app) as c:
             spawn = c.post("/darwins", json={"opening_usdc": 50.0}).json()
             did = spawn["darwin_id"]
+            handle = sup._darwins[did]  # noqa: SLF001
 
-            # Pause the runtime so background events don't bury the inject.
+            # Pause + wait until the drive loop actually halts so the audit
+            # sink stops growing. Pause is checked at the heartbeat
+            # boundary, so a fast-clock genome (heartbeat_seconds=0) may
+            # still emit a few thousand events before noticing the flag.
             c.post(f"/darwins/{did}/pause")
+            deadline = time.time() + 5.0
+            last_len = -1
+            while time.time() < deadline:
+                cur_len = len(handle.stack.audit_sink.read_all())
+                if cur_len == last_len and handle.runtime.state.paused:
+                    break
+                last_len = cur_len
+                time.sleep(0.1)
 
             with c.websocket_connect(f"/darwins/{did}/stream") as ws:
-                # Subscribe immediately so the server's 50ms read window
-                # captures `since=0` before falling into the polling loop.
-                ws.send_json({"type": "subscribe", "channels": ["timeline"], "since": 0})
+                # Subscribe with since=<current-head> so the polling loop
+                # only sends events newer than what's already in the sink
+                # — i.e. only the injected record. Without this, tick 1
+                # batches up the thousand-or-so events that accumulated
+                # before pause kicked in and the inject is buried beneath
+                # them.
+                head_seq = max(
+                    (int(r.get("seq", -1)) for r in handle.stack.audit_sink.read_all()),
+                    default=-1,
+                )
+                ws.send_json(
+                    {"type": "subscribe", "channels": ["timeline"],
+                     "since": head_seq}
+                )
 
                 msg = ws.receive_json()
                 assert msg["type"] == "snapshot.anatomy"
@@ -394,7 +417,6 @@ def test_ws_stream_initial_snapshots_and_events() -> None:
                 assert msg["payload"]["darwin_id"] == did
 
                 # Inject a synthetic audit record and confirm WS picks it up.
-                handle = sup._darwins[did]  # noqa: SLF001
                 handle.stack.audit_sink.append(
                     {
                         "seq": 1_000_000,
@@ -407,12 +429,11 @@ def test_ws_stream_initial_snapshots_and_events() -> None:
                     }
                 )
 
-                # TestClient WS has no per-message timeout — bound by
-                # message budget. Each poll tick (~200ms) can produce
-                # many timeline.event messages; 200 is plenty of headroom.
+                # Bounded read budget. With since=head_seq, only the inject
+                # and any post-pause stragglers stream — usually just one.
                 got_event = False
                 seen_kinds: list[str] = []
-                for _ in range(200):
+                for _ in range(50):
                     msg = ws.receive_json()
                     if msg.get("type") == "timeline.event":
                         seen_kinds.append(msg["payload"].get("kind", "?"))
@@ -446,3 +467,87 @@ async def test_snapshot_endpoint(client) -> None:
     assert body["schema"] == "darwin-platform.snapshot/2"
     assert len(body["darwins"]) == 1
     assert "alerts" in body
+
+
+async def test_escalation_auto_mirrors_into_router(client) -> None:
+    """When ``escalation_auto`` is set, the supervisor must mirror the
+    inbox's auto-response into the platform escalation router. Without
+    this, the dashboard's inbox shows tickets as ``open`` forever even
+    though the genome treated them as resolved (observed bug:
+    188 captcha tickets stuck open with policy=approve)."""
+    c, sup = client
+    r = await c.post(
+        "/darwins", json={"opening_usdc": 60.0, "escalation_auto": "approve"}
+    )
+    did = r.json()["darwin_id"]
+    h = sup._darwins[did]  # noqa: SLF001
+    h.stack.escalation.post(
+        {"ticket": "T-AUTO", "neuron": "browser.operator", "ticket_class": "captcha"}
+    )
+    await _wait_until(
+        lambda: sup.router.get("T-AUTO") is not None
+        and sup.router.get("T-AUTO").status.value == "responded"
+    )
+    t = sup.router.get("T-AUTO")
+    assert t.response_decision == "approve"
+
+    # Manual decision (escalation_auto=None) must NOT mirror.
+    r = await c.post(
+        "/darwins", json={"opening_usdc": 60.0, "escalation_auto": None}
+    )
+    did2 = r.json()["darwin_id"]
+    h2 = sup._darwins[did2]  # noqa: SLF001
+    h2.stack.escalation.post(
+        {"ticket": "T-MANUAL", "neuron": "browser.operator", "ticket_class": "captcha"}
+    )
+    await _wait_until(lambda: sup.router.get("T-MANUAL") is not None)
+    assert sup.router.get("T-MANUAL").status.value == "open"
+
+
+async def test_lifecycle_preserves_opening_across_resume(tmp_path) -> None:
+    """``upsert_spawn`` on conflict must preserve the original
+    ``opening_usdc`` — it is a historical fact. Observed bug: a
+    resume re-spawn at last_balance=42.51 overwrote the genesis
+    opening of 100.0, breaking treasury reporting forever."""
+    db = str(tmp_path / "state.db")
+    sup = Supervisor(persistence_path=db, heartbeat_seconds=0.0)
+    try:
+        status = await sup.spawn(opening_usdc=100.0)
+        did = status.darwin_id
+        # Take a snapshot of a lower balance to simulate spend.
+        sup._lifecycle.snapshot_balance(did, balance_usdc=42.51)  # noqa: SLF001
+        # Now re-upsert as a resume would (opening=last_balance, same id).
+        sup._lifecycle.upsert_spawn(  # noqa: SLF001
+            darwin_id=did, opening_usdc=42.51, parent_id=None,
+            spawned_at=status.spawned_at, escalation_auto="approve",
+        )
+        rec = sup._lifecycle.get(did)  # noqa: SLF001
+        assert rec.opening_usdc == 100.0, (
+            "opening_usdc was overwritten on resume — should preserve genesis"
+        )
+        assert rec.last_balance == 42.51
+    finally:
+        await sup.shutdown()
+
+
+async def test_child_spawn_writes_lifecycle_row(client) -> None:
+    """A child Darwin born via reproduction must end up in
+    ``darwin_lifecycle`` the same way a genesis spawn does. Observed
+    bug: child existed in lineage_edges + billing but had no
+    lifecycle row, so the dashboard never saw it."""
+    c, sup = client
+    r = await c.post(
+        "/darwins", json={"opening_usdc": 80.0, "escalation_auto": "approve"}
+    )
+    parent_id = r.json()["darwin_id"]
+    h = sup._darwins[parent_id]  # noqa: SLF001
+    # Force a reproduction so a child appears in the spawner registry.
+    await sup.force_reproduce(parent_id)
+    await _wait_until(lambda: len(h.children) > 0, timeout=10.0)
+    child_id = h.children[0]
+    assert child_id in sup._darwins  # noqa: SLF001 — child is booted
+    child = sup._darwins[child_id]  # noqa: SLF001
+    # Child must inherit the parent's escalation_auto.
+    assert child.escalation_auto == "approve"
+    # And the parent_id link must round-trip through the supervisor.
+    assert child.parent_id == parent_id

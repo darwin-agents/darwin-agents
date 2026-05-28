@@ -108,7 +108,9 @@ def _build_stack(
     return stack
 
 
-def _apply_real_adapters(stack, args, clock: Callable[[], float]) -> None:
+def _apply_real_adapters(
+    stack, args, clock: Callable[[], float], *, darwin_id: str,
+) -> None:
     """Mirror of darwin_platform.__main__._build_real_factories, applied
     directly to a FakeStack. Each adapter is only swapped in when its
     required flag/env is present; otherwise the fake stays."""
@@ -134,10 +136,14 @@ def _apply_real_adapters(stack, args, clock: Callable[[], float]) -> None:
         e2b_api_key=args.e2b_api_key,
     )
     factories = cli_main._build_real_factories(fake_args)  # noqa: SLF001
-    if "wallet_factory" in factories:
-        stack.wallet = factories["wallet_factory"](clock)
+    # Vault first: a local-vault wallet provider needs the real per-Darwin
+    # vault to seal/retrieve its keypair before the wallet is constructed.
     if "vault_factory" in factories:
         stack.vault = factories["vault_factory"]()
+    if "wallet_factory" in factories:
+        stack.wallet = factories["wallet_factory"](
+            darwin_id, clock, stack.vault,
+        )
     if "browser_factory" in factories:
         stack.browser = factories["browser_factory"](stack.wallet)
     if "x402_factory" in factories:
@@ -446,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         layer_names=layer_names,
         clock=clock,
     )
-    _apply_real_adapters(stack, args, clock)
+    _apply_real_adapters(stack, args, clock, darwin_id=args.darwin_id)
 
     from darwin_dna.evolution import boot
     runtime = boot(stack.platform(), sleep=lambda _: None)

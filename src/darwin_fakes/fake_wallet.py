@@ -336,12 +336,22 @@ class FakeWallet:
         self._sanctions = screener
 
     # -- platform reproduction transfer (omnibus move, not a neuron spend) --
-    def transfer_out_for_child(self, amount_usdc: float) -> None:
+    def transfer_out_for_child(
+        self, amount_usdc: float, *, destination: str = "platform.omnibus",
+    ) -> None:
+        """Move the reproduction budget from the parent's wallet toward
+        ``destination`` (the platform's omnibus address when wired; symbolic
+        otherwise). The omnibus.fund_child second leg credits the child's
+        per-Darwin address — that's the supervisor's responsibility, not
+        the wallet's."""
         amount = float(amount_usdc)
         if amount > self._balance + 1e-9:
             raise WalletError("reproduction budget exceeds balance")
         self._balance -= amount
         self.ledger.append(
-            {"reproduction_transfer": {"amount_usdc": amount,
-                                       "ts": float(self._clock())}}
+            {"reproduction_transfer": {
+                "amount_usdc": amount,
+                "destination": destination,
+                "ts": float(self._clock()),
+            }}
         )

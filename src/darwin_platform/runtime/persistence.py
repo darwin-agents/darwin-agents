@@ -1181,6 +1181,13 @@ class PersistentLifecycleStore:
         spawned_at: float,
         escalation_auto: str | None,
     ) -> None:
+        # On a fresh insert ``opening_usdc`` is the genesis treasury and is
+        # the seed for ``last_balance``. On conflict — i.e. resume after
+        # restart — preserve the original ``opening_usdc`` and
+        # ``spawned_at``; they are historical facts, not "the value this
+        # run started at." ``last_balance`` is *also* not touched on
+        # conflict so the lifecycle row keeps the most recent in-flight
+        # treasury snapshot (set by ``snapshot_balance``).
         with self._backend:
             self._backend.execute(
                 "INSERT INTO darwin_lifecycle "
@@ -1188,9 +1195,7 @@ class PersistentLifecycleStore:
                 "spawned_at, alive, killed, kill_reason, escalation_auto) "
                 "VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?) "
                 "ON CONFLICT(darwin_id) DO UPDATE SET "
-                "opening_usdc = excluded.opening_usdc, "
                 "parent_id = excluded.parent_id, "
-                "spawned_at = excluded.spawned_at, "
                 "alive = 1, killed = 0, kill_reason = NULL, "
                 "escalation_auto = excluded.escalation_auto",
                 (

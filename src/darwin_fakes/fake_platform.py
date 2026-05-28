@@ -203,15 +203,27 @@ class FakeProvisioner:
 # -- child spawner ---------------------------------------------------------
 class FakeSpawner:
     """Provisions the child (records the lineage edge) and moves the starting
-    budget out of the parent's treasury (the omnibus transfer)."""
+    budget out of the parent's treasury (the omnibus transfer).
 
-    def __init__(self, parent_wallet) -> None:
+    ``omnibus_destination`` is the on-chain address the parent's reproduction
+    transfer should land at — the supervisor sets it to the
+    :class:`OmnibusWallet` address when one is wired; left ``None`` the
+    transfer falls back to the wallet's symbolic default (tests + the sim
+    don't care where the bytes go)."""
+
+    def __init__(self, parent_wallet, *, omnibus_destination: str | None = None) -> None:
         self._parent_wallet = parent_wallet
+        self._omnibus_destination = omnibus_destination
         self.children: list[dict] = []
 
     def spawn(self, *, child_manifest: str, child_layer_blobs: dict,
               budget_usdc: float, parent_id: str) -> dict:
-        self._parent_wallet.transfer_out_for_child(budget_usdc)
+        if self._omnibus_destination is not None:
+            self._parent_wallet.transfer_out_for_child(
+                budget_usdc, destination=self._omnibus_destination,
+            )
+        else:
+            self._parent_wallet.transfer_out_for_child(budget_usdc)
         record = {
             "parent_id": parent_id,
             "budget_usdc": budget_usdc,

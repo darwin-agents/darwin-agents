@@ -46,7 +46,7 @@ from ..adapters.fiat import (
     FiatRampError,
     FiatWithdrawReceipt,
 )
-from ..escalations.escalation import EscalationRouter, NotificationSink
+from ..escalations.escalation import EscalationRouter, NotificationSink, RoutedTicket
 from ..evolution.eval_runner import EvalRequest, EvalRunner
 from ..evolution.patch_staging import (
     PatchStagingService,
@@ -321,6 +321,11 @@ class _Handle:
     last_drift_maintenance_ts: float = 0.0
     drift_audit_cursor: int = 0
     maintenance_runs: int = 0
+    # Owner-set escalation policy (doc 09). Persisted on the lifecycle row at
+    # spawn so a supervisor restart re-applies it, and held here so the
+    # auto-decide hook + child-boot inheritance don't have to round-trip
+    # through SQLite every tick.
+    escalation_auto: str | None = "approve"
 
 
 # -- the supervisor --------------------------------------------------------
@@ -570,7 +575,11 @@ class Supervisor:
         # (--rpc-url, --vault-url, --browserbase-url) or by passing factory
         # callables directly for programmatic wiring.
         #
-        # wallet_factory(clock) -> WalletPort  (doc 17: RealWallet+Web3ChainClient)
+        # wallet_factory(darwin_id, clock, vault) -> WalletPort  (doc 17:
+        # RealWallet+Web3ChainClient). darwin_id lets per-Darwin wallet
+        # providers construct an isolated wallet for each spawn; vault is the
+        # already-installed per-Darwin vault so a local-vault provider can
+        # seal/retrieve the keypair without a second backend handle.
         # vault_factory()       -> RawVaultPort (doc 16: RealVaultBackend+HvacVaultClient)
         # browser_factory(wallet) -> BrowserClient (doc 15: BrowserUseClient)
         # x402_factory(wallet)    -> X402PaymentClient (doc 17: x402 HTTP wrapper)
@@ -940,17 +949,36 @@ class Supervisor:
                 # wallet is already bound; the factory only needs a clock
                 # for its own time concerns (timeouts, day rollovers).
                 stack.llm = self._llm_factory(stack.wallet, self._clock)
-            # Real wallet: replace FakeWallet with a chain-backed adapter
-            # (doc 17 RealWallet + Web3ChainClient). Called BEFORE browser
-            # and x402 factories so they always receive the live wallet.
-            if self._wallet_factory is not None:
-                stack.wallet = self._wallet_factory(self._clock)
             # Real vault backend: replace in-memory FakeVault with a
             # HashiCorp Vault-backed adapter (doc 16 RealVaultBackend +
             # HvacVaultClient). Per-Darwin namespace isolation lives in the
             # HvacVaultClient's path prefix; the factory owns that config.
+            # Built BEFORE the wallet so a local-vault wallet provider seals
+            # its keypair into the real vault, not the throwaway FakeVault.
             if self._vault_factory is not None:
                 stack.vault = self._vault_factory()
+            # Reproduction-transfer destination (step c): when the platform
+            # has an OmnibusWallet wired, route the parent's surplus to its
+            # on-chain address so the omnibus's books reflect what actually
+            # moved. Without an omnibus the spawner stays on its symbolic
+            # default (used by the 90-day sim + unit tests).
+            if self._omnibus_wallet is not None and stack.spawner is not None:
+                try:
+                    stack.spawner._omnibus_destination = (
+                        self._omnibus_wallet.address()
+                    )
+                except Exception:
+                    # An omnibus that can't surface its address is a config
+                    # bug, but it must not crash spawn — the fallback symbol
+                    # keeps the reproduction transfer flowing.
+                    pass
+            # Real wallet: replace FakeWallet with a chain-backed adapter
+            # (doc 17 RealWallet + Web3ChainClient). Called BEFORE browser
+            # and x402 factories so they always receive the live wallet.
+            if self._wallet_factory is not None:
+                stack.wallet = self._wallet_factory(
+                    darwin_id_now, self._clock, stack.vault,
+                )
             # Real browser substrate: replace FakeBrowser with BrowserUseClient
             # on Browserbase (doc 15). Factory receives the active wallet so
             # session-billing debits go to the correct Darwin.
@@ -1068,6 +1096,7 @@ class Supervisor:
                 runtime=runtime,
                 spawned_at=self._clock(),
                 parent_id=parent_id,
+                escalation_auto=escalation_auto,
             )
             self._darwins[handle.darwin_id] = handle
             annotate_span_with_runtime(s, runtime)
@@ -3869,13 +3898,47 @@ class Supervisor:
             ) as s:
                 annotate_span_with_runtime(s, handle.runtime)
                 try:
-                    self._router.register(payload)
+                    routed = self._router.register(payload)
                 except Exception:
                     # A malformed payload is a bug in whatever posted it.
                     # The supervisor must not die because of one bad
                     # ticket; skip it and let the others through.
                     continue
+                # Mirror the genome-side auto-response (MemoryEscalationInbox
+                # queues one on every post when ``auto`` is set) into the
+                # router so the dashboard's open-ticket inbox matches what
+                # the Darwin actually sees. Without this, every auto-resolved
+                # ticket lingers as "open" forever.
+                self._auto_decide_escalation(handle, routed)
         handle.escalation_observed = len(tickets)
+
+    def _auto_decide_escalation(
+        self, handle: _Handle, routed: RoutedTicket,
+    ) -> None:
+        """Auto-respond on the router when the owner has opted in.
+        Mirrors the inbox's auto-response so router state stays in sync
+        with the genome's view (doc 09 escalation-auto)."""
+        policy = handle.escalation_auto
+        if policy not in ("approve", "deny"):
+            return
+        if routed.ticket_id in handle.handled_responses:
+            return
+        try:
+            self._router.mark_responded(routed.ticket_id, policy, {})
+        except Exception:
+            return
+        handle.handled_responses.add(routed.ticket_id)
+        self._audit.record(
+            actor="platform.escalation_auto",
+            action="respond_escalation",
+            darwin_id=handle.darwin_id,
+            metadata={
+                "escalation_id": routed.ticket_id,
+                "decision": policy,
+                "auto": True,
+                "ticket_class": routed.ticket_class.value,
+            },
+        )
 
     def _observe_billing(self, handle: _Handle) -> None:
         """Sweep new wallet movements since last cursor, attributing each
@@ -3960,8 +4023,48 @@ class Supervisor:
                 runtime=child_runtime,
                 spawned_at=self._clock(),
                 parent_id=parent.darwin_id,
+                # Children inherit the parent's escalation policy so a
+                # reproduction event doesn't silently lose the owner's
+                # auto-approve / auto-deny preference.
+                escalation_auto=parent.escalation_auto,
             )
             self._darwins[child_id] = child_handle
             child_handle.task = asyncio.create_task(
                 self._drive(child_handle), name=f"darwin:{child_id}"
             )
+            opening_usdc = float(record.get("budget_usdc", 0.0))
+            self._audit.record(
+                actor=f"platform.reproduction:{parent.darwin_id}",
+                action="spawn",
+                darwin_id=child_id,
+                metadata={
+                    "opening_usdc": opening_usdc,
+                    "parent_id": parent.darwin_id,
+                },
+            )
+            # Persist the child's lifecycle row so failover (and the
+            # operator dashboard) see the same fleet the supervisor sees.
+            # Doc 08: every spawn writes through, parent and child alike.
+            if self._lifecycle is not None:
+                try:
+                    self._lifecycle.upsert_spawn(
+                        darwin_id=child_id,
+                        opening_usdc=opening_usdc,
+                        parent_id=parent.darwin_id,
+                        spawned_at=child_handle.spawned_at,
+                        escalation_auto=child_handle.escalation_auto,
+                    )
+                except Exception:
+                    pass
+            # Persist the child's sealed manifest + layer blobs the same
+            # way genesis spawns do, so a resume can re-mint identical DNA.
+            if self._manifest_store is not None:
+                try:
+                    self._manifest_store.put(
+                        darwin_id=child_id,
+                        manifest_json=child_runtime._p.manifest.model_dump_json(),  # noqa: SLF001
+                        layer_blobs=child_stack.layer_blobs,
+                        layer_names=child_stack.layer_names,
+                    )
+                except Exception:
+                    pass

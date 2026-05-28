@@ -58,6 +58,37 @@ async def test_supervisor_accepts_all_phase2_services(_omnibus_chain):
 
 
 @pytest.mark.asyncio
+async def test_supervisor_wires_omnibus_address_into_spawner(_omnibus_chain):
+    """Step c: when an OmnibusWallet is wired, the supervisor injects its
+    on-chain address into stack.spawner so the parent's reproduction
+    transfer settles to a real destination instead of the symbolic
+    fallback. The default _omnibus_chain stub returns '0xomnibus'."""
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=100.0)
+        handle = sup._darwins[status.darwin_id]
+        assert handle.stack.spawner._omnibus_destination == "0xomnibus"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_spawner_destination_none_without_omnibus():
+    """Without an omnibus the spawner keeps its symbolic fallback so the
+    90-day sim + dev runs don't need any chain configuration."""
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0)
+        handle = sup._darwins[status.darwin_id]
+        assert handle.stack.spawner._omnibus_destination is None
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
 async def test_supervisor_defaults_phase2_services_to_none():
     """Single-tenant dev path: nothing is wired by default."""
     sup = Supervisor(heartbeat_seconds=0.001)
