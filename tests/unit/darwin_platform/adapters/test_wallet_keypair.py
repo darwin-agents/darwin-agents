@@ -162,7 +162,10 @@ def test_evm_minter_produces_distinct_keypairs():
     a = m.mint()
     b = m.mint()
     assert a.chain == "base"
-    assert a.secret.startswith("0x")
+    # eth_account's .key.hex() omits the "0x" prefix in recent versions
+    # and includes it in older ones; accept either since web3.py's
+    # sign_transaction handles both. Address always has 0x.
+    assert len(a.secret.removeprefix("0x")) == 64
     assert a.address.startswith("0x")
     assert a.secret != b.secret
     assert a.address != b.address

@@ -100,6 +100,11 @@ class DarwinPodConfig:
     # Free-form extra env vars for the orchestrator container — useful
     # for OTel endpoints, real-adapter API keys via secretKeyRef, etc.
     extra_env: tuple[dict[str, Any], ...] = ()
+    # Wallet provider forwarded to the orchestrator pod (--wallet-provider
+    # flag). Matches the supervisor's choice so per-pod wallets pick the
+    # same backend (cdp / local-vault / web3). Default 'cdp' matches the
+    # supervisor CLI default.
+    wallet_provider: str = "cdp"
 
 
 def namespace_name(prefix: str, darwin_id: str) -> str:
@@ -317,6 +322,7 @@ def build_deployment(
         "--opening-usdc", f"{opening_usdc:g}",
         "--control-port", str(CONTROL_API_PORT),
         "--control-token-path", "/run/secrets/darwin-control/control_token",
+        "--wallet-provider", config.wallet_provider,
     ]
     if escalation_auto is not None:
         args.extend(["--escalation-auto", escalation_auto])

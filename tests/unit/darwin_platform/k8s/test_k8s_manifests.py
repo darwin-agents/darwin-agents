@@ -135,6 +135,53 @@ def test_deployment_runs_orchestrator_under_kata_with_lancedb_sidecar():
     assert sc["capabilities"]["drop"] == ["ALL"]
 
 
+def test_deployment_forwards_wallet_provider_to_orchestrator_args():
+    """Step (3): the supervisor's --wallet-provider choice must reach the
+    per-Darwin orchestrator pod so each Darwin uses the same backend."""
+    cfg = DarwinPodConfig(
+        orchestrator_image="myrepo/darwin:1.0",
+        runtime_class_name="kata",
+        platform_data_namespace="platform-data",
+        postgres_namespace="data",
+        postgres_pod_label_key="app",
+        postgres_pod_label_value="postgres",
+        wallet_provider="local-vault",
+    )
+    d = build_deployment(
+        darwin_id=DARWIN_ID, namespace=NS, config=cfg,
+        opening_usdc=100.0, escalation_auto="approve",
+    )
+    args = d["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert "--wallet-provider" in args
+    assert args[args.index("--wallet-provider") + 1] == "local-vault"
+
+
+def test_deployment_default_wallet_provider_is_cdp():
+    """Matches the supervisor CLI default — production-safe out of the box."""
+    cfg = _config()
+    d = build_deployment(
+        darwin_id=DARWIN_ID, namespace=NS, config=cfg,
+        opening_usdc=100.0, escalation_auto="approve",
+    )
+    args = d["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert args[args.index("--wallet-provider") + 1] == "cdp"
+
+
+def test_orchestrator_argparse_accepts_wallet_provider():
+    """The orchestrator-pod CLI must accept the flag the manifest forwards."""
+    from darwin_platform.runtime.orchestrator import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "--darwin-id", "x",
+        "--manifest-path", "/etc/m.json",
+        "--layer-blob-dir", "/etc",
+        "--layer-names-path", "/etc/n.json",
+        "--wallet-provider", "local-vault",
+    ])
+    assert args.wallet_provider == "local-vault"
+
+
 def test_deployment_threads_database_url_secret_ref():
     cfg = _config()
     d = build_deployment(

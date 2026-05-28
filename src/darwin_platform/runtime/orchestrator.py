@@ -118,7 +118,13 @@ def _apply_real_adapters(
     # the env var fallback set is the same.
     from . import __main__ as cli_main
     fake_args = argparse.Namespace(
-        # wallet
+        # wallet — provider + per-chain config (forwarded from the
+        # supervisor's --wallet-provider choice when it launched this pod).
+        wallet_provider=args.wallet_provider,
+        cdp_api_key_id=getattr(args, "cdp_api_key_id", None),
+        cdp_api_key_secret=getattr(args, "cdp_api_key_secret", None),
+        cdp_wallet_secret=getattr(args, "cdp_wallet_secret", None),
+        cdp_mainnet=getattr(args, "cdp_mainnet", False),
         rpc_url=args.rpc_url, wallet_key=args.wallet_key,
         usdc_contract=args.usdc_contract,
         chain_networks=args.chain_networks,
@@ -405,6 +411,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--solana-wallet-key", default=None)
     p.add_argument("--stellar-horizon-url", default=None)
     p.add_argument("--stellar-secret", default=None)
+    # Wallet provider — supervisor forwards its --wallet-provider choice
+    # when launching this pod so each Darwin uses the platform-selected
+    # backend (cdp / local-vault / web3). Default matches the supervisor
+    # CLI's default.
+    p.add_argument(
+        "--wallet-provider", default="cdp",
+        choices=["web3", "cdp", "local-vault"],
+    )
+    p.add_argument("--cdp-api-key-id", default=None)
+    p.add_argument("--cdp-api-key-secret", default=None)
+    p.add_argument("--cdp-wallet-secret", default=None)
+    p.add_argument("--cdp-mainnet", action="store_true")
     p.add_argument("--vault-url", default=None)
     p.add_argument("--vault-token", default=None)
     p.add_argument("--vault-mount", default="secret")
