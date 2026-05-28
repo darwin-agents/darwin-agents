@@ -9,38 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
-- feat(platform): LanceDB-backed `LanceDbEpisodicMemory` substrate with an
-  injectable embedder, behind the new `[lancedb]` extra
-- feat(dna): `Platform.episodic_memory` injection seam — the genome's
-  deterministic `EpisodicMemory` stays the default, the platform may swap
-  in a per-Darwin vector store without touching the DNA
-- feat(platform): supervisor `episodic_memory_factory` + CLI flags
-  `--episodic-memory {deterministic,lancedb}`, `--lancedb-path`,
-  `--lancedb-embedding-model` (env `DARWIN_LANCEDB_PATH`); embeddings
-  routed through `litellm.embedding` (honours `--litellm-url` when set)
-- feat(platform): `BrowserUseCloudClient` adapter for Browser Use Cloud's
-  V3 Agent API, alongside the existing Browserbase wiring; selected via
-  `--browser-provider {browserbase,browser-use-cloud}` with spend cap
-  parity (pre-debit + SDK `max_cost_usd`). `[browser-use-cloud]` extra
-- docs(engineering): new doc 31 (`31-browser-use-evaluation.md`) with
-  verified pricing comparison and provider recommendation
-- ci: red-team CI release gate (`release-gate.yml`) — runs
-  `pytest -m redteam` on every `release/**` push and `v*` tag
-- ci: end-to-end soak smoke (`soak-smoke.yml`) — exercises the same
-  driver as the real 24h gate, shrunk to 60s on every push/PR
-- ops: `tools/drills/` — kill-switch (locally verified), DR failover,
-  and Vault seal/unseal exercises + operator README
-- docs: `docs/postmortems/` directory + README (resolves the
-  doc-29 template's dangling reference)
+- feat(platform): forward wallet provider selection into orchestrator pods
+- feat(platform): relay reproduction transfers from omnibus to child wallets
+- feat(web): improve timeline categorization and live-tail pause controls
+- feat(platform): provision per-chain wallet keypairs in tenant namespaces
+- feat(platform): add local-vault wallet provider and real-run preflight tooling
+- feat(web): add anatomy page with WebSocket-driven neuron canvas
+- feat(web): use aggregate fleet escalations endpoint on inbox page
+- feat(web): use since/cursor pagination for live timeline feed
+- feat(web): extend API client for anatomy, fleet escalations, and event cursors
+- feat(platform): add anatomy snapshot, fleet escalations, events cursors, and WS stream
+- feat(web): add vault and resources pages with Darwin sub-nav
+- feat(web): add escalation respond drawer on fleet inbox
+- feat(web): add fiat deposit and withdraw dialog on billing page
+- feat(web): add M2 owner controls on settings page
+- feat(web): extend API client for M2 owner, harvest, vault, and fiat routes
+- feat(platform): add CORS support for browser dashboard origins
+- feat(web): add Next.js 15 dashboard with M0 foundations and M1 fleet views
+- feat(platform): add Browser Use Cloud V3 adapter and CLI provider switch
+- feat(platform): wire LanceDB episodic memory in supervisor and serve CLI
+- feat(dna): add episodic memory injection seam on Platform
+- feat(platform): add LanceDbEpisodicMemory adapter and lancedb extra
+- feat(platform): wire Twilio SMS inbox in serve CLI and API
+- feat(platform): add TwilioSmsClient for inbound 2FA codes
+- feat(platform): wire Onfido KYC provider in serve CLI
+- feat(platform): add OnfidoKYCProvider for Studio workflow KYC
+- feat(platform): wire Clerk auth flags in serve CLI
+- feat(platform): add Clerk JWT verification and TokenStore
+- feat(platform): wire Coinbase CDP wallet in serve CLI
+- feat(platform): add Coinbase CDP chain adapter behind ChainClient
+- feat(platform): wire Stripe and MoonPay fiat ramps in serve CLI
 
 ### Changed
-- docs(engineering): descope AWS Bedrock AgentCore Payments for the MVP
-  (redundant with direct Coinbase + Stripe integrations; avoid AWS
-  dependency) and de-AWS the cloud-provider row to "provider-neutral"
-- docs: `.env.example` consolidated — won't-do blocks removed, all
-  remaining entries are [LIVE] or [PENDING] (226 → 199 lines)
+- docs(frontend): restructure build plan as M0–M4 milestones
+- docs(frontend): align auth and owner-controls with wired providers
+- docs(frontend): update API integration doc for shipped endpoints
+- docs(frontend): note platform unblocked and link engineering backlog
+- docs: move engineering backlog to docs/engineering/BACKLOG.md
+- docs: postmortems directory, backlog updates, and env template
+- docs(engineering): add browser-use evaluation and update browser stack
+- docs: align env template with wired P2 integrations
+- docs: note P2 integrations wired in env template legend
+- docs: mark P2 integrations complete and document LanceDB episodic memory
+- docs: refresh TODO backlog format and integration status
+- docs(engineering): descope AgentCore Payments and provider-neutral cloud
+- docs: mark AgentCore Payments and Temporal as won't-do in backlog
+- docs: mark Twilio SMS 2FA inbox done and update env template
+- docs: mark Onfido KYC provider done in backlog
+- docs: mark Redis LiteLLM cache done and update env template
+- docs: mark Clerk auth integration done in backlog
+- docs: mark Coinbase CDP Agentic Wallet integration done in backlog
+- docs: update backlog for fiat and LiteLLM wiring; sync lockfile version
+- docs(frontend): expand phased delivery and document API gaps
 
 ### Fixed
+- fix(platform): ignore metered infra debits in spread-spend detector
+- fix(platform): persist child lifecycle and mirror escalation auto decisions
+- ci: add GitHub workflow for web lint, test, and build
+- ci: add red-team release gate and 60s soak smoke workflows
 - fix(changelog): scope release to commits since previous tag
 
 ## [0.0.2] - 2026-05-22

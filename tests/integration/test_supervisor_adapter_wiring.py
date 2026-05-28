@@ -333,8 +333,26 @@ def _make_args(**kwargs):
     return argparse.Namespace(**defaults)
 
 
-def test_build_factories_empty_when_no_args():
+def test_build_factories_empty_when_no_args(monkeypatch):
+    """No args + no env vars → no real factories. ``litellm`` auto-loads
+    the project's .env on import (it calls dotenv.load_dotenv() on
+    module import), which can populate DARWIN_LITELLM_URL etc. for any
+    test that ran after a litellm import. Clear the relevant env vars
+    so the assertion holds regardless of import order."""
     from darwin_platform.__main__ import _build_real_factories
+    for var in (
+        "DARWIN_LITELLM_URL", "DARWIN_LITELLM_MASTER_KEY",
+        "DARWIN_RPC_URL", "DARWIN_WALLET_KEY",
+        "DARWIN_SOLANA_RPC_URL", "DARWIN_SOLANA_WALLET_KEY",
+        "DARWIN_STELLAR_HORIZON_URL", "DARWIN_STELLAR_SECRET",
+        "DARWIN_VAULT_URL", "DARWIN_VAULT_TOKEN",
+        "BROWSERBASE_URL", "BROWSERBASE_API_KEY",
+        "E2B_API_KEY", "BROWSER_USE_API_KEY",
+        "DARWIN_LANCEDB_PATH",
+        "CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "CDP_WALLET_SECRET",
+        "STRIPE_API_KEY", "MOONPAY_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
     result = _build_real_factories(_make_args())
     assert result == {}
 
