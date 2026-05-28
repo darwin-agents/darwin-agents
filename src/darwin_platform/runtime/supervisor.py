@@ -2542,16 +2542,87 @@ class Supervisor:
 
     # -- events (doc 08: GET /darwins/{id}/events) ------------------------
     async def events(
-        self, darwin_id: str, *, limit: int = 100, offset: int = 0
+        self,
+        darwin_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        since: int | None = None,
+        cursor: int | None = None,
+        kind: str | None = None,
+        neuron_id: str | None = None,
+        tier: str | None = None,
     ) -> dict[str, Any]:
-        """Return the hash-chained audit log entries the genome wrote. The
-        chain is over the whole sink; the supervisor filters to this Darwin's
-        id so multi-tenant inspection still works."""
+        """Return the hash-chained audit log entries the genome wrote.
+
+        Three orthogonal paging strategies are supported:
+
+        - ``offset`` / ``limit`` — legacy, newest-first.
+        - ``since`` — return only events with ``seq > since`` (incremental
+          polling and WS reconnect resync). Result is **oldest-first** so
+          callers can append directly.
+        - ``cursor`` — return events with ``seq < cursor``, newest-first.
+          When ``cursor`` is omitted the first page starts from the head.
+          The response carries ``next_cursor`` set to the smallest ``seq``
+          in the page (or ``None`` when the chain is exhausted).
+
+        Filters (``kind`` prefix, ``neuron_id`` derived from
+        ``payload.neuron_id`` or the conventional ``intent:neuron.X`` kind,
+        ``tier`` from ``payload.tier``) compose with any pagination mode.
+        """
         h = self._get(darwin_id)
         all_records = h.stack.audit_sink.read_all()
         own = [r for r in all_records if r.get("darwin_id") == darwin_id]
-        total = len(own)
-        page = own[offset : offset + limit]
+
+        def _matches(rec: dict[str, Any]) -> bool:
+            if kind is not None:
+                rk = str(rec.get("kind", ""))
+                if not (rk == kind or rk.startswith(kind + ".") or rk.startswith(kind + ":")):
+                    return False
+            if neuron_id is not None:
+                payload = rec.get("payload") or {}
+                pid = payload.get("neuron_id") if isinstance(payload, dict) else None
+                rk = str(rec.get("kind", ""))
+                # Conventional intent kind embeds the neuron in the suffix.
+                if pid != neuron_id and not rk.endswith(f".{neuron_id}"):
+                    return False
+            if tier is not None:
+                payload = rec.get("payload") or {}
+                if not isinstance(payload, dict) or payload.get("tier") != tier:
+                    return False
+            return True
+
+        filtered = [r for r in own if _matches(r)] if (kind or neuron_id or tier) else own
+
+        # `since` is a tail-cursor: newer events only, oldest-first.
+        if since is not None:
+            page = [r for r in filtered if int(r.get("seq", -1)) > since][:limit]
+            head_seq = page[-1].get("seq") if page else since
+            return {
+                "darwin_id": darwin_id,
+                "since": since,
+                "limit": limit,
+                "events": page,
+                "next_cursor": head_seq,
+                "total": len(filtered),
+            }
+
+        # `cursor` is a head-cursor: events older than cursor, newest-first.
+        if cursor is not None:
+            # `own` is naturally seq-ordered (audit sink append-only).
+            page = [r for r in reversed(filtered) if int(r.get("seq", -1)) < cursor][:limit]
+            next_cursor = page[-1].get("seq") if len(page) == limit else None
+            return {
+                "darwin_id": darwin_id,
+                "cursor": cursor,
+                "limit": limit,
+                "events": page,
+                "next_cursor": next_cursor,
+                "total": len(filtered),
+            }
+
+        total = len(filtered)
+        page = filtered[offset : offset + limit]
         return {
             "darwin_id": darwin_id,
             "total": total,
@@ -2586,6 +2657,164 @@ class Supervisor:
         if tk is None or tk.darwin_id != darwin_id:
             raise SupervisorError(f"unknown escalation: {escalation_id}")
         return tk.to_dict(self._clock())
+
+    async def anatomy(self, darwin_id: str) -> dict[str, Any]:
+        """Snapshot of the organism's structural state.
+
+        Returns the orchestrator + every neuron the active catalog carries,
+        their per-neuron status (idle / active / disabled / error), recent
+        dispatch heat, and the DNA generation/layers. Sourced from:
+
+        - ``runtime.catalog`` for the live neuron set (Path-C admissions are
+          reflected automatically),
+        - the audit log's recent slice for dispatch heat + last-dispatch
+          timestamps (no separate metrics store needed),
+        - per-handle owner controls for disabled neurons / categories.
+        """
+        h = self._get(darwin_id)
+        runtime = h.runtime
+        catalog = getattr(runtime, "catalog", {}) or {}
+
+        # Activity scan — only the tail of the chain matters for heat.
+        records = h.stack.audit_sink.read_all()
+        own = [r for r in records if r.get("darwin_id") == darwin_id]
+        recent = own[-1000:]  # cap the scan; heat is a rolling signal
+
+        disabled_neurons = set(h.disabled_neurons)
+        disabled_categories = set(h.disabled_categories)
+
+        # last_dispatch_at + dispatch_count per neuron, plus last_error_ts.
+        last_dispatch: dict[str, float] = {}
+        last_error: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        active_now: set[str] = set()
+        for rec in recent:
+            kind = str(rec.get("kind", ""))
+            payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+            ts = float(rec.get("ts", 0))
+            neuron = None
+            if kind.startswith("intent:neuron."):
+                neuron = kind[len("intent:neuron.") :]
+                active_now.add(neuron)
+            elif kind == "outcome" and isinstance(payload, dict):
+                # The outcome record carries the neuron in the linked intent;
+                # the safer signal is payload.neuron when set.
+                pn = payload.get("neuron")
+                if isinstance(pn, str):
+                    neuron = pn
+                    active_now.discard(neuron)
+                    if payload.get("status") in ("fail", "failed", "refused", "error"):
+                        last_error[neuron] = ts
+            elif isinstance(payload, dict) and isinstance(payload.get("neuron"), str):
+                neuron = payload["neuron"]
+            if neuron:
+                counts[neuron] = counts.get(neuron, 0) + 1
+                last_dispatch[neuron] = max(last_dispatch.get(neuron, 0.0), ts)
+
+        max_count = max(counts.values(), default=1)
+
+        # Lifecycle → orchestrator state. Mirror StatusBus values so the FE
+        # doesn't need a second mapping table.
+        try:
+            status_obj = await self.status(darwin_id)
+        except Exception:  # pragma: no cover - status should always be readable
+            status_obj = None
+        orch_state = "running"
+        tick = getattr(getattr(runtime, "state", None), "tick", None)
+        if status_obj is not None:
+            lifecycle = getattr(status_obj, "lifecycle", None)
+            if lifecycle:
+                orch_state = str(lifecycle)
+
+        neurons_payload: list[dict[str, Any]] = []
+        edges_payload: list[dict[str, Any]] = []
+        heatmap_payload: dict[str, float] = {}
+        for name, n in sorted(catalog.items()):
+            category = name.split(".", 1)[0] if "." in name else name
+            is_disabled = name in disabled_neurons or category in disabled_categories
+            ts_last = last_dispatch.get(name)
+            ts_err = last_error.get(name)
+            count = counts.get(name, 0)
+            heat = count / max_count if max_count else 0.0
+            heatmap_payload[name] = round(heat, 4)
+            if is_disabled:
+                status = "disabled"
+            elif name in active_now:
+                status = "active"
+            elif ts_err and (not ts_last or ts_err >= ts_last):
+                status = "error"
+            else:
+                status = "idle"
+            neurons_payload.append(
+                {
+                    "id": name,
+                    "label": name,
+                    "category": category,
+                    "version": getattr(n, "version", None),
+                    "status": status,
+                    "last_dispatch_at": ts_last,
+                    "last_error_at": ts_err,
+                    "dispatch_count_recent": count,
+                }
+            )
+            edges_payload.append(
+                {
+                    "from": "orchestrator",
+                    "to": name,
+                    "kind": "dispatch",
+                    "active": name in active_now,
+                    "weight": round(heat, 4),
+                }
+            )
+
+        # DNA summary — generation, layer names. Manifest/layer info is on
+        # the FakeStack today; fall back gracefully for stripped stacks.
+        stack = h.stack
+        generation = getattr(getattr(runtime, "state", None), "generation", None)
+        if generation is None:
+            generation = getattr(stack, "generation", None)
+        layer_names = list(getattr(stack, "layer_names", []) or [])
+
+        return {
+            "darwin_id": darwin_id,
+            "orchestrator": {
+                "id": "orchestrator",
+                "label": "Orchestrator",
+                "state": orch_state,
+                "tick": tick,
+            },
+            "neurons": neurons_payload,
+            "edges": edges_payload,
+            "heatmap": heatmap_payload,
+            "dna": {
+                "generation": generation,
+                "layers": layer_names,
+            },
+        }
+
+    async def open_escalations_for_darwins(
+        self,
+        darwin_ids: list[str] | None,
+        *,
+        include_resolved: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Fleet-wide read for the dashboard inbox. ``darwin_ids=None`` means
+        "every Darwin the supervisor knows" (platform-operator scope); a list
+        restricts to the caller's owned set (the API route scopes by
+        ``AuthContext.owned_darwins``). Results are sorted by deadline."""
+        if darwin_ids is None:
+            ids = list(self._darwins.keys())
+        else:
+            # Skip unknowns silently — the router may still hold tickets for
+            # Darwins that have been killed and reaped from the live map.
+            ids = list(darwin_ids)
+        now = self._clock()
+        out: list[dict[str, Any]] = []
+        for did in ids:
+            for tk in self._router.for_darwin(did, include_resolved=include_resolved):
+                out.append(tk.to_dict(now))
+        out.sort(key=lambda r: (r.get("deadline_ts") or float("inf"), r.get("opened_ts") or 0))
+        return out
 
     # -- supervisor shutdown ----------------------------------------------
     async def shutdown(self, *, kill_running: bool = True) -> None:
