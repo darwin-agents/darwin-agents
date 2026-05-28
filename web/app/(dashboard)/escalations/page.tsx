@@ -1,10 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Flag } from "lucide-react";
 import { api } from "@/lib/api";
-import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelative, shortId } from "@/lib/format";
@@ -12,32 +11,18 @@ import { RespondDialog } from "@/components/darwin/respond-dialog";
 import type { EscalationTicket } from "@/lib/types";
 
 export default function EscalationsPage() {
-  const { data: list, isLoading } = useQuery({
-    queryKey: queryKeys.darwins(),
-    queryFn: () => api.listDarwins(),
-    refetchInterval: 60_000,
+  // Single aggregate fetch — backend already sorts by deadline.
+  const { data, isLoading } = useQuery({
+    queryKey: ["escalations", "fleet"] as const,
+    queryFn: () => api.fleetEscalations(),
+    refetchInterval: 30_000,
   });
 
-  const ids = list?.darwins ?? [];
-
-  const escalations = useQueries({
-    queries: ids.map((id) => ({
-      queryKey: queryKeys.escalations(id),
-      queryFn: () => api.escalations(id),
-      refetchInterval: 30_000,
-    })),
-  });
-
-  const open = ids
-    .flatMap((id, i) =>
-      (escalations[i]?.data?.tickets ?? []).map((t) => ({ darwinId: id, ticket: t })),
-    )
-    .filter(({ ticket }) => ticket.status === "open" || ticket.status === undefined)
-    .sort((a, b) => {
-      const ad = a.ticket.deadline_ts ?? Infinity;
-      const bd = b.ticket.deadline_ts ?? Infinity;
-      return ad - bd;
-    });
+  const tickets = (data?.tickets ?? []) as EscalationTicket[];
+  const open = tickets
+    .filter((t) => t.status === "open" || t.status === undefined)
+    .map((ticket) => ({ darwinId: ticket.darwin_id, ticket }));
+  const ids = Array.from(new Set(open.map((o) => o.darwinId)));
 
   const [active, setActive] = useState<EscalationTicket | null>(null);
 
