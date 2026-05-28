@@ -120,3 +120,128 @@ def test_audit_recorder_captures_provision_event():
     p.provision(darwin_id="abc-1")
     actions = [r[1] for r in recorded]
     assert "tenant_provisioned" in actions
+
+
+# ---------------------------------------------------------------------------
+# wallet keypair provisioning (step 4) — doc 17 per-Darwin self-custodial
+# ---------------------------------------------------------------------------
+
+
+class _StubWalletKeypair:
+    def __init__(self, chain: str, secret: str, address: str) -> None:
+        self.chain = chain
+        self.secret = secret
+        self.address = address
+
+
+class _StubMinter:
+    """Returns a pre-canned keypair so tests assert exact addresses."""
+
+    def __init__(self, chain: str, secret: str, address: str) -> None:
+        self.chain = chain
+        self._secret = secret
+        self._address = address
+        self.calls = 0
+
+    def mint(self) -> _StubWalletKeypair:
+        self.calls += 1
+        return _StubWalletKeypair(self.chain, self._secret, self._address)
+
+
+def test_wallet_keypair_minters_seal_secrets_in_vault_namespace():
+    vault = StubVaultNamespaceBackend()
+    sol = _StubMinter("solana", secret="sol-sec", address="sol-addr")
+    stl = _StubMinter("stellar", secret="stl-sec", address="stl-addr")
+    p = NamespaceProvisioner(
+        k8s=StubK8sBackend(),
+        vault=vault,
+        organism_db=StubOrganismDbBackend(),
+        wallet_keypair_minters={"solana": sol, "stellar": stl},
+    )
+    tenant = p.provision(darwin_id="abc-1")
+    # Both minters fired exactly once; the namespace holds both secrets.
+    assert sol.calls == 1
+    assert stl.calls == 1
+    secrets = vault.namespaces[tenant.vault_namespace]["secrets"]
+    assert secrets["kv/wallet/solana"] == {
+        "secret": "sol-sec", "address": "sol-addr",
+    }
+    assert secrets["kv/wallet/stellar"] == {
+        "secret": "stl-sec", "address": "stl-addr",
+    }
+    # Addresses (not secrets) are surfaced on the tenant for downstream
+    # use (omnibus.fund_child, parent transfer destinations).
+    assert tenant.wallet_addresses == {
+        "solana": "sol-addr", "stellar": "stl-addr",
+    }
+
+
+def test_wallet_keypair_minters_omitted_keeps_addresses_empty():
+    """Default behaviour without minters: lazy wallet-factory path keeps
+    sole responsibility for keypair provisioning."""
+    p = _build()
+    tenant = p.provision(darwin_id="abc-1")
+    assert tenant.wallet_addresses == {}
+
+
+def test_wallet_keypair_step_audit_includes_addresses_not_secrets():
+    """The audit record should expose the on-chain addresses (safe) but
+    must not include the secrets (which would leak to anywhere the audit
+    sink ships to)."""
+    recorded = []
+    sol = _StubMinter("solana", secret="MUST-NOT-LEAK", address="sol-addr")
+    p = NamespaceProvisioner(
+        k8s=StubK8sBackend(),
+        vault=StubVaultNamespaceBackend(),
+        organism_db=StubOrganismDbBackend(),
+        audit_recorder=lambda actor, action, meta: recorded.append(
+            (actor, action, meta),
+        ),
+        wallet_keypair_minters={"solana": sol},
+    )
+    p.provision(darwin_id="abc-1")
+    provisioned = [r for r in recorded if r[1] == "tenant_provisioned"]
+    assert len(provisioned) == 1
+    meta = provisioned[0][2]
+    assert meta["wallet_addresses"] == {"solana": "sol-addr"}
+    assert "MUST-NOT-LEAK" not in str(meta)
+
+
+def test_wallet_keypair_step_failure_rolls_back_db_vault_k8s():
+    """If the wallet step explodes, the prior three steps must roll back
+    so we don't leak orphan K8s/Vault/DB resources."""
+    k8s = StubK8sBackend()
+    vault = StubVaultNamespaceBackend()
+    db = StubOrganismDbBackend()
+
+    class _BoomMinter:
+        chain = "solana"
+
+        def mint(self):
+            raise RuntimeError("solana RPC down")
+
+    p = NamespaceProvisioner(
+        k8s=k8s, vault=vault, organism_db=db,
+        wallet_keypair_minters={"solana": _BoomMinter()},
+    )
+    with pytest.raises(ProvisioningError, match="wallet_keypair"):
+        p.provision(darwin_id="abc-1")
+    # All three earlier steps were rolled back.
+    assert k8s.deletions
+    assert vault.deletions
+    assert db.dropped
+
+
+def test_wallet_keypair_minter_chain_mismatch_rejected():
+    """A misconfigured factory that pairs a solana minter under the
+    'base' key would silently write Solana-shaped bytes into the base
+    slot — refuse outright."""
+    sol = _StubMinter("solana", "x", "y")
+    p = NamespaceProvisioner(
+        k8s=StubK8sBackend(),
+        vault=StubVaultNamespaceBackend(),
+        organism_db=StubOrganismDbBackend(),
+        wallet_keypair_minters={"base": sol},  # mismatch
+    )
+    with pytest.raises(ProvisioningError, match="declares chain"):
+        p.provision(darwin_id="abc-1")

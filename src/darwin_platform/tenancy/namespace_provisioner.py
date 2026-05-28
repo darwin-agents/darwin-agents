@@ -44,7 +44,13 @@ class TenantNamespaceStatus(str, Enum):
 @dataclass
 class TenantNamespace:
     """A per-Darwin namespace bundle: K8s, Vault, and organism DB
-    handles, all sharing one lifecycle."""
+    handles, all sharing one lifecycle.
+
+    ``wallet_addresses`` is populated when the provisioner is configured
+    with :class:`WalletKeypairMinter` instances — one entry per chain,
+    mapping the chain name to the on-chain address the minted keypair
+    controls. Empty when no minters are configured (lazy wallet-factory
+    provisioning stays the in-process default)."""
 
     darwin_id: str
     k8s_namespace: str
@@ -55,6 +61,7 @@ class TenantNamespace:
     status: TenantNamespaceStatus = TenantNamespaceStatus.PENDING
     created_at: float = 0.0
     last_error: str = ""
+    wallet_addresses: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -68,6 +75,7 @@ class TenantNamespace:
             "status": self.status.value,
             "created_at": self.created_at,
             "last_error": self.last_error,
+            "wallet_addresses": dict(self.wallet_addresses),
             "metadata": dict(self.metadata),
         }
 
@@ -248,12 +256,20 @@ class NamespaceProvisioner:
         organism_db: OrganismDbBackend,
         clock: Callable[[], float] = time.time,
         audit_recorder: Callable[[str, str, dict[str, Any]], None] | None = None,
+        wallet_keypair_minters: dict[str, Any] | None = None,
     ) -> None:
         self._k8s = k8s
         self._vault = vault
         self._db = organism_db
         self._clock = clock
         self._recorder = audit_recorder
+        # Optional per-chain keypair minters (doc 17: per-Darwin self-custodial
+        # wallets). When set, provision() mints a fresh keypair per chain and
+        # seals the secret in the per-Darwin vault namespace. Keys: chain name
+        # ("solana", "stellar", "base"); values: WalletKeypairMinter for that
+        # chain. None keeps the legacy behaviour (no wallet provisioning at
+        # this layer; the lazy wallet-factory path handles it instead).
+        self._wallet_minters: dict[str, Any] = dict(wallet_keypair_minters or {})
         self._tenants: dict[str, TenantNamespace] = {}
 
     def provision(
@@ -308,6 +324,42 @@ class NamespaceProvisioner:
             })
             raise ProvisioningError(f"organism_db step failed: {exc}") from exc
 
+        # Step 4 (optional): per-chain wallet keypair mint + seal. Each
+        # configured chain gets a fresh keypair; the secret + address are
+        # written into the per-Darwin vault namespace at ``kv/wallet/<chain>``.
+        # The address is surfaced on the TenantNamespace so the supervisor
+        # can hand it to omnibus.fund_child or use it as a transfer-out
+        # destination without re-reading the secret.
+        wallet_addresses: dict[str, str] = {}
+        if self._wallet_minters:
+            try:
+                for chain, minter in self._wallet_minters.items():
+                    if getattr(minter, "chain", None) != chain:
+                        raise ProvisioningError(
+                            f"minter for {chain!r} declares chain "
+                            f"{getattr(minter, 'chain', None)!r}",
+                        )
+                    kp = minter.mint()
+                    self._vault.write_secret(
+                        namespace=vault_ns,
+                        path=f"kv/wallet/{chain}",
+                        value={"secret": kp.secret, "address": kp.address},
+                    )
+                    wallet_addresses[chain] = kp.address
+            except Exception as exc:
+                self._safe(lambda: self._vault.delete_namespace(namespace=vault_ns))
+                self._safe(lambda: self._db.drop_database(
+                    database_name=db_name, role_name=db_role,
+                ))
+                self._safe(lambda: self._k8s.delete_namespace(namespace=ns))
+                self._audit("tenant_provision_failed", actor, {
+                    "darwin_id": darwin_id, "step": "wallet_keypair",
+                    "reason": str(exc),
+                })
+                raise ProvisioningError(
+                    f"wallet_keypair step failed: {exc}"
+                ) from exc
+
         tenant = TenantNamespace(
             darwin_id=darwin_id,
             k8s_namespace=ns,
@@ -317,6 +369,7 @@ class NamespaceProvisioner:
             organism_db_connection_ref=connection_ref,
             status=TenantNamespaceStatus.READY,
             created_at=self._clock(),
+            wallet_addresses=wallet_addresses,
             metadata={
                 "approle_role_id": approle["role_id"],
                 # secret_id intentionally NOT recorded here — caller
@@ -330,6 +383,10 @@ class NamespaceProvisioner:
             "k8s_namespace": ns,
             "vault_namespace": vault_ns,
             "organism_db_name": db_name,
+            # Addresses (not secrets) are safe to include in the audit
+            # record so the operator timeline shows which chain wallet
+            # each Darwin owns.
+            "wallet_addresses": dict(wallet_addresses),
         })
         return tenant
 
