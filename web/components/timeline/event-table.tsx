@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, dedupeEvents } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
@@ -15,59 +15,104 @@ const PAGE_SIZE = 100;
 const CATEGORY_FILTERS = [
   "all",
   "orchestrator",
-  "neuron_dispatch",
-  "llm_call",
+  "neuron",
+  "llm",
   "payment",
   "escalation",
   "mutation",
   "reproduction",
-  "owner_action",
+  "owner",
   "platform",
   "death",
 ] as const;
 type CategoryFilter = (typeof CATEGORY_FILTERS)[number];
 
+/**
+ * Newest-first event feed. First page comes from
+ * `GET /events?limit=N` (head); polling uses `?since=` to fetch only
+ * deltas, eliminating the page-0 re-download. Older pages load on demand
+ * via `?cursor=`.
+ */
 export function EventTable({ darwinId }: { darwinId: string }) {
-  const [offset, setOffset] = useState(0);
   const [category, setCategory] = useState<CategoryFilter>("all");
-  // Cumulative window — newest-first. Polled page-0 results are merged in.
   const [window, setWindow] = useState<DarwinEvent[]>([]);
+  const headSeqRef = useRef<number | undefined>(undefined);
+  const tailSeqRef = useRef<number | undefined>(undefined);
+  const [oldestLoading, setOldestLoading] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(true);
 
+  // Initial head fetch — newest-first, no cursor.
   const head = useQuery({
     queryKey: queryKeys.events(darwinId, 0),
-    queryFn: () => api.events(darwinId, { limit: PAGE_SIZE, offset: 0 }),
+    queryFn: () => api.events(darwinId, { limit: PAGE_SIZE }),
+  });
+
+  useEffect(() => {
+    const evs = head.data?.events ?? [];
+    if (evs.length === 0) return;
+    setWindow((prev) => dedupeEvents([...evs, ...prev]));
+    headSeqRef.current = Math.max(...evs.map((e) => (e as DarwinEvent).seq ?? 0));
+    tailSeqRef.current = Math.min(...evs.map((e) => (e as DarwinEvent).seq ?? Infinity));
+  }, [head.data]);
+
+  // Tail-cursor polling — only events newer than the head we've seen.
+  useQuery({
+    queryKey: ["darwin", darwinId, "events", "since", headSeqRef.current ?? -1] as const,
+    enabled: !!head.data && headSeqRef.current !== undefined,
+    queryFn: async () => {
+      const res = await api.events(darwinId, {
+        since: headSeqRef.current!,
+        limit: PAGE_SIZE,
+      });
+      const evs = res.events ?? [];
+      if (evs.length > 0) {
+        setWindow((prev) => dedupeEvents([...evs.slice().reverse(), ...prev]));
+        headSeqRef.current = Math.max(
+          headSeqRef.current ?? 0,
+          ...evs.map((e) => (e as DarwinEvent).seq ?? 0),
+        );
+      }
+      return res;
+    },
     refetchInterval: () =>
       typeof document !== "undefined" && document.visibilityState === "visible" ? 3000 : false,
   });
 
-  const older = useQuery({
-    queryKey: queryKeys.events(darwinId, offset),
-    queryFn: () => api.events(darwinId, { limit: PAGE_SIZE, offset }),
-    enabled: offset > 0,
-  });
-
-  // Merge polled head + paged older into a single deduped window.
-  useEffect(() => {
-    setWindow((prev) => {
-      const incoming = [
-        ...(head.data?.events ?? []),
-        ...(older.data?.events ?? []),
-        ...prev,
-      ];
-      return dedupeEvents(incoming);
-    });
-  }, [head.data, older.data]);
-
   const filtered = useMemo(() => {
     if (category === "all") return window;
     return window.filter((ev) => {
-      const raw = String(ev.category ?? ev.type ?? "").toLowerCase();
+      const raw = String(ev.kind ?? ev.category ?? ev.type ?? "").toLowerCase();
       return raw.includes(category);
     });
   }, [window, category]);
 
   const total = head.data?.total ?? 0;
-  const hasMore = window.length < total;
+
+  const loadOlder = async () => {
+    if (tailSeqRef.current === undefined || oldestLoading) return;
+    setOldestLoading(true);
+    try {
+      const res = await api.events(darwinId, {
+        cursor: tailSeqRef.current,
+        limit: PAGE_SIZE,
+      });
+      const evs = res.events ?? [];
+      if (evs.length === 0) {
+        setHasMoreOlder(false);
+        return;
+      }
+      setWindow((prev) => dedupeEvents([...prev, ...evs]));
+      tailSeqRef.current = Math.min(
+        tailSeqRef.current ?? Infinity,
+        ...evs.map((e) => (e as DarwinEvent).seq ?? Infinity),
+      );
+      if (res.next_cursor === null || res.next_cursor === undefined) {
+        setHasMoreOlder(false);
+      }
+    } finally {
+      setOldestLoading(false);
+    }
+  };
 
   return (
     <Card>
@@ -75,7 +120,7 @@ export function EventTable({ darwinId }: { darwinId: string }) {
         <div>
           <CardTitle>Timeline</CardTitle>
           <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
-            {window.length} of {total} events · 3s poll
+            {window.length} of {total} events · 3s tail poll
           </p>
         </div>
       </CardHeader>
@@ -110,20 +155,15 @@ export function EventTable({ darwinId }: { darwinId: string }) {
         ) : (
           <div>
             {filtered.map((ev) => (
-              <EventRow key={ev.event_id} ev={ev} />
+              <EventRow key={ev.seq ?? ev.event_id ?? ev.hash} ev={ev} />
             ))}
           </div>
         )}
 
-        {hasMore && (
+        {hasMoreOlder && (
           <div className="flex justify-center border-t border-[var(--color-border)] p-3">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={older.isLoading}
-              onClick={() => setOffset(window.length)}
-            >
-              {older.isLoading ? "Loading…" : "Load older"}
+            <Button variant="outline" size="sm" disabled={oldestLoading} onClick={loadOlder}>
+              {oldestLoading ? "Loading…" : "Load older"}
             </Button>
           </div>
         )}
