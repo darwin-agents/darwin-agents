@@ -33,7 +33,12 @@ from darwin_platform.runtime.supervisor import Supervisor
 
 
 def _serve_args(*extra: str):
-    return build_parser().parse_args(["serve", *extra])
+    # The CLI's --wallet-provider default is "cdp" (step 2), which requires
+    # CDP credentials and sys.exit(2)s without them. Tests in this file are
+    # not exercising wallet behaviour, so pin to the shared-key path so a
+    # bare `serve` parses cleanly. Tests that need a different provider
+    # pass --wallet-provider in `extra` (argparse keeps the last value).
+    return build_parser().parse_args(["serve", "--wallet-provider", "web3", *extra])
 
 
 # ---------------------------------------------------------------------------

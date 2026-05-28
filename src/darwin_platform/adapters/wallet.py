@@ -439,17 +439,25 @@ class RealWallet:
         every Darwin's wallet."""
         self._sanctions = screener
 
-    def transfer_out_for_child(self, amount_usdc: float) -> None:
-        """The platform's omnibus move of the parent's surplus to a child
-        wallet. Real impls submit a USDC transfer to the child's address;
-        the ChainClient resolves the destination once the platform
-        spawned the child wallet."""
+    def transfer_out_for_child(
+        self, amount_usdc: float, *, destination: str = "platform.omnibus",
+    ) -> None:
+        """The platform's omnibus move of the parent's surplus on
+        reproduction. Submits a USDC transfer to ``destination`` — the
+        platform's omnibus wallet address (the supervisor injects it when
+        an :class:`OmnibusWallet` is wired) or a symbolic fallback used
+        only by unit tests that don't care where the bytes land.
+
+        The omnibus's :meth:`OmnibusWallet.fund_child` is the second leg
+        that moves the funds from omnibus → child's address, attributed
+        to the owning user. That call lives in the supervisor's spawn
+        observation flow, not here."""
         amount = float(amount_usdc)
         if amount > self._chain.balance_usdc() + 1e-9:
             raise WalletError("reproduction budget exceeds on-chain balance")
         try:
             self._chain.transfer(
-                to="child.wallet",  # symbolic; real impl knows the address
+                to=destination,
                 amount_usdc=amount,
                 memo="reproduction:omnibus_transfer",
             )
@@ -459,6 +467,8 @@ class RealWallet:
             ) from exc
         self.ledger.append(
             {"reproduction_transfer": {
-                "amount_usdc": amount, "ts": float(self._clock()),
+                "amount_usdc": amount,
+                "destination": destination,
+                "ts": float(self._clock()),
             }}
         )

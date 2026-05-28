@@ -246,6 +246,9 @@ def test_transfer_out_for_child_submits_real_transfer():
     rows = [mv for mv in w.movements() if "reproduction_transfer" in mv]
     assert len(rows) == 1
     assert rows[0]["reproduction_transfer"]["amount_usdc"] == pytest.approx(25.0)
+    # Default destination is the platform omnibus symbol.
+    assert chain.transfers[0]["to"] == "platform.omnibus"
+    assert rows[0]["reproduction_transfer"]["destination"] == "platform.omnibus"
 
 
 def test_transfer_out_for_child_chain_failure_propagates():
@@ -254,6 +257,18 @@ def test_transfer_out_for_child_chain_failure_propagates():
     with pytest.raises(WalletError, match="reproduction transfer failed"):
         w.transfer_out_for_child(25.0)
     assert chain.balance == pytest.approx(100.0)
+
+
+def test_transfer_out_for_child_honours_explicit_destination():
+    """The supervisor injects the real omnibus address (or a per-Darwin
+    child address in a direct-transfer mode) — verify the wallet uses
+    whatever caller hands it instead of the symbolic default."""
+    chain = _StubChain(balance=100.0)
+    w = RealWallet(chain, clock=_vclock())
+    w.transfer_out_for_child(25.0, destination="0xOmnibusAddr")
+    assert chain.transfers[0]["to"] == "0xOmnibusAddr"
+    rows = [mv for mv in w.movements() if "reproduction_transfer" in mv]
+    assert rows[0]["reproduction_transfer"]["destination"] == "0xOmnibusAddr"
 
 
 # -- supervisor swap-in: RealWallet works as the genome's WalletPort -----

@@ -184,7 +184,7 @@ async def test_supervisor_wallet_factory_replaces_fake():
 
     stub = _StubWallet()
 
-    def wallet_factory(clock):
+    def wallet_factory(darwin_id, clock, vault):
         return stub
 
     sup = Supervisor(wallet_factory=wallet_factory)
@@ -292,7 +292,7 @@ async def test_supervisor_all_factories_together():
     s = _StubSandbox()
 
     sup = Supervisor(
-        wallet_factory=lambda clock: w,
+        wallet_factory=lambda darwin_id, clock, vault: w,
         vault_factory=lambda: v,
         browser_factory=lambda wallet: b,
         x402_factory=lambda wallet: x,
@@ -419,6 +419,92 @@ def test_cli_parse_serve_real_flags():
     assert args.vault_mount == "darwin"
     assert args.browserbase_api_key == "bb-123"
     assert args.e2b_api_key == "e2b-xyz"
+
+
+# ---------------------------------------------------------------------------
+# 7b. --wallet-provider default + mainnet safety
+# ---------------------------------------------------------------------------
+
+def test_cli_default_wallet_provider_is_cdp():
+    """Step 2 default change: 'cdp' is the production-safe default. The
+    shared-key 'web3' path stays available as an opt-in escape hatch."""
+    from darwin_platform.__main__ import build_parser
+    args = build_parser().parse_args(["serve"])
+    assert args.wallet_provider == "cdp"
+
+
+def test_web3_refuses_base_mainnet_rpc():
+    """A single shared key against base-mainnet would let any spawned
+    Darwin spend the fleet treasury — refuse outright."""
+    from darwin_platform.__main__ import _build_real_factories
+
+    args = _make_args(
+        wallet_provider="web3",
+        rpc_url="https://mainnet.base.org",
+        wallet_key="0xdeadbeef",
+        chain_networks="base",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _build_real_factories(args)
+    assert exc_info.value.code == 2
+
+
+def test_web3_refuses_solana_mainnet_rpc():
+    from darwin_platform.__main__ import _build_real_factories
+
+    args = _make_args(
+        wallet_provider="web3",
+        solana_rpc_url="https://api.mainnet-beta.solana.com",
+        solana_wallet_key="deadbeef",
+        chain_networks="solana",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _build_real_factories(args)
+    assert exc_info.value.code == 2
+
+
+def test_web3_refuses_stellar_public_horizon():
+    """horizon.stellar.org is Stellar mainnet — the hostname doesn't
+    contain 'mainnet' so the substring check needs the explicit branch."""
+    from darwin_platform.__main__ import _build_real_factories
+
+    args = _make_args(
+        wallet_provider="web3",
+        stellar_horizon_url="https://horizon.stellar.org",
+        stellar_secret="SXYZ",
+        chain_networks="stellar",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _build_real_factories(args)
+    assert exc_info.value.code == 2
+
+
+def test_web3_accepts_testnet_rpcs():
+    """Testnet URLs are the supported path for --wallet-provider web3."""
+    from darwin_platform.__main__ import _build_real_factories
+
+    args = _make_args(
+        wallet_provider="web3",
+        rpc_url="https://sepolia.base.org",
+        wallet_key="0xdeadbeef",
+        chain_networks="base",
+    )
+    result = _build_real_factories(args)
+    assert "wallet_factory" in result
+
+
+def test_local_vault_not_subject_to_web3_mainnet_refusal():
+    """The mainnet refusal is specific to the shared-key path. local-vault
+    mints a per-Darwin keypair so the same RPC is safe."""
+    from darwin_platform.__main__ import _build_real_factories
+
+    args = _make_args(
+        wallet_provider="local-vault",
+        rpc_url="https://mainnet.base.org",
+        chain_networks="base",
+    )
+    result = _build_real_factories(args)
+    assert "wallet_factory" in result
 
 
 # ---------------------------------------------------------------------------

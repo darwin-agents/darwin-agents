@@ -52,6 +52,76 @@ serve-postgres: install-serve ## Run supervisor against POSTGRES_DSN
 	test -n "$(POSTGRES_DSN)"
 	$(UV) run darwin-platform serve --db "$(POSTGRES_DSN)" $(CORS_FLAGS)
 
+# --- Real (skin-in-the-game) -------------------------------------------------
+# `make real` is the end-to-end Stage-1 recipe: preflight env, then boot the
+# platform against real LLM keys + CDP wallet + Browserbase + E2B. Defaults
+# to testnet (Base Sepolia); pass NETWORK=mainnet for production.
+#
+# Env vars are loaded from .env automatically. Override DB / TOKENS via
+# CLI: `make real TOKENS=path/to/tokens.json DB=prod.db NETWORK=mainnet`.
+
+REAL_TOKENS  ?= tokens.json
+REAL_NETWORK ?= testnet
+REAL_OPENING_USDC ?= 1.0
+
+# Build the list of real-adapter flags. The CLI gracefully falls back to a
+# fake when a flag is omitted; we pass them explicitly so a missing env var
+# fails LOUD instead of silently using a fake in a "real" boot.
+REAL_FLAGS = \
+  --wallet-provider cdp \
+  --browser-provider browserbase \
+  $(if $(filter mainnet,$(REAL_NETWORK)),--cdp-mainnet,) \
+  $(if $(DARWIN_VAULT_URL),--vault-url $(DARWIN_VAULT_URL),) \
+  $(if $(DARWIN_VAULT_TOKEN),--vault-token $(DARWIN_VAULT_TOKEN),) \
+  $(if $(DARWIN_SANCTIONS_API_KEY),--sanctions-provider chainalysis --sanctions-api-key $(DARWIN_SANCTIONS_API_KEY),) \
+  $(if $(STRIPE_API_KEY),--fiat-provider stripe,) \
+  $(if $(DARWIN_KYC_PERSONA_API_KEY),--kyc-provider persona --kyc-persona-api-key $(DARWIN_KYC_PERSONA_API_KEY),) \
+  $(if $(DARWIN_LITELLM_URL),--litellm-url $(DARWIN_LITELLM_URL) --litellm-master-key $(DARWIN_LITELLM_MASTER_KEY),) \
+  $(if $(OTEL_EXPORTER_OTLP_ENDPOINT),--otlp-endpoint $(OTEL_EXPORTER_OTLP_ENDPOINT),) \
+  $(if $(DARWIN_ESCALATION_WEBHOOK_URL),--escalation-webhook-url $(DARWIN_ESCALATION_WEBHOOK_URL),) \
+  $(if $(DARWIN_ALERT_WEBHOOK_URL),--alert-webhook-url $(DARWIN_ALERT_WEBHOOK_URL),) \
+  $(if $(DARWIN_SLACK_WEBHOOK_URL),--slack-webhook-url $(DARWIN_SLACK_WEBHOOK_URL),) \
+  $(if $(DARWIN_PAGERDUTY_ROUTING_KEY),--pagerduty-routing-key $(DARWIN_PAGERDUTY_ROUTING_KEY),)
+# Note: E2B is picked up via E2B_API_KEY in the environment (no CLI flag).
+# Browserbase reads BROWSERBASE_URL + BROWSERBASE_API_KEY from env when the
+# --browser-provider flag is set above.
+
+.PHONY: real real-preflight real-serve real-checklist real-spawn
+real: real-preflight real-serve ## Preflight + boot platform against real LLM/wallet/browser/sandbox
+
+real-preflight: ## Validate .env has the credentials a real boot needs
+	@test -f .env || { echo "missing .env — run: cp .env.example .env && edit it" >&2; exit 1; }
+	@set -a; . ./.env; set +a; \
+	  scripts/real_preflight.sh --network $(REAL_NETWORK) --tokens $(REAL_TOKENS)
+
+real-serve: install-serve ## Boot platform against real adapters (after preflight)
+	@test -f .env  || { echo "missing .env" >&2; exit 1; }
+	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS); run: make real-preflight" >&2; exit 1; }
+	set -a; . ./.env; set +a; \
+	  $(UV) run darwin-platform serve \
+	    --db $(DB) \
+	    --auth-tokens $(REAL_TOKENS) \
+	    --heartbeat-seconds 5 \
+	    $(CORS_FLAGS) \
+	    $(REAL_FLAGS)
+
+real-checklist: ## Smoke test the running platform (the 3 pre-mainnet items)
+	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS)" >&2; exit 1; }
+	@TOKEN=$$(python -c "import json,sys;d=json.load(open('$(REAL_TOKENS)'));print(d['tokens'][0]['token'])"); \
+	$(UV) run python scripts/real_checklist.py \
+	  --url http://127.0.0.1:8000 \
+	  --token "$$TOKEN" \
+	  --opening-usdc $(REAL_OPENING_USDC)
+
+real-spawn: ## Spawn one Darwin against the running platform (uses first token)
+	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS)" >&2; exit 1; }
+	@TOKEN=$$(python -c "import json,sys;d=json.load(open('$(REAL_TOKENS)'));print(d['tokens'][0]['token'])"); \
+	curl -sS -X POST http://127.0.0.1:8000/darwins \
+	  -H "Authorization: Bearer $$TOKEN" \
+	  -H "Content-Type: application/json" \
+	  -H "Idempotency-Key: spawn-$$(date +%s)" \
+	  -d '{"opening_usdc": $(REAL_OPENING_USDC), "escalation_auto": "approve"}' | python -m json.tool
+
 # --- Docker Compose stack -----------------------------------------------------
 
 .PHONY: docker-env docker-up docker-down docker-logs docker-build docker-ps

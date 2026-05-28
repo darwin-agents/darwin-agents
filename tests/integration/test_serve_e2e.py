@@ -104,6 +104,16 @@ class _Server:
             sys.executable, "-m", "darwin_platform", "serve",
             "--host", "127.0.0.1", "--port", str(self.port),
             "--log-level", "info",
+            # E2E tests assert tick advancement within ~15 s. The CLI
+            # default is 5 s (production cadence), which doesn't fit.
+            # Override to a fast cadence so the lifespan + drive loop
+            # exercise themselves without burning the wall-clock budget.
+            "--heartbeat-seconds", "0.01",
+            # The CLI's --wallet-provider default is "cdp" which requires
+            # CDP credentials and sys.exit(2)s without them. The e2e tests
+            # don't exercise wallet behaviour, so pin to the shared-key
+            # path; with no DARWIN_WALLET_KEY env it falls back to FakeWallet.
+            "--wallet-provider", "web3",
         ]
         if self.db is not None:
             cmd += ["--db", self.db]

@@ -66,9 +66,13 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     """
     factories: dict = {}
 
-    # -- wallet provider: web3 (raw key) or cdp (Coinbase TEE) -------------
+    # -- wallet provider: cdp (default), local-vault, or web3 --------------
     # CDP is a complete wallet — when selected it provides wallet_factory
-    # and the multi-chain web3 block below is skipped.
+    # and the multi-chain web3 block below is skipped. The argparse layer
+    # defaults to "cdp"; the "web3" fallback here is for internal callers
+    # (orchestrator pod, tests) that build a Namespace by hand and keep the
+    # legacy shared-key behaviour. Don't change this fallback without also
+    # giving the orchestrator a --wallet-provider flag to forward.
     wallet_provider = getattr(args, "wallet_provider", "web3")
     if wallet_provider == "cdp":
         cdp_id = getattr(args, "cdp_api_key_id", None) or os.environ.get(
@@ -94,15 +98,20 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
         )
 
         def _cdp_wallet_factory(
-            clock, *, _id=cdp_id, _secret=cdp_secret,
+            darwin_id, clock, vault, *, _id=cdp_id, _secret=cdp_secret,
             _ws=cdp_wallet_secret, _net=cdp_network,
         ):
+            # vault is unused — CDP holds the key in its TEE; nothing to seal.
             from .adapters.coinbase_cdp import build_cdp_chain_client
             from .adapters.wallet import RealWallet
 
+            # Per-Darwin CDP account: each spawn gets its own TEE-held wallet.
+            # ``get_or_create_account`` is idempotent on the name, so resume
+            # re-binds to the same on-chain account.
             chain = build_cdp_chain_client(
                 api_key_id=_id, api_key_secret=_secret,
                 wallet_secret=_ws, network=_net,
+                account_name=f"darwin-{darwin_id}",
             )
             return RealWallet(chain=chain, clock=clock, network=_net)
 
@@ -131,9 +140,41 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     have_solana = bool(solana_rpc and solana_key) and "solana" in chain_networks
     have_stellar = bool(stellar_horizon and stellar_secret) and "stellar" in chain_networks
     enabled_count = sum([have_base, have_solana, have_stellar])
-    if wallet_provider != "cdp" and enabled_count > 0:
+    if wallet_provider not in ("cdp", "local-vault") and enabled_count > 0:
+        # Mainnet refusal: a single shared key is a testnet shortcut.
+        # Refuse to start if any configured RPC URL looks like mainnet, so
+        # an accidental ``--rpc-url https://mainnet...`` can't sign real
+        # money with a fleet-shared key. Operator must opt into cdp or
+        # local-vault for mainnet.
+        mainnet_hits = [
+            (label, url) for label, url in (
+                ("--rpc-url", rpc_url if have_base else None),
+                ("--solana-rpc-url", solana_rpc if have_solana else None),
+                ("--stellar-horizon-url", stellar_horizon if have_stellar else None),
+            )
+            if url and "mainnet" in url.lower()
+        ]
+        # horizon.stellar.org is Stellar mainnet too — the substring "mainnet"
+        # doesn't appear in the hostname, so check it explicitly.
+        if have_stellar and stellar_horizon and (
+            "horizon.stellar.org" in stellar_horizon.lower()
+        ):
+            mainnet_hits.append(("--stellar-horizon-url", stellar_horizon))
+        if mainnet_hits:
+            for label, url in mainnet_hits:
+                print(
+                    f"--wallet-provider web3 refuses mainnet RPC {label}={url} "
+                    f"— a shared key on mainnet is unsafe. Use "
+                    f"--wallet-provider cdp or local-vault instead.",
+                    file=sys.stderr,
+                )
+            sys.exit(2)
+        # Shared-key path: a single private key from the platform env signs
+        # for every Darwin. ``darwin_id`` and ``vault`` are unused here.
+        # The local-vault provider below replaces this with per-Darwin
+        # keypairs minted on spawn and sealed in the per-Darwin vault.
         def _wallet_factory(
-            clock, *,
+            darwin_id, clock, vault, *,
             _have_base=have_base, _rpc=rpc_url, _key=wallet_key,
             _usdc=args.usdc_contract,
             _have_solana=have_solana, _solana_rpc=solana_rpc,
@@ -197,6 +238,103 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 chain = next(iter(clients.values()))
             return RealWallet(chain=chain, clock=clock)
         factories["wallet_factory"] = _wallet_factory
+
+    # -- wallet (local-vault: per-Darwin minted keypair sealed in vault) ----
+    # The factory mints once and reads after — no platform-level secret is
+    # required, only the chain's RPC URL. Each Darwin gets an isolated
+    # address; reproduction transfers settle to the child's address.
+    if wallet_provider == "local-vault":
+        local_chains = [
+            n for n in chain_networks if n in ("base", "solana", "stellar")
+        ]
+        if not local_chains:
+            print(
+                "--wallet-provider local-vault requires --chain-networks "
+                "with at least one of base/solana/stellar",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        rpc_map = {"base": rpc_url, "solana": solana_rpc, "stellar": stellar_horizon}
+        missing = [c for c in local_chains if not rpc_map.get(c)]
+        if missing:
+            print(
+                f"--wallet-provider local-vault: missing RPC URL for "
+                f"{', '.join(missing)}. Set the matching --rpc-url / "
+                f"--solana-rpc-url / --stellar-horizon-url (or env var).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        def _local_vault_wallet_factory(
+            darwin_id, clock, vault, *,
+            _chains=tuple(local_chains),
+            _base_rpc=rpc_url, _usdc=args.usdc_contract,
+            _solana_rpc=solana_rpc,
+            _stellar_horizon=stellar_horizon,
+        ):
+            from .adapters.wallet import RealWallet
+            from .adapters.wallet_keypair import (
+                EvmKeypairMinter,
+                SolanaKeypairMinter,
+                StellarKeypairMinter,
+                ensure_keypair,
+            )
+
+            minters = {
+                "base": EvmKeypairMinter(),
+                "solana": SolanaKeypairMinter(),
+                "stellar": StellarKeypairMinter(),
+            }
+
+            clients: dict = {}
+            for chain_name in _chains:
+                kp = ensure_keypair(
+                    vault, chain=chain_name, minter=minters[chain_name],
+                )
+                if chain_name == "base":
+                    from .adapters.multichain import ChainNetwork
+                    from .adapters.web3_chain import Web3ChainClient
+                    kwargs = dict(rpc_url=_base_rpc, private_key=kp.secret)
+                    if _usdc:
+                        kwargs["usdc_contract"] = _usdc
+                    clients[ChainNetwork.BASE] = Web3ChainClient(**kwargs)
+                elif chain_name == "solana":
+                    from .adapters.multichain import ChainNetwork
+                    from .adapters.solana_sdk import build_solana_chain_client
+                    cluster = "mainnet" if "mainnet" in (
+                        _solana_rpc or ""
+                    ).lower() else "devnet"
+                    clients[ChainNetwork.SOLANA] = build_solana_chain_client(
+                        rpc_url=_solana_rpc,
+                        private_key_hex=kp.secret,
+                        cluster=cluster,
+                    )
+                elif chain_name == "stellar":
+                    from .adapters.multichain import ChainNetwork
+                    from .adapters.stellar_sdk import build_stellar_chain_client
+                    network = "public" if (
+                        "horizon.stellar.org" in (_stellar_horizon or "").lower()
+                    ) else "testnet"
+                    clients[ChainNetwork.STELLAR] = build_stellar_chain_client(
+                        horizon_url=_stellar_horizon,
+                        secret=kp.secret,
+                        network=network,
+                    )
+
+            if len(clients) > 1:
+                from .adapters.multichain import ChainNetwork, MultiChainRouter
+                preferred = [
+                    ChainNetwork(n) for n in _chains
+                    if ChainNetwork(n) in clients
+                ]
+                chain_client = MultiChainRouter(
+                    clients=clients, preferred=preferred,
+                )
+            else:
+                chain_client = next(iter(clients.values()))
+            return RealWallet(chain=chain_client, clock=clock)
+
+        factories["wallet_factory"] = _local_vault_wallet_factory
 
     # -- vault (doc 16: HvacVaultClient → RealVaultBackend) -----------------
     vault_url = args.vault_url or os.environ.get("DARWIN_VAULT_URL")
@@ -923,12 +1061,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", default=8000, type=int, help="Bind port (default: 8000)",
     )
     serve.add_argument(
-        "--heartbeat-seconds", default=None, type=float,
+        "--heartbeat-seconds", default=5.0, type=float,
         help=(
-            "Gap between per-Darwin heartbeats (default: 0.001 — as fast "
-            "as the event loop allows). Set to a realistic value "
-            "(e.g. 600) for a soak test so the audit log grows at a "
-            "production pace."
+            "Gap between per-Darwin heartbeats (default: 5.0). The supervisor "
+            "library default is 0.001 (tuned for fast tests); ``serve`` overrides "
+            "to a production-shaped pace so the audit chain doesn't bloat by "
+            "millions of records per hour and the spread-spend monitor's "
+            "production thresholds make sense in a sim. Drop to 0.001 for a "
+            "soak; raise to 60+ to match a slower real-world cadence."
         ),
     )
     serve.add_argument(
@@ -1043,9 +1183,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stellar account secret. Env: DARWIN_STELLAR_SECRET",
     )
     wallet_group.add_argument(
-        "--wallet-provider", default="web3", choices=["web3", "cdp"],
-        help="Wallet backend: 'web3' (raw private key, default) or 'cdp' "
-             "(Coinbase CDP — non-custodial, key in Coinbase's TEE).",
+        "--wallet-provider", default="cdp",
+        choices=["web3", "cdp", "local-vault"],
+        help="Wallet backend (default: cdp). 'cdp' (Coinbase CDP, "
+             "non-custodial, per-Darwin TEE-held key — production default); "
+             "'local-vault' (per-Darwin keypair minted on spawn and sealed "
+             "in the per-Darwin vault — self-custodial for chains CDP "
+             "doesn't cover); 'web3' (single shared private key from env — "
+             "testnet dev shortcut; refuses mainnet RPC URLs).",
     )
     wallet_group.add_argument(
         "--cdp-api-key-id", default=None, metavar="ID",
