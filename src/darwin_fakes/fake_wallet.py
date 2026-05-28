@@ -23,6 +23,15 @@ class FakeWallet:
     def __init__(self, *, opening_usdc: float, clock):
         self._balance = float(opening_usdc)
         self._clock = clock
+        # Synthetic, stable per-instance on-chain address. The 90-day sim
+        # and unit tests don't talk to a real chain; the supervisor's
+        # reproduction-relay helper still needs each Darwin's wallet to
+        # surface SOMETHING address-shaped so the parent → omnibus → child
+        # second leg can route to a distinct destination per child.
+        # Real wallets (RealWallet via ChainClient) override this with the
+        # actual on-chain address.
+        import secrets
+        self._address = f"fake-wallet-{secrets.token_hex(8)}"
         self._spent_today = 0.0
         self._spent_lifetime = 0.0
         self._today = self._day()
@@ -66,6 +75,10 @@ class FakeWallet:
     # -- WalletPort (read) -------------------------------------------------
     def balance_usdc(self) -> float:
         return round(self._balance, 6)
+
+    def address(self) -> str:
+        """Synthetic per-instance address; see __init__ for rationale."""
+        return self._address
 
     def movements(self) -> list[dict]:
         """The authoritative movement feed the genome's ledger journals and

@@ -248,3 +248,65 @@ def test_reconcile_balanced_after_deposit_and_fund():
     assert r.balances.on_chain_omnibus == pytest.approx(9_960.0)
     assert r.balances.lifetime_deposits == pytest.approx(100.0)
     assert r.balances.sum_of_darwin_wallets == pytest.approx(40.0)
+
+
+# ---------------------------------------------------------------------------
+# relay_reproduction — second leg of parent → omnibus → child
+# ---------------------------------------------------------------------------
+
+def test_relay_reproduction_submits_chain_transfer_to_child_address():
+    chain = _Chain(balance=10_000.0)
+    w = OmnibusWallet(chain, clock=_clock())
+    entry = w.relay_reproduction(
+        parent_id="p-1", child_id="c-1",
+        child_address="0xchild", amount_usdc=25.0,
+    )
+    assert chain.transfers[-1]["to"] == "0xchild"
+    assert chain.transfers[-1]["amount_usdc"] == pytest.approx(25.0)
+    assert entry.kind is OmnibusEntryKind.RELAY_REPRODUCTION
+    assert entry.counterparty == "c-1"
+    assert entry.metadata == {
+        "parent_id": "p-1", "child_id": "c-1", "child_address": "0xchild",
+    }
+
+
+def test_relay_reproduction_does_not_touch_user_credits():
+    """The parent's transfer_out_for_child sent on-chain bytes from the
+    parent's wallet, not a user deposit. Relaying them on must NOT debit
+    a user — that would double-count if the user had any credit balance."""
+    chain = _Chain(balance=10_000.0)
+    w = OmnibusWallet(chain, clock=_clock())
+    w.record_deposit(user_subject="alice", amount_usdc=100.0, source_ref="x")
+    before = w.user_credit("alice")
+    w.relay_reproduction(
+        parent_id="p-1", child_id="c-1",
+        child_address="0xchild", amount_usdc=25.0,
+    )
+    assert w.user_credit("alice") == before
+
+
+def test_relay_reproduction_refuses_empty_child_address():
+    w = OmnibusWallet(_Chain(), clock=_clock())
+    with pytest.raises(OmnibusError, match="child_address"):
+        w.relay_reproduction(
+            parent_id="p", child_id="c", child_address="", amount_usdc=1.0,
+        )
+
+
+def test_relay_reproduction_refuses_insufficient_balance():
+    w = OmnibusWallet(_Chain(balance=5.0), clock=_clock())
+    with pytest.raises(OmnibusError, match="insufficient"):
+        w.relay_reproduction(
+            parent_id="p", child_id="c", child_address="0xchild",
+            amount_usdc=10.0,
+        )
+
+
+def test_relay_reproduction_chain_failure_propagates():
+    chain = _Chain(balance=100.0, fail_next=True)
+    w = OmnibusWallet(chain, clock=_clock())
+    with pytest.raises(OmnibusError, match="reproduction relay chain transfer"):
+        w.relay_reproduction(
+            parent_id="p", child_id="c", child_address="0xchild",
+            amount_usdc=10.0,
+        )

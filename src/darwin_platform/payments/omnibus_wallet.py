@@ -43,6 +43,12 @@ class OmnibusEntryKind(str, Enum):
     WITHDRAW_USER = "withdraw_user"  # outgoing to user's external wallet
     PLATFORM_REVENUE = "platform_revenue"  # carved off harvests + markup
     ADJUSTMENT = "adjustment"     # manual correction (audit-logged)
+    # Reproduction relay: parent's transfer_out_for_child sends the
+    # surplus to the omnibus address; this second leg relays it to the
+    # newly-spawned child's own address. Distinct from FUND_CHILD because
+    # the source is the parent's wallet (already on-chain), not a user's
+    # credit balance — so user_credits is NOT touched.
+    RELAY_REPRODUCTION = "relay_reproduction"
 
 
 @dataclass(frozen=True)
@@ -266,6 +272,51 @@ class OmnibusWallet:
                       "to_address": to_address},
         ))
         return entry
+
+    def relay_reproduction(
+        self, *,
+        parent_id: str,
+        child_id: str,
+        child_address: str,
+        amount_usdc: float,
+        actor: str = "platform.supervisor",
+    ) -> OmnibusEntry:
+        """Second leg of the reproduction transfer: relay the parent's
+        surplus from the omnibus address (where the parent's
+        ``transfer_out_for_child`` deposited it) to the newly-spawned
+        child's on-chain address. Does NOT touch ``user_credits`` —
+        the funds came from the parent's wallet, not a user deposit, so
+        the omnibus's user-attributed books are unchanged. Refuses on
+        insufficient on-chain balance and sanctions-screens the
+        recipient just like ``fund_child``."""
+        amount = _require_positive(amount_usdc, "reproduction relay amount")
+        if not child_address:
+            raise OmnibusError("relay_reproduction requires child_address")
+        if amount > self.balance_usdc() + 1e-9:
+            raise OmnibusError(
+                f"omnibus balance ${self.balance_usdc():.4f} insufficient "
+                f"for ${amount:.4f} reproduction relay",
+            )
+        self._screen(child_address)
+        try:
+            tx = self._chain.transfer(
+                to=child_address, amount_usdc=amount,
+                memo=f"reproduction:{parent_id}->{child_id}",
+            )
+        except Exception as exc:
+            raise OmnibusError(
+                f"reproduction relay chain transfer failed: {exc}"
+            ) from exc
+        return self._append(OmnibusEntry(
+            kind=OmnibusEntryKind.RELAY_REPRODUCTION,
+            amount_usdc=amount, counterparty=child_id, actor=actor,
+            ts=self._clock(),
+            memo=f"parent={parent_id}",
+            tx_hash=str((tx or {}).get("tx_hash", "")),
+            metadata={"parent_id": parent_id,
+                      "child_id": child_id,
+                      "child_address": child_address},
+        ))
 
     def sweep_child(
         self, *, darwin_id: str, amount_usdc: float, user_subject: str,

@@ -89,6 +89,122 @@ async def test_supervisor_spawner_destination_none_without_omnibus():
 
 
 @pytest.mark.asyncio
+async def test_supervisor_provisions_tenant_namespace_on_spawn(_omnibus_chain):
+    """When a NamespaceProvisioner is wired, _spawn calls provision() so
+    the K8s namespace + vault namespace + organism DB land in lockstep
+    with the Darwin's lifecycle."""
+    k8s = StubK8sBackend()
+    vault = StubVaultNamespaceBackend()
+    db = StubOrganismDbBackend()
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        namespace_provisioner=NamespaceProvisioner(
+            k8s=k8s, vault=vault, organism_db=db,
+        ),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        # All three sides of the tenant got created.
+        assert k8s.namespaces  # K8s ns created
+        assert vault.namespaces  # Vault ns created
+        assert db.databases  # organism DB created
+        tenant = sup.namespace_provisioner.get(status.darwin_id)
+        assert tenant is not None
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_tears_down_tenant_on_kill(_omnibus_chain):
+    k8s = StubK8sBackend()
+    vault = StubVaultNamespaceBackend()
+    db = StubOrganismDbBackend()
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        namespace_provisioner=NamespaceProvisioner(
+            k8s=k8s, vault=vault, organism_db=db,
+        ),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        await sup.kill(status.darwin_id, reason="test", actor="alice")
+        # All three sides got the delete call.
+        assert k8s.deletions
+        assert vault.deletions
+        assert db.dropped
+        assert sup.namespace_provisioner.get(status.darwin_id) is None
+    finally:
+        await sup.shutdown(kill_running=False)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_relays_reproduction_to_child_via_omnibus(_omnibus_chain):
+    """Step (c) second leg: with an omnibus wallet wired, the supervisor's
+    _relay_reproduction_to_child helper submits a chain transfer from the
+    omnibus to the child's per-Darwin wallet address. Exercises the helper
+    directly so the test doesn't depend on FakeSpawner's reproduction +
+    DNA-verification path (which has its own coverage)."""
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+    )
+    try:
+        parent_status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        child_status = await sup.spawn(opening_usdc=25.0, actor="alice")
+        parent = sup._darwins[parent_status.darwin_id]
+        child = sup._darwins[child_status.darwin_id]
+        child_address = child.stack.wallet.address()
+        # Fake the spawner record the supervisor would observe.
+        record = {"budget_usdc": 25.0}
+        sup._relay_reproduction_to_child(parent, child_status.darwin_id, record)
+
+        relays = [
+            e for e in sup.omnibus_wallet.ledger()
+            if e.kind.value == "relay_reproduction"
+        ]
+        assert len(relays) == 1
+        assert relays[0].counterparty == child_status.darwin_id
+        assert relays[0].amount_usdc == pytest.approx(25.0)
+        # Chain transfer landed at the child's wallet address, not at any
+        # symbolic fallback.
+        assert _omnibus_chain.transfers[-1]["to"] == child_address
+        assert _omnibus_chain.transfers[-1]["amount_usdc"] == pytest.approx(25.0)
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_relay_failure_audited_not_raised(_omnibus_chain):
+    """Chain failure on the second leg must be audit-logged but never
+    crash the spawn-observation loop — a child can be alive even if the
+    omnibus settlement hits a transient hiccup."""
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+    )
+    try:
+        parent_status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        child_status = await sup.spawn(opening_usdc=25.0, actor="alice")
+        parent = sup._darwins[parent_status.darwin_id]
+        # Force the next omnibus chain transfer to fail.
+        _omnibus_chain.fail_next = True
+
+        sup._relay_reproduction_to_child(
+            parent, child_status.darwin_id, {"budget_usdc": 10.0},
+        )
+        # No relay landed; an audit entry did.
+        relays = [
+            e for e in sup.omnibus_wallet.ledger()
+            if e.kind.value == "relay_reproduction"
+        ]
+        assert relays == []
+        failures = sup.audit_log.entries(action="reproduction_relay_failed")
+        assert len(failures) == 1
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
 async def test_supervisor_defaults_phase2_services_to_none():
     """Single-tenant dev path: nothing is wired by default."""
     sup = Supervisor(heartbeat_seconds=0.001)

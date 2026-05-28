@@ -944,6 +944,18 @@ class Supervisor:
             if self._persistence is not None:
                 stack.audit_sink = self._persistence.audit_sink_for(darwin_id_now)
                 stack.checkpoint = self._checkpoint_store
+            # Tenant namespace (K8s + Vault + organism DB + optional wallet
+            # keypair mint per chain — doc 22 §"Per-Darwin Kubernetes
+            # namespaces"). Runs BEFORE the wallet/vault factories so a
+            # provider that reads from the provisioned namespace finds it
+            # ready. Best-effort: a failure surfaces as an audit entry and
+            # raises so the caller can decide whether to retry, but the
+            # FakeStack itself is not torn down here (the higher-level
+            # spawn flow owns that on the failure path).
+            if self._namespace_provisioner is not None:
+                self._namespace_provisioner.provision(
+                    darwin_id=darwin_id_now, actor=actor,
+                )
             if self._llm_factory is not None:
                 # Replace the default FakeLLM with the real adapter. The
                 # wallet is already bound; the factory only needs a clock
@@ -2285,6 +2297,17 @@ class Supervisor:
                     self._lifecycle.mark_killed(darwin_id, reason=reason)
                 except Exception:
                     pass
+            # Tear down the tenant namespace (K8s + Vault + organism DB +
+            # any minted wallet keypair) — counterpart to provision() in
+            # _spawn. Best-effort: a teardown failure is audit-logged by
+            # the provisioner itself; we never block kill on it.
+            if self._namespace_provisioner is not None:
+                try:
+                    self._namespace_provisioner.teardown(
+                        darwin_id=darwin_id, actor=actor,
+                    )
+                except Exception:
+                    pass
 
     # -- force reproduction (doc 08: POST /darwins/{id}/reproduce/force) --
     async def force_reproduce(
@@ -2880,6 +2903,17 @@ class Supervisor:
             if kill_running and not h.killed and h.runtime.state.alive:
                 h.killed = True
                 h.stack.kill.flip("supervisor shutdown")
+        # Tear down per-Darwin tenant namespaces alongside shutdown. Each
+        # teardown is independent and best-effort — a failure on one must
+        # not block the others or block the overall shutdown.
+        if self._namespace_provisioner is not None:
+            for did in list(self._darwins):
+                try:
+                    self._namespace_provisioner.teardown(
+                        darwin_id=did, actor="supervisor.shutdown",
+                    )
+                except Exception:
+                    pass
         # Let each drive task observe the kill and exit.
         tasks = [h.task for h in self._darwins.values() if h.task is not None]
         for t in tasks:
@@ -3314,6 +3348,14 @@ class Supervisor:
             # seen it via a different path in future expansions).
             if child_id not in self._darwins:
                 self._boot_child(parent, record, child_id)
+            # Reproduction-transfer second leg (step c): after the parent's
+            # transfer_out_for_child deposited the budget into the omnibus
+            # address, relay it from omnibus → child's per-Darwin wallet.
+            # Skipped when no omnibus is wired or the child's wallet has no
+            # routable address. Failures are audit-only so a chain hiccup
+            # doesn't crash the spawn-observation loop — the operator can
+            # retry via the omnibus ledger reconciliation.
+            self._relay_reproduction_to_child(parent, child_id, record)
             # Cross-pollination (doc 06 phase 3): on a successful
             # reproduction, sweep the parent's distilled lessons into
             # the platform archive so future siblings can inherit them.
@@ -3335,6 +3377,52 @@ class Supervisor:
                 except Exception:
                     parent.killed = False
                 parent.kill_after_reproduction_reason = None
+
+    def _relay_reproduction_to_child(
+        self, parent: _Handle, child_id: str, record: dict,
+    ) -> None:
+        """Settle the second leg of the parent → omnibus → child reproduction
+        transfer. The first leg fired inside FakeSpawner.spawn (parent's
+        ``transfer_out_for_child`` moved bytes to the omnibus address); this
+        moves them on to the child's per-Darwin wallet address."""
+        if self._omnibus_wallet is None:
+            return
+        child_handle = self._darwins.get(child_id)
+        if child_handle is None:
+            return
+        address_getter = getattr(child_handle.stack.wallet, "address", None)
+        if not callable(address_getter):
+            return
+        try:
+            child_address = address_getter()
+        except Exception:
+            return
+        if not child_address:
+            return
+        amount = float(record.get("budget_usdc", 0.0) or 0.0)
+        if amount <= 0:
+            return
+        try:
+            self._omnibus_wallet.relay_reproduction(
+                parent_id=parent.darwin_id,
+                child_id=child_id,
+                child_address=str(child_address),
+                amount_usdc=amount,
+            )
+        except Exception as exc:
+            # The reproduction succeeded (the child is alive); only the
+            # omnibus-side settlement failed. Surface via audit so the
+            # operator can reconcile, but never block the spawn flow.
+            self._audit.record(
+                actor="supervisor.reproduction",
+                action="reproduction_relay_failed",
+                darwin_id=child_id,
+                metadata={
+                    "parent_id": parent.darwin_id,
+                    "amount_usdc": amount,
+                    "reason": str(exc),
+                },
+            )
 
     # -- cross-pollination (doc 06 phase 3) -------------------------------
     @property
