@@ -36,22 +36,25 @@ const ICONS = {
 
 type Category = keyof typeof ICONS;
 
+// Runtime emits canonical `kind` strings like `event:perceive`,
+// `intent:neuron.content.writer`, `outcome`. Older paths used
+// `category`/`type`; tolerate both.
 function categoryOf(ev: DarwinEvent): Category {
-  const raw = String(ev.category ?? ev.type ?? "").toLowerCase();
+  const raw = String(ev.kind ?? ev.category ?? ev.type ?? "").toLowerCase();
   if (raw in ICONS) return raw as Category;
-  // Loose mappings from the runtime's actual event_type values.
+  if (raw.startsWith("intent:neuron.") || raw === "outcome") return "neuron_dispatch";
   if (raw.includes("escalat")) return "escalation";
-  if (raw.includes("payment") || raw.includes("ledger") || raw.includes("wallet")) return "payment";
+  if (raw.includes("ledger") || raw.includes("payment") || raw.includes("wallet") || raw.includes("treasury")) return "payment";
   if (raw.includes("llm")) return "llm_call";
   if (raw.includes("dispatch") || raw.includes("neuron")) return "neuron_dispatch";
-  if (raw.includes("mutat") || raw.includes("patch")) return "mutation";
-  if (raw.includes("reproduc") || raw.includes("spawn")) return "reproduction";
+  if (raw.includes("mutat") || raw.includes("patch") || raw.includes("amendment")) return "mutation";
+  if (raw.includes("reproduc") || raw.includes("spawn") || raw.includes("birth")) return "reproduction";
   if (raw.includes("kill") || raw.includes("death")) return "death";
   if (raw.includes("owner") || raw.includes("control")) return "owner_action";
-  if (raw.includes("quarantine") || raw.includes("throttle") || raw.includes("platform")) {
+  if (raw.includes("quarantine") || raw.includes("throttle") || raw.includes("platform") || raw.includes("merkle")) {
     return "platform";
   }
-  if (raw.includes("orchestrat") || raw.includes("plan") || raw.includes("reflect")) {
+  if (raw.startsWith("event:") || raw.includes("orchestrat") || raw.includes("plan") || raw.includes("perceive") || raw.includes("reflect") || raw.includes("check_reproduction")) {
     return "orchestrator";
   }
   return "unknown";
@@ -59,40 +62,79 @@ function categoryOf(ev: DarwinEvent): Category {
 
 function summaryOf(ev: DarwinEvent, cat: Category): string {
   if (typeof ev.summary === "string" && ev.summary) return ev.summary;
-  const type = String(ev.type ?? ev.category ?? cat);
-  const neuron = typeof ev.neuron_id === "string" ? ev.neuron_id : null;
+  const kindRaw = String(ev.kind ?? ev.type ?? ev.category ?? cat);
+  const label = kindRaw
+    .replace(/^event:/, "")
+    .replace(/^intent:neuron\./, "→ ")
+    .replace(/^intent:/, "→ ");
+  const payload = (ev.payload ?? {}) as Record<string, unknown>;
   switch (cat) {
-    case "neuron_dispatch":
-      return neuron ? `${neuron}` : type;
+    case "neuron_dispatch": {
+      const status = typeof payload.status === "string" ? payload.status : null;
+      const topic = typeof payload.topic === "string" ? payload.topic : null;
+      const detail = payload.detail as Record<string, unknown> | undefined;
+      const words = detail && typeof detail.words === "number" ? `${detail.words}w` : null;
+      return [label, topic, status, words].filter(Boolean).join(" · ");
+    }
     case "llm_call": {
-      const tier = (ev.payload as Record<string, unknown> | undefined)?.tier;
-      const model = (ev.payload as Record<string, unknown> | undefined)?.model;
-      return [tier, model].filter(Boolean).join(" → ") || type;
+      const tier = payload.tier;
+      const model = payload.model;
+      return [tier, model].filter(Boolean).join(" → ") || label;
     }
     case "payment": {
-      const dir = (ev.payload as Record<string, unknown> | undefined)?.direction;
-      const amount = (ev.payload as Record<string, unknown> | undefined)?.amount_usdc;
-      return [dir, typeof amount === "number" ? formatUsdc(amount) : null]
-        .filter(Boolean)
-        .join(" ") || type;
+      const dir = payload.direction;
+      const amount = payload.amount_usdc;
+      const treasury = payload.treasury_usdc;
+      const parts: (string | number | null)[] = [label];
+      if (dir) parts.push(String(dir));
+      if (typeof amount === "number") parts.push(formatUsdc(amount));
+      if (typeof treasury === "number") parts.push(`bal ${formatUsdc(treasury)}`);
+      return parts.filter(Boolean).join(" · ");
+    }
+    case "orchestrator": {
+      const tick = typeof payload.tick === "number" ? `t${payload.tick}` : null;
+      const action = typeof payload.action === "string" ? payload.action : null;
+      const reason = typeof payload.reason === "string" ? payload.reason : null;
+      const balance = typeof payload.balance_usdc === "number" ? formatUsdc(payload.balance_usdc) : null;
+      return [label, tick, action, reason, balance].filter(Boolean).join(" · ");
     }
     default:
-      return type;
+      return label;
   }
 }
 
-export function EventRow({ ev }: { ev: DarwinEvent }) {
-  const [open, setOpen] = useState(false);
+function costOf(ev: DarwinEvent): number | null {
+  if (typeof ev.cost_usdc === "number") return ev.cost_usdc;
+  const payload = (ev.payload ?? {}) as Record<string, unknown>;
+  if (typeof payload.cost_usdc === "number") return payload.cost_usdc;
+  const detail = payload.detail as Record<string, unknown> | undefined;
+  if (detail && typeof detail.cost_usdc === "number") return detail.cost_usdc;
+  return null;
+}
+
+export function EventRow({
+  ev,
+  open: controlledOpen,
+  onToggle,
+}: {
+  ev: DarwinEvent;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : uncontrolledOpen;
+  const toggle = onToggle ?? (() => setUncontrolledOpen((o) => !o));
   const cat = categoryOf(ev);
   const Icon = ICONS[cat];
   const summary = summaryOf(ev, cat);
-  const cost = typeof ev.cost_usdc === "number" ? ev.cost_usdc : null;
+  const cost = costOf(ev);
 
   return (
     <div className="border-b border-[var(--color-border)] last:border-b-0">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className="grid w-full grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-[var(--color-muted)]/40"
       >
         <span className="mono text-xs text-[var(--color-muted-foreground)]">
@@ -122,7 +164,8 @@ export function EventRow({ ev }: { ev: DarwinEvent }) {
       {open && (
         <div className="border-t border-[var(--color-border)] bg-[var(--color-background)] px-3 py-3 text-xs">
           <div className="mono mb-2 text-[var(--color-muted-foreground)]">
-            event_id: {ev.event_id}
+            seq: {ev.seq ?? "—"} · kind: {ev.kind ?? ev.type ?? ev.category ?? "—"}
+            {ev.hash && <> · hash: {String(ev.hash).slice(0, 16)}…</>}
           </div>
           <pre className="mono max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-[var(--color-card)] p-3 text-[11px] leading-relaxed">
             {JSON.stringify(ev, null, 2)}
