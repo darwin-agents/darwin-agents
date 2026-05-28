@@ -254,20 +254,29 @@ def detect_heartbeat_health(s: DarwinSignals, q: Quotas) -> Alert | None:
 def detect_spread_spend(s: DarwinSignals, q: Quotas) -> Alert | None:
     """Spread-spend / smear evasion (doc 10).
 
-    Pattern: a Darwin (or an injected prompt) issues many small debits
-    well below the per-action cap to dodge the per-action gate. The
-    aggregate cost may not trip spend_velocity (each call is cheap), but
-    the *count* of small debits is the signal.
+    Pattern: a Darwin (or an injected prompt) issues many small *payment*
+    debits well below the per-action cap to dodge the per-action gate.
+    The aggregate cost may not trip spend_velocity (each call is cheap),
+    but the *count* of small debits is the signal.
 
-    We count debits in the past hour whose amount is below the floor.
-    Above ``count_per_hour_warn`` → WARN; above ``..._critical`` →
-    CRITICAL with suggested_level=3 (pause)."""
+    Only payment-kind debits count — metered infrastructure pass-through
+    (LLM/sandbox/browser per-call costs) is routine and lives in the
+    cents range, so counting it here trips the threshold in seconds and
+    drowns the operator inbox in false-positive alerts (observed in a
+    sim run as ~2700 small_debits_per_hour with threshold 80).
+
+    We count payment debits in the past hour whose amount is below the
+    floor. Above ``count_per_hour_warn`` → WARN; above ``..._critical``
+    → CRITICAL with suggested_level=3 (pause)."""
     cutoff = s.now - 3_600.0
     small_count = 0
     small_total = 0.0
     for mv in s.movements:
         debit = mv.get("debit")
         if not debit:
+            continue
+        # Routine infra cost is not an evasion signal.
+        if debit.get("kind") == "metered":
             continue
         if float(debit.get("ts", 0.0)) < cutoff:
             continue

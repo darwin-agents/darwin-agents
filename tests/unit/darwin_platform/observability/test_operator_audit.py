@@ -285,7 +285,14 @@ async def test_audit_endpoint_filters() -> None:
             entries = r.json()["entries"]
             actions = [e["action"] for e in entries]
             assert "spawn" in actions and "kill" in actions
-            # Auth disabled → actor is the disabled_context's pseudo-id.
-            assert all(e["actor"] == "anonymous" for e in entries)
+            # Auth disabled → operator-initiated actions are recorded as
+            # 'anonymous'. Platform-internal actions (cross-pollination,
+            # escalation auto-decide, etc.) are out of scope here — they
+            # carry their own ``platform.*`` actor prefix.
+            operator_entries = [
+                e for e in entries if not str(e["actor"]).startswith("platform.")
+            ]
+            assert operator_entries
+            assert all(e["actor"] == "anonymous" for e in operator_entries)
         finally:
             await sup.shutdown()
