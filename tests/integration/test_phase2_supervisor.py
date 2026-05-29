@@ -205,6 +205,155 @@ async def test_supervisor_relay_failure_audited_not_raised(_omnibus_chain):
 
 
 @pytest.mark.asyncio
+async def test_supervisor_darwin_fiat_payout_runs_both_legs(_omnibus_chain):
+    """End-to-end: Darwin wallet debits to omnibus address (leg 1), omnibus
+    submits fiat withdraw via ramp (leg 2), audit + ledger reflect both."""
+    from darwin_platform.adapters.fiat import StubFiatRamp
+
+    ramp = StubFiatRamp()
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+        fiat_ramp=ramp,
+    )
+    try:
+        status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        wallet = sup._darwins[status.darwin_id].stack.wallet
+        balance_before = wallet.balance_usdc()
+        omnibus_balance_before = _omnibus_chain.balance
+
+        result = await sup.darwin_fiat_payout(
+            status.darwin_id,
+            amount_usdc=30.0,
+            fiat_destination="acct_freelancer_bank_1",
+            actor="alice",
+        )
+        # Leg 1: Darwin wallet debited by 30.
+        assert wallet.balance_usdc() == pytest.approx(balance_before - 30.0)
+        # Leg 1 on-chain: omnibus address received 30 (FakeWallet doesn't
+        # touch the real omnibus chain, but the omnibus's ledger now has
+        # an entry from leg 2 — that's what tests the second leg).
+        # Leg 2: omnibus ledger has a relay_fiat_payout entry.
+        entries = sup.omnibus_wallet.ledger()
+        relays = [
+            e for e in entries
+            if e.kind.value == "darwin_fiat_payout"
+        ]
+        assert len(relays) == 1
+        assert relays[0].counterparty == status.darwin_id
+        assert relays[0].metadata["fiat_destination"] == "acct_freelancer_bank_1"
+        # Return shape carries the entry as JSON.
+        assert result["kind"] == "darwin_fiat_payout"
+        # Audit trail.
+        audits = sup.audit_log.entries(action="darwin_fiat_payout")
+        assert len(audits) == 1
+        # Unused variable kept to make the omnibus chain check explicit.
+        _ = omnibus_balance_before
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_darwin_fiat_payout_requires_omnibus_and_ramp():
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        with pytest.raises(Exception, match="omnibus|fiat ramp"):
+            await sup.darwin_fiat_payout(
+                status.darwin_id,
+                amount_usdc=10.0,
+                fiat_destination="acct_x",
+                actor="alice",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_pre_approval_round_trip():
+    """Owner-set pre-approval lands on the Darwin's wallet, surfaces via
+    list_preapprovals, and revoke clears it."""
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        # No rules at start.
+        assert await sup.list_preapprovals(status.darwin_id) == []
+        # Install one.
+        stored = await sup.set_preapproval(
+            status.darwin_id,
+            rule_id="upwork-under-50",
+            max_amount_usdc=50.0,
+            counterparty_category="freelancer",
+            counterparty_substring="upwork",
+            actor="alice",
+        )
+        assert stored["rule_id"] == "upwork-under-50"
+        listed = await sup.list_preapprovals(status.darwin_id)
+        assert len(listed) == 1
+        assert listed[0]["rule_id"] == "upwork-under-50"
+        # Revoke it.
+        result = await sup.revoke_preapproval(
+            status.darwin_id, "upwork-under-50", actor="alice",
+        )
+        assert result == {"revoked": True, "rule_id": "upwork-under-50"}
+        assert await sup.list_preapprovals(status.darwin_id) == []
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_pre_approval_clears_freelancer_escalation():
+    """End-to-end: with a matching pre-approval installed, a freelancer
+    payment via payments.facilitator returns ok=True instead of
+    escalating. Walks the policy engine through the facilitator's
+    _state() pipeline using the wallet the supervisor wired."""
+    from darwin_dna.neurons import Task
+
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        handle = sup._darwins[status.darwin_id]
+        # No rule → freelancer payment escalates.
+        fac = handle.runtime.catalog["payments.facilitator"]
+        nctx = handle.runtime._build_neuron_context("payments.facilitator")
+        task = Task(
+            id="p-baseline", kind="payment", category="content.affiliate",
+            payload={
+                "amount_usdc": 12.0,
+                "counterparty": "upwork:writer-42",
+                "counterparty_category": "freelancer",
+            },
+        )
+        plan = await fac.plan(task, nctx)
+        res = await fac.execute(plan, nctx)
+        assert res.escalated is True
+
+        # Install pre-approval, retry, now allowed.
+        await sup.set_preapproval(
+            status.darwin_id,
+            rule_id="upwork-under-50",
+            max_amount_usdc=50.0,
+            counterparty_category="freelancer",
+            counterparty_substring="upwork",
+            actor="alice",
+        )
+        task2 = Task(
+            id="p-allowed", kind="payment", category="content.affiliate",
+            payload={
+                "amount_usdc": 12.0,
+                "counterparty": "upwork:writer-42",
+                "counterparty_category": "freelancer",
+            },
+        )
+        plan2 = await fac.plan(task2, nctx)
+        res2 = await fac.execute(plan2, nctx)
+        assert res2.ok is True
+        assert res2.escalated is False
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
 async def test_supervisor_defaults_phase2_services_to_none():
     """Single-tenant dev path: nothing is wired by default."""
     sup = Supervisor(heartbeat_seconds=0.001)

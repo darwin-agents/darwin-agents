@@ -117,6 +117,14 @@ class FiatConfirmDepositRequest(BaseModel):
     destination_darwin_id: str | None = None
 
 
+class DarwinFiatPayoutRequest(BaseModel):
+    """Owner-approved fiat payout from a Darwin's wallet to a verified
+    fiat destination (doc 17 §"Darwin paying a human")."""
+
+    amount_usdc: float = Field(gt=0)
+    fiat_destination: str = Field(min_length=1)
+
+
 class FiatWithdrawRequest(BaseModel):
     amount_usdc: float = Field(gt=0)
     destination: str = Field(min_length=1)
@@ -150,6 +158,18 @@ class WalletPolicyRequest(BaseModel):
     per_action_cap_usdc: float | None = Field(default=None, ge=0)
     per_day_cap_usdc: float | None = Field(default=None, ge=0)
     per_lifetime_cap_usdc: float | None = Field(default=None, ge=0)
+
+
+class PreApprovalRequest(BaseModel):
+    """Owner pre-approval rule body (doc 17 §"Darwin paying a human").
+    The rule_id is the URL parameter — this body carries the match
+    criteria + lifetime. ``max_amount_usdc`` is required; the other
+    fields are conjunctive filters."""
+
+    max_amount_usdc: float = Field(gt=0)
+    counterparty_category: str | None = None
+    counterparty_substring: str | None = None
+    expires_at: float | None = Field(default=None, gt=0)
 
 
 class ThrottleRequest(BaseModel):
@@ -1071,6 +1091,30 @@ def build_app(
             raise HTTPException(409, str(exc))
         return receipt.to_json()
 
+    # -- Darwin → fiat payout (doc 17 §"Darwin paying a human") ------------
+    @app.post("/darwins/{darwin_id}/fiat_payment")
+    async def darwin_fiat_payout(
+        darwin_id: str,
+        request: Request,
+        req: DarwinFiatPayoutRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Two-leg payout: Darwin USDC wallet → omnibus address (chain) →
+        fiat destination (Stripe Connect / MoonPay). Operator-initiated
+        after the genome's facilitator escalation has been owner-approved."""
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).darwin_fiat_payout(
+                darwin_id,
+                amount_usdc=req.amount_usdc,
+                fiat_destination=req.fiat_destination,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
     # -- platform signing key rotation (doc 02) ----------------------------
     @app.post("/platform/signing/rotate")
     async def rotate_signing_key(
@@ -1460,6 +1504,60 @@ def build_app(
             raise HTTPException(404, str(exc))
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
+
+    # -- pre-approvals (doc 17 §"Darwin paying a human") -------------------
+    @app.put("/platform/wallets/{darwin_id}/preapprovals/{rule_id}")
+    async def set_preapproval(
+        darwin_id: str,
+        rule_id: str,
+        request: Request,
+        req: PreApprovalRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).set_preapproval(
+                darwin_id,
+                rule_id=rule_id,
+                max_amount_usdc=req.max_amount_usdc,
+                counterparty_category=req.counterparty_category,
+                counterparty_substring=req.counterparty_substring,
+                expires_at=req.expires_at,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.delete("/platform/wallets/{darwin_id}/preapprovals/{rule_id}")
+    async def revoke_preapproval(
+        darwin_id: str,
+        rule_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).revoke_preapproval(
+                darwin_id, rule_id, actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/platform/wallets/{darwin_id}/preapprovals")
+    async def list_preapprovals(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> list[dict[str, Any]]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).list_preapprovals(darwin_id)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
 
     # -- SMS 2FA inbox (doc 15) -------------------------------------------
     @app.get("/platform/sms/verification-code")

@@ -2105,6 +2105,98 @@ class Supervisor:
             raise SupervisorError("wallet does not expose policy")
         return wallet.policy()
 
+    # -- pre-approvals (doc 17 §"Darwin paying a human") -------------------
+    async def set_preapproval(
+        self,
+        darwin_id: str,
+        *,
+        rule_id: str,
+        max_amount_usdc: float,
+        counterparty_category: str | None = None,
+        counterparty_substring: str | None = None,
+        expires_at: float | None = None,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Install (or replace) an owner pre-approval rule on a Darwin's
+        wallet. Pre-approvals are typed exceptions to layer-4 escalation:
+        a matching ``freelancer`` / ``legal_financial`` / over-threshold
+        spend skips the human-review step and is logged with the rule_id
+        that cleared it. Returns the rule as stored."""
+        from darwin_dna.constitution import PreApprovalRule
+
+        rule = PreApprovalRule(
+            rule_id=rule_id,
+            max_amount_usdc=max_amount_usdc,
+            counterparty_category=counterparty_category,
+            counterparty_substring=counterparty_substring,
+            expires_at=expires_at,
+        )
+        with span(
+            "supervisor.set_preapproval",
+            darwin_id=darwin_id,
+            attributes={
+                "rule_id": rule_id,
+                "max_amount_usdc": max_amount_usdc,
+            },
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            wallet = h.stack.wallet
+            if not hasattr(wallet, "set_preapproval"):
+                raise SupervisorError(
+                    "wallet does not support pre-approvals",
+                )
+            wallet.set_preapproval(rule)
+            self._audit.record(
+                actor=actor, action="set_preapproval",
+                darwin_id=darwin_id,
+                metadata={
+                    "rule_id": rule_id,
+                    "max_amount_usdc": max_amount_usdc,
+                    "counterparty_category": counterparty_category,
+                    "counterparty_substring": counterparty_substring,
+                    "expires_at": expires_at,
+                },
+            )
+            return rule.model_dump()
+
+    async def revoke_preapproval(
+        self, darwin_id: str, rule_id: str, *, actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Drop a pre-approval rule by id. Idempotent — revoking a
+        non-existent rule returns ``{"revoked": False}`` rather than
+        raising, so an out-of-band cleanup that races a manual revoke
+        doesn't surface a spurious error."""
+        with span(
+            "supervisor.revoke_preapproval",
+            darwin_id=darwin_id,
+            attributes={"rule_id": rule_id},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            wallet = h.stack.wallet
+            if not hasattr(wallet, "revoke_preapproval"):
+                raise SupervisorError(
+                    "wallet does not support pre-approvals",
+                )
+            removed = bool(wallet.revoke_preapproval(rule_id))
+            if removed:
+                self._audit.record(
+                    actor=actor, action="revoke_preapproval",
+                    darwin_id=darwin_id,
+                    metadata={"rule_id": rule_id},
+                )
+            return {"revoked": removed, "rule_id": rule_id}
+
+    async def list_preapprovals(
+        self, darwin_id: str,
+    ) -> list[dict[str, Any]]:
+        h = self._get(darwin_id)
+        wallet = h.stack.wallet
+        if not hasattr(wallet, "owner_preapprovals"):
+            return []
+        return [r.model_dump() for r in wallet.owner_preapprovals()]
+
     # -- SMS 2FA inbox (doc 15) -------------------------------------------
     def sms_verification_code(
         self, *, number: str | None = None,
@@ -3560,6 +3652,110 @@ class Supervisor:
             },
         )
         return receipt
+
+    async def darwin_fiat_payout(
+        self,
+        darwin_id: str,
+        *,
+        amount_usdc: float,
+        fiat_destination: str,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Pay a fiat counterparty on a Darwin's behalf — the path for
+        the freelancer / legal / professional spends a Darwin can't
+        settle in USDC because the recipient only accepts a bank
+        transfer (doc 17 §"Darwin paying a human").
+
+        Two-leg flow: the Darwin's USDC wallet debits ``amount_usdc`` to
+        the omnibus address (on-chain), and the omnibus converts the
+        USDC into fiat via the configured :class:`FiatRamp` and pushes
+        the payout to ``fiat_destination`` (a verified Stripe Connect
+        account, bank id, or other ramp-specific destination).
+
+        This is an OPERATOR-initiated call: the genome's
+        ``payments.facilitator`` cannot reach fiat directly. A typical
+        flow is the Darwin escalates a freelancer payment, the owner
+        approves it through the escalation API, then the operator
+        invokes this method to settle the approved spend via fiat. The
+        intermediate omnibus address insulates the Darwin's wallet from
+        the ramp's settlement timing.
+        """
+        if self._omnibus_wallet is None:
+            raise SupervisorError("omnibus wallet is not configured")
+        if self._fiat_ramp is None:
+            raise SupervisorError("fiat ramp is not configured")
+        amount = float(amount_usdc)
+        if amount <= 0:
+            raise SupervisorError("amount_usdc must be positive")
+        if not fiat_destination:
+            raise SupervisorError("fiat_destination is required")
+        with span(
+            "supervisor.darwin_fiat_payout",
+            darwin_id=darwin_id,
+            attributes={
+                "amount_usdc": amount,
+                "fiat_destination": fiat_destination,
+            },
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            wallet = h.stack.wallet
+            transfer = getattr(wallet, "transfer_out_for_fiat_payout", None)
+            if not callable(transfer):
+                raise SupervisorError(
+                    "wallet does not support fiat payout transfer",
+                )
+            try:
+                omnibus_address = self._omnibus_wallet.address()
+            except Exception as exc:
+                raise SupervisorError(
+                    f"omnibus address unavailable: {exc}",
+                ) from exc
+            # First leg: debit the Darwin's USDC wallet to the omnibus.
+            try:
+                transfer(amount, destination=omnibus_address)
+            except Exception as exc:
+                raise SupervisorError(
+                    f"first leg (Darwin → omnibus) failed: {exc}",
+                ) from exc
+            # Second leg: omnibus → fiat. If this fails the Darwin has
+            # already lost the USDC to the omnibus address; surface the
+            # failure clearly so the operator can refund via the omnibus
+            # ledger reconciliation, but DON'T retry implicitly.
+            try:
+                entry = self._omnibus_wallet.relay_fiat_payout(
+                    darwin_id=darwin_id,
+                    amount_usdc=amount,
+                    fiat_destination=fiat_destination,
+                    fiat_ramp=self._fiat_ramp,
+                    actor=actor,
+                )
+            except Exception as exc:
+                self._audit.record(
+                    actor=actor,
+                    action="darwin_fiat_payout_second_leg_failed",
+                    darwin_id=darwin_id,
+                    metadata={
+                        "amount_usdc": amount,
+                        "fiat_destination": fiat_destination,
+                        "reason": str(exc),
+                    },
+                )
+                raise SupervisorError(
+                    f"second leg (omnibus → fiat) failed: {exc}",
+                ) from exc
+            self._audit.record(
+                actor=actor,
+                action="darwin_fiat_payout",
+                darwin_id=darwin_id,
+                metadata={
+                    "amount_usdc": amount,
+                    "fiat_destination": fiat_destination,
+                    "provider": entry.metadata.get("provider", ""),
+                    "provider_tx_id": entry.tx_hash,
+                },
+            )
+            return entry.to_json()
 
     def fiat_withdraw(
         self,

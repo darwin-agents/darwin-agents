@@ -310,3 +310,88 @@ def test_relay_reproduction_chain_failure_propagates():
             parent_id="p", child_id="c", child_address="0xchild",
             amount_usdc=10.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# relay_fiat_payout — Darwin → omnibus → fiat second leg
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dc
+
+
+@_dc
+class _FakeFiatReceipt:
+    provider_tx_id: str = "stripe_pi_xyz"
+    amount_usdc: float = 10.0
+    amount_usd: float = 9.9
+    fee_usd: float = 0.1
+    provider: str = "stripe"
+
+
+class _FakeFiatRamp:
+    def __init__(self, *, fail: bool = False):
+        self._fail = fail
+        self.calls: list[tuple[float, str]] = []
+
+    def withdraw(self, *, amount_usdc, destination):
+        self.calls.append((amount_usdc, destination))
+        if self._fail:
+            raise RuntimeError("ramp offline")
+        return _FakeFiatReceipt(
+            amount_usdc=amount_usdc, amount_usd=amount_usdc * 0.99,
+            fee_usd=amount_usdc * 0.01,
+        )
+
+
+def test_relay_fiat_payout_records_entry_and_calls_ramp():
+    w = OmnibusWallet(_Chain(balance=1_000.0), clock=_clock())
+    ramp = _FakeFiatRamp()
+    entry = w.relay_fiat_payout(
+        darwin_id="d-42", amount_usdc=12.5,
+        fiat_destination="stripe_acct_freelancer1",
+        fiat_ramp=ramp,
+    )
+    assert entry.kind is OmnibusEntryKind.DARWIN_FIAT_PAYOUT
+    assert entry.counterparty == "d-42"
+    assert entry.amount_usdc == pytest.approx(12.5)
+    assert entry.metadata["fiat_destination"] == "stripe_acct_freelancer1"
+    assert ramp.calls == [(12.5, "stripe_acct_freelancer1")]
+
+
+def test_relay_fiat_payout_does_not_touch_user_credits():
+    w = OmnibusWallet(_Chain(balance=1_000.0), clock=_clock())
+    w.record_deposit(user_subject="alice", amount_usdc=100.0, source_ref="x")
+    before = w.user_credit("alice")
+    w.relay_fiat_payout(
+        darwin_id="d-1", amount_usdc=20.0,
+        fiat_destination="stripe_acct_x",
+        fiat_ramp=_FakeFiatRamp(),
+    )
+    assert w.user_credit("alice") == before
+
+
+def test_relay_fiat_payout_refuses_missing_destination():
+    w = OmnibusWallet(_Chain(), clock=_clock())
+    with pytest.raises(OmnibusError, match="fiat_destination"):
+        w.relay_fiat_payout(
+            darwin_id="d-1", amount_usdc=1.0,
+            fiat_destination="", fiat_ramp=_FakeFiatRamp(),
+        )
+
+
+def test_relay_fiat_payout_refuses_missing_ramp():
+    w = OmnibusWallet(_Chain(), clock=_clock())
+    with pytest.raises(OmnibusError, match="fiat_ramp"):
+        w.relay_fiat_payout(
+            darwin_id="d-1", amount_usdc=1.0,
+            fiat_destination="x", fiat_ramp=None,
+        )
+
+
+def test_relay_fiat_payout_ramp_failure_propagates_as_omnibus_error():
+    w = OmnibusWallet(_Chain(balance=1_000.0), clock=_clock())
+    with pytest.raises(OmnibusError, match="fiat ramp withdraw failed"):
+        w.relay_fiat_payout(
+            darwin_id="d-1", amount_usdc=1.0,
+            fiat_destination="x", fiat_ramp=_FakeFiatRamp(fail=True),
+        )

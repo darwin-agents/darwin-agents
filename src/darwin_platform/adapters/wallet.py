@@ -32,7 +32,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Protocol, runtime_checkable
 
-from darwin_dna.constitution import OwnerSoftCaps
+from darwin_dna.constitution import OwnerSoftCaps, PreApprovalRule
 from darwin_dna.hyperparameters import HARD_CAPS
 
 
@@ -146,6 +146,11 @@ class RealWallet:
         self._per_action_cap: float = HARD_CAPS.per_action_usdc
         self._per_day_cap: float = HARD_CAPS.per_day_usdc
         self._per_lifetime_cap: float = HARD_CAPS.per_lifetime_usdc
+        # Owner pre-approval rules. Keyed by rule_id; the genome's
+        # facilitator reads ``owner_preapprovals()`` and forwards them
+        # into the policy engine so a matching low-friction freelancer /
+        # legal_financial / over-threshold spend skips escalation.
+        self._preapprovals: dict[str, PreApprovalRule] = {}
 
     def _day(self) -> str:
         import time as _t
@@ -432,6 +437,24 @@ class RealWallet:
             ),
         )
 
+    # -- owner pre-approvals (doc 17 §"Darwin paying a human") -------------
+    def set_preapproval(self, rule: PreApprovalRule) -> PreApprovalRule:
+        """Install or replace a pre-approval rule keyed on ``rule.rule_id``.
+        Same shape as :class:`FakeWallet.set_preapproval` so the supervisor
+        wires both wallets identically."""
+        if not isinstance(rule, PreApprovalRule):
+            raise WalletError("set_preapproval requires a PreApprovalRule")
+        self._preapprovals[rule.rule_id] = rule
+        return rule
+
+    def revoke_preapproval(self, rule_id: str) -> bool:
+        return self._preapprovals.pop(rule_id, None) is not None
+
+    def owner_preapprovals(self) -> tuple[PreApprovalRule, ...]:
+        return tuple(
+            self._preapprovals[k] for k in sorted(self._preapprovals)
+        )
+
     # -- reproduction transfer --------------------------------------------
     def set_sanctions_screener(self, screener) -> None:
         """Install (or replace) the screener at runtime. Used by the
@@ -467,6 +490,36 @@ class RealWallet:
             ) from exc
         self.ledger.append(
             {"reproduction_transfer": {
+                "amount_usdc": amount,
+                "destination": destination,
+                "ts": float(self._clock()),
+            }}
+        )
+
+    def transfer_out_for_fiat_payout(
+        self, amount_usdc: float, *, destination: str = "platform.omnibus",
+    ) -> None:
+        """First leg of the Darwin → fiat payout flow. Submits a USDC
+        transfer to the omnibus address so the platform can convert
+        USDC → fiat and ship the payout via the configured
+        :class:`FiatRamp`. The :meth:`OmnibusWallet.relay_fiat_payout`
+        second leg performs the fiat-side withdraw and records the
+        payout in the omnibus ledger."""
+        amount = float(amount_usdc)
+        if amount > self._chain.balance_usdc() + 1e-9:
+            raise WalletError("fiat payout exceeds on-chain balance")
+        try:
+            self._chain.transfer(
+                to=destination,
+                amount_usdc=amount,
+                memo="fiat_payout:omnibus_transfer",
+            )
+        except Exception as exc:
+            raise WalletError(
+                f"fiat payout transfer failed: {exc}"
+            ) from exc
+        self.ledger.append(
+            {"fiat_payout_transfer": {
                 "amount_usdc": amount,
                 "destination": destination,
                 "ts": float(self._clock()),

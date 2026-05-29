@@ -298,3 +298,58 @@ def test_real_wallet_satisfies_supervisor_billing_attribution() -> None:
     provider, revenue = bs.policy.revenue_from_metered(last["amount_usdc"])
     assert provider == pytest.approx(1.00)
     assert revenue == pytest.approx(0.10)
+
+
+# -- owner pre-approvals (doc 17) ---------------------------------------
+def test_owner_preapprovals_round_trip_through_real_wallet():
+    from darwin_dna.constitution import PreApprovalRule
+
+    w = RealWallet(_StubChain(), clock=_vclock())
+    assert w.owner_preapprovals() == ()
+    rule = PreApprovalRule(
+        rule_id="upwork-under-50",
+        counterparty_category="freelancer",
+        max_amount_usdc=50.0,
+    )
+    w.set_preapproval(rule)
+    rules = w.owner_preapprovals()
+    assert len(rules) == 1
+    assert rules[0].rule_id == "upwork-under-50"
+
+
+def test_set_preapproval_replaces_existing_rule_id():
+    """Two writes to the same rule_id are an update, not an append."""
+    from darwin_dna.constitution import PreApprovalRule
+
+    w = RealWallet(_StubChain(), clock=_vclock())
+    w.set_preapproval(PreApprovalRule(
+        rule_id="r1", counterparty_category="freelancer",
+        max_amount_usdc=10.0,
+    ))
+    w.set_preapproval(PreApprovalRule(
+        rule_id="r1", counterparty_category="freelancer",
+        max_amount_usdc=40.0,
+    ))
+    rules = w.owner_preapprovals()
+    assert len(rules) == 1
+    assert rules[0].max_amount_usdc == pytest.approx(40.0)
+
+
+def test_revoke_preapproval_is_idempotent():
+    from darwin_dna.constitution import PreApprovalRule
+
+    w = RealWallet(_StubChain(), clock=_vclock())
+    w.set_preapproval(PreApprovalRule(
+        rule_id="r1", counterparty_category="freelancer",
+        max_amount_usdc=10.0,
+    ))
+    assert w.revoke_preapproval("r1") is True
+    # Re-revoking is a no-op.
+    assert w.revoke_preapproval("r1") is False
+    assert w.owner_preapprovals() == ()
+
+
+def test_set_preapproval_rejects_non_rule_input():
+    w = RealWallet(_StubChain(), clock=_vclock())
+    with pytest.raises(WalletError, match="PreApprovalRule"):
+        w.set_preapproval("not a rule")  # type: ignore[arg-type]

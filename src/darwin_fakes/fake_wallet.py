@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from darwin_dna.constitution import OwnerSoftCaps
+from darwin_dna.constitution import OwnerSoftCaps, PreApprovalRule
 from darwin_dna.hyperparameters import HARD_CAPS
 
 
@@ -60,6 +60,13 @@ class FakeWallet:
         # like "blog.example/affiliate"). The platform installs one at
         # spawn time via :meth:`set_sanctions_screener`.
         self._sanctions = None
+        # Owner pre-approval rules (doc 17 §"What about a Darwin paying a
+        # human?"). Keyed by rule_id so the platform can revoke a single
+        # rule without disturbing the others. The genome's facilitator
+        # reads ``owner_preapprovals()`` and forwards them to the policy
+        # engine; the engine's escalation layer treats a matching rule as
+        # ALLOW with rationale rather than ESCALATE.
+        self._preapprovals: dict[str, PreApprovalRule] = {}
 
     def _day(self) -> str:
         import time
@@ -276,6 +283,28 @@ class FakeWallet:
             ),
         )
 
+    # -- owner pre-approvals (doc 17 §"Darwin paying a human") -------------
+    def set_preapproval(self, rule: PreApprovalRule) -> PreApprovalRule:
+        """Install or replace a pre-approval rule keyed on ``rule.rule_id``.
+        The platform owns the rule lifecycle (creation + revocation); the
+        wallet just holds the live set so the facilitator can read it."""
+        if not isinstance(rule, PreApprovalRule):
+            raise WalletError("set_preapproval requires a PreApprovalRule")
+        self._preapprovals[rule.rule_id] = rule
+        return rule
+
+    def revoke_preapproval(self, rule_id: str) -> bool:
+        """Drop a rule by id. Returns True if a rule was removed, False
+        if no such rule existed (idempotent — re-revoking is a no-op)."""
+        return self._preapprovals.pop(rule_id, None) is not None
+
+    def owner_preapprovals(self) -> tuple[PreApprovalRule, ...]:
+        """The live set in deterministic order (sorted by rule_id) so the
+        facilitator's match scan is reproducible across heartbeats."""
+        return tuple(
+            self._preapprovals[k] for k in sorted(self._preapprovals)
+        )
+
     # -- harvest to owner (doc 05, doc 08 §"Billing model") ---------------
     def harvest_to_owner(
         self,
@@ -363,6 +392,26 @@ class FakeWallet:
         self._balance -= amount
         self.ledger.append(
             {"reproduction_transfer": {
+                "amount_usdc": amount,
+                "destination": destination,
+                "ts": float(self._clock()),
+            }}
+        )
+
+    def transfer_out_for_fiat_payout(
+        self, amount_usdc: float, *, destination: str = "platform.omnibus",
+    ) -> None:
+        """First leg of the Darwin → fiat payout flow: debit the Darwin's
+        USDC wallet to the omnibus address so the platform can subsequently
+        convert that USDC to fiat via the configured FiatRamp. The
+        omnibus.relay_fiat_payout second leg pushes fiat to the verified
+        destination — supervisor responsibility, not the wallet's."""
+        amount = float(amount_usdc)
+        if amount > self._balance + 1e-9:
+            raise WalletError("fiat payout exceeds balance")
+        self._balance -= amount
+        self.ledger.append(
+            {"fiat_payout_transfer": {
                 "amount_usdc": amount,
                 "destination": destination,
                 "ts": float(self._clock()),

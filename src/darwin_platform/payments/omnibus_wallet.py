@@ -49,6 +49,13 @@ class OmnibusEntryKind(str, Enum):
     # the source is the parent's wallet (already on-chain), not a user's
     # credit balance — so user_credits is NOT touched.
     RELAY_REPRODUCTION = "relay_reproduction"
+    # Darwin → fiat: the Darwin's wallet debits USDC to the omnibus
+    # address (first leg, on-chain); the platform converts that USDC into
+    # fiat via the configured FiatRamp and pushes the payout to a verified
+    # bank or fiat destination (second leg). Like RELAY_REPRODUCTION, the
+    # source is a Darwin's wallet — user_credits is NOT touched. Used when
+    # a freelancer / legal / professional counterparty only accepts fiat.
+    DARWIN_FIAT_PAYOUT = "darwin_fiat_payout"
 
 
 @dataclass(frozen=True)
@@ -316,6 +323,55 @@ class OmnibusWallet:
             metadata={"parent_id": parent_id,
                       "child_id": child_id,
                       "child_address": child_address},
+        ))
+
+    def relay_fiat_payout(
+        self, *,
+        darwin_id: str,
+        amount_usdc: float,
+        fiat_destination: str,
+        fiat_ramp: Any,
+        actor: str = "platform.supervisor",
+    ) -> OmnibusEntry:
+        """Second leg of the Darwin → fiat payout flow. The Darwin's USDC
+        wallet has already debited the amount to the omnibus address
+        on-chain (first leg, via ``wallet.transfer_out_for_fiat_payout``).
+        This call converts that USDC into fiat via the injected ramp and
+        ships the payout to the verified destination.
+
+        Does NOT touch ``user_credits`` — the source of funds is the
+        Darwin's wallet, not a user deposit. Sanctions-screens the
+        destination and refuses on screener verdict. The ramp's
+        ``withdraw`` is wrapped so a backend failure surfaces as
+        :class:`OmnibusError` for caller-uniform handling."""
+        amount = _require_positive(amount_usdc, "fiat payout amount")
+        if not fiat_destination:
+            raise OmnibusError("relay_fiat_payout requires fiat_destination")
+        if fiat_ramp is None:
+            raise OmnibusError("relay_fiat_payout requires a fiat_ramp")
+        self._screen(fiat_destination)
+        try:
+            receipt = fiat_ramp.withdraw(
+                amount_usdc=amount, destination=fiat_destination,
+            )
+        except Exception as exc:
+            raise OmnibusError(
+                f"fiat ramp withdraw failed: {exc}"
+            ) from exc
+        provider_tx_id = getattr(receipt, "provider_tx_id", "") or ""
+        return self._append(OmnibusEntry(
+            kind=OmnibusEntryKind.DARWIN_FIAT_PAYOUT,
+            amount_usdc=amount, counterparty=darwin_id, actor=actor,
+            ts=self._clock(),
+            memo=f"fiat:{fiat_destination}",
+            tx_hash=str(provider_tx_id),
+            metadata={
+                "darwin_id": darwin_id,
+                "fiat_destination": fiat_destination,
+                "provider": getattr(receipt, "provider", ""),
+                "amount_usd": float(getattr(receipt, "amount_usd", 0.0)),
+                "fee_usd": float(getattr(receipt, "fee_usd", 0.0)),
+            },
         ))
 
     def sweep_child(
