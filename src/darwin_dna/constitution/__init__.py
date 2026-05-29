@@ -25,6 +25,7 @@ from .forbidden_actions import (
     ForbiddenAction,
     screen,
 )
+from .pre_approval import PreApprovalRule
 from .spend_limits import (
     CapCheck,
     OwnerSoftCaps,
@@ -53,6 +54,7 @@ __all__ = [
     "screen",
     "CapCheck",
     "OwnerSoftCaps",
+    "PreApprovalRule",
     "check_within_caps",
     "effective_caps",
 ]

@@ -106,6 +106,31 @@ class PaymentsFacilitator(BaseNeuron):
                 soft_caps = getter()
             except Exception:
                 soft_caps = None
+        # Owner pre-approvals (doc 17 §"What about a Darwin paying a human?"
+        # — the "Upwork escrow under $50" auto-allow pattern). Optional
+        # capability — wallets without ``owner_preapprovals`` get an empty
+        # tuple, which keeps the legacy "every freelancer / over-threshold
+        # spend escalates" behaviour.
+        pre_approvals: tuple = ()
+        pre_getter = getattr(self._wallet, "owner_preapprovals", None)
+        if callable(pre_getter):
+            try:
+                pre_approvals = tuple(pre_getter() or ())
+            except Exception:
+                pre_approvals = ()
+        # ``now_ts`` from the wallet's clock if it exposes one; otherwise
+        # treat as +inf so any rule with an ``expires_at`` is considered
+        # expired (fail-closed). Rules without an ``expires_at`` are
+        # unaffected — they don't reference now_ts at all. The trade-off:
+        # surprise the owner with one escalation rather than honour a
+        # stale pre-approval they thought had elapsed.
+        now_ts = float("inf")
+        clock = getattr(self._wallet, "_clock", None)
+        if callable(clock):
+            try:
+                now_ts = float(clock())
+            except Exception:
+                now_ts = float("inf")
         return TreasuryState(
             balance_usdc=self._wallet.balance_usdc(),
             spent_today_usdc=self._wallet.spent_today_usdc(),
@@ -113,6 +138,8 @@ class PaymentsFacilitator(BaseNeuron):
             recent_spend_usdc=tuple(self._wallet.recent_spend_usdc()),
             envelope=envelope,
             soft_caps=soft_caps,
+            pre_approvals=pre_approvals,
+            now_ts=now_ts,
         )
 
     async def execute(self, plan: Plan, context: NeuronContext) -> NeuronResult:

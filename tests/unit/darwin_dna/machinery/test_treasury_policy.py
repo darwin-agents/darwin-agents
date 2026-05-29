@@ -122,3 +122,168 @@ def test_facilitator_logs_decision_before_paying(booted):
     i_intent = kinds.index("intent:payment.intent")
     i_decision = kinds.index("event:payment.policy_decision")
     assert i_intent < i_decision
+
+
+# ---------------------------------------------------------------------------
+# Pre-approval rules (doc 17 §"Darwin paying a human")
+# ---------------------------------------------------------------------------
+
+from darwin_dna.constitution import PreApprovalRule
+
+
+def _state(**kw):
+    base = dict(balance_usdc=1_000.0)
+    base.update(kw)
+    return TreasuryState(**base)
+
+
+def test_freelancer_without_preapproval_escalates_as_baseline():
+    """Baseline: every freelancer spend still escalates without a rule."""
+    d = evaluate(
+        _intent(amount_usdc=10.0, counterparty="upwork:writer-42",
+                counterparty_category="freelancer"),
+        _state(),
+    )
+    assert d.verdict is Verdict.ESCALATE
+    assert d.layer == "escalation"
+
+
+def test_matching_preapproval_converts_freelancer_to_allow():
+    rule = PreApprovalRule(
+        rule_id="upwork-under-50",
+        counterparty_category="freelancer",
+        counterparty_substring="upwork",
+        max_amount_usdc=50.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=42.0, counterparty="upwork:writer-42",
+                counterparty_category="freelancer"),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.ALLOW
+    assert d.layer == "pre_approval:upwork-under-50"
+
+
+def test_preapproval_over_max_amount_still_escalates():
+    """A spend above the rule's ceiling falls through to escalation.
+    Amounts kept under the hard cap so the layer-2 ceiling doesn't fire
+    instead — we're testing the pre-approval branch specifically."""
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=20.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=25.0, counterparty="upwork:x",
+                counterparty_category="freelancer"),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.ESCALATE
+
+
+def test_preapproval_category_mismatch_still_escalates():
+    """A freelancer rule must not auto-clear a legal_financial spend."""
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=1_000.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=10.0, counterparty="lawfirm.example",
+                counterparty_category="legal_financial"),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.ESCALATE
+
+
+def test_preapproval_substring_must_match_counterparty():
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        counterparty_substring="upwork",
+        max_amount_usdc=50.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=10.0, counterparty="fiverr:translator",
+                counterparty_category="freelancer"),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.ESCALATE
+
+
+def test_expired_preapproval_does_not_match():
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=50.0,
+        expires_at=100.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=10.0, counterparty="upwork:x",
+                counterparty_category="freelancer"),
+        _state(pre_approvals=(rule,), now_ts=200.0),
+    )
+    assert d.verdict is Verdict.ESCALATE
+
+
+def test_preapproval_never_bypasses_hard_caps():
+    """Pre-approvals only override layer-4 escalation. Layer-2 hard caps
+    still refuse a spend over the constitution's ceiling."""
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=HARD_CAPS.per_action_usdc * 10,  # absurdly loose
+    )
+    d = evaluate(
+        _intent(amount_usdc=HARD_CAPS.per_action_usdc + 1.0,
+                counterparty="upwork:x",
+                counterparty_category="freelancer"),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.REFUSE
+    assert d.layer.startswith("caps:")
+
+
+def test_preapproval_never_bypasses_sanctions():
+    """Layer-1 forbidden screen runs before pre-approvals. A sanctioned
+    jurisdiction stays refused even with a matching pre-approval."""
+    from darwin_dna.constitution.forbidden_actions import SANCTIONED_JURISDICTIONS
+    if not SANCTIONED_JURISDICTIONS:
+        return
+    jurisdiction = next(iter(SANCTIONED_JURISDICTIONS))
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=1_000.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=10.0, counterparty="upwork:x",
+                counterparty_category="freelancer",
+                jurisdiction=jurisdiction),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.REFUSE
+
+
+def test_over_review_threshold_preapproval_clears_to_allow():
+    """Layer-4's amount-based escalation (>$X is too big for autonomy)
+    also yields to a matching pre-approval."""
+    from darwin_dna.constitution.escalation_rules import (
+        ESCALATION_PER_ACTION_REVIEW_USDC,
+    )
+    big = ESCALATION_PER_ACTION_REVIEW_USDC + 1.0
+    if big > HARD_CAPS.per_action_usdc:
+        # The review threshold is above the hard cap; this branch can't
+        # be reached without violating layer 2. Skip.
+        return
+    rule = PreApprovalRule(
+        rule_id="r1",
+        max_amount_usdc=big + 10.0,
+    )
+    d = evaluate(
+        _intent(amount_usdc=big, counterparty="api.example",
+                counterparty_category="api"),
+        _state(pre_approvals=(rule,)),
+    )
+    assert d.verdict is Verdict.ALLOW
+    assert d.layer.startswith("pre_approval:")

@@ -29,6 +29,7 @@ from ..constitution import (
     EscalationReason,
     ForbiddenAction,
     OwnerSoftCaps,
+    PreApprovalRule,
     SpendIntent,
     check_within_caps,
 )
@@ -67,6 +68,15 @@ class TreasuryState(BaseModel):
     envelope: StrategyEnvelope | None = None
     # Recent successful spend amounts, for anomaly detection. Cheap, bounded.
     recent_spend_usdc: tuple[float, ...] = ()
+    # Owner pre-approval rules — typed exceptions to layer-4 escalation.
+    # An empty tuple keeps the legacy behaviour (every freelancer /
+    # legal_financial / owner / over-threshold spend escalates).
+    pre_approvals: tuple[PreApprovalRule, ...] = ()
+    # Wall-clock seconds for pre-approval expiry checks. The engine itself
+    # stays pure — the caller supplies the time. Default 0.0 means "no
+    # rule has expired" relative to any non-None expires_at the owner set,
+    # which keeps legacy callers (no pre_approvals) unaffected.
+    now_ts: float = 0.0
 
 
 class PolicyDecision(BaseModel):
@@ -153,7 +163,37 @@ def evaluate(
             )
 
     # Layer 4 — escalation rules. Permitted, but a human must say yes first.
+    #
+    # Pre-approvals are checked BEFORE we decide to escalate: an owner-set
+    # rule that matches this intent converts what would have been an
+    # ESCALATE into an ALLOW with the rule_id recorded in the decision
+    # layer. The rule may not exceed the constitution's hard caps — those
+    # already passed Layer 2 above. Solvency, anomaly, sanctions, and
+    # strategy envelope are unaffected; pre-approvals only suppress the
+    # human-review step for matching low-friction flows the owner
+    # explicitly opted into.
+    def _matching_rule() -> PreApprovalRule | None:
+        for rule in state.pre_approvals:
+            if rule.matches(
+                intent_counterparty=intent.counterparty,
+                intent_counterparty_category=intent.counterparty_category,
+                intent_amount_usdc=intent.amount_usdc,
+                now_ts=state.now_ts,
+            ):
+                return rule
+        return None
+
     if intent.counterparty_category == "owner":
+        rule = _matching_rule()
+        if rule is not None:
+            return PolicyDecision(
+                verdict=Verdict.ALLOW,
+                layer=f"pre_approval:{rule.rule_id}",
+                reason=(
+                    f"pre-approved by rule {rule.rule_id} "
+                    f"(owner withdrawal, ≤${rule.max_amount_usdc:.2f})"
+                ),
+            )
         return PolicyDecision(
             verdict=Verdict.ESCALATE,
             layer="escalation",
@@ -161,6 +201,16 @@ def evaluate(
             reason="owner withdrawal/harvest requires owner confirmation",
         )
     if intent.counterparty_category == "freelancer":
+        rule = _matching_rule()
+        if rule is not None:
+            return PolicyDecision(
+                verdict=Verdict.ALLOW,
+                layer=f"pre_approval:{rule.rule_id}",
+                reason=(
+                    f"pre-approved by rule {rule.rule_id} "
+                    f"(freelancer, ≤${rule.max_amount_usdc:.2f})"
+                ),
+            )
         return PolicyDecision(
             verdict=Verdict.ESCALATE,
             layer="escalation",
@@ -168,6 +218,16 @@ def evaluate(
             reason="paying a human freelancer always escalates",
         )
     if intent.counterparty_category == "legal_financial":
+        rule = _matching_rule()
+        if rule is not None:
+            return PolicyDecision(
+                verdict=Verdict.ALLOW,
+                layer=f"pre_approval:{rule.rule_id}",
+                reason=(
+                    f"pre-approved by rule {rule.rule_id} "
+                    f"(legal/financial, ≤${rule.max_amount_usdc:.2f})"
+                ),
+            )
         return PolicyDecision(
             verdict=Verdict.ESCALATE,
             layer="escalation",
@@ -175,6 +235,16 @@ def evaluate(
             reason="legal/financial counterparty always escalates",
         )
     if intent.amount_usdc > ESCALATION_PER_ACTION_REVIEW_USDC:
+        rule = _matching_rule()
+        if rule is not None:
+            return PolicyDecision(
+                verdict=Verdict.ALLOW,
+                layer=f"pre_approval:{rule.rule_id}",
+                reason=(
+                    f"pre-approved by rule {rule.rule_id} "
+                    f"(over-review-threshold, ≤${rule.max_amount_usdc:.2f})"
+                ),
+            )
         return PolicyDecision(
             verdict=Verdict.ESCALATE,
             layer="escalation",
