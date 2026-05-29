@@ -451,3 +451,34 @@ class FakeWallet:
                 "ts": float(self._clock()),
             }}
         )
+
+    def sweep_to(
+        self, *, destination: str, amount_usdc: float,
+    ) -> dict:
+        """Platform-driven cleanup: move ``amount_usdc`` from this wallet
+        to ``destination`` (the omnibus address on death, or whatever the
+        operator points at). Bypasses the per-action / per-day / lifetime
+        caps because it's a platform sweep, not a Darwin-initiated spend
+        — the same way ``transfer_out_for_child`` and
+        ``transfer_out_for_fiat_payout`` do. Returns a ledger-shaped row
+        so the caller can audit-log the resulting tx."""
+        amount = float(amount_usdc)
+        if amount < 0:
+            raise WalletError("sweep amount must be non-negative")
+        if amount == 0:
+            return {"amount_usdc": 0.0, "destination": destination,
+                    "ts": float(self._clock())}
+        if amount > self._balance + 1e-9:
+            raise WalletError(
+                f"sweep amount ${amount:.2f} exceeds balance"
+            )
+        if not destination:
+            raise WalletError("sweep requires a destination")
+        self._balance -= amount
+        row = {
+            "amount_usdc": amount,
+            "destination": destination,
+            "ts": float(self._clock()),
+        }
+        self.ledger.append({"sweep_out": row})
+        return row

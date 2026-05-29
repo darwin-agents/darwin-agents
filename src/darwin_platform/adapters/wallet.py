@@ -546,3 +546,40 @@ class RealWallet:
                 "ts": float(self._clock()),
             }}
         )
+
+    def sweep_to(
+        self, *, destination: str, amount_usdc: float,
+    ) -> dict:
+        """Platform-driven cleanup move (e.g. dead-Darwin residual back
+        to the omnibus address). Bypasses the per-action / per-day /
+        lifetime caps because it's a platform sweep, not a Darwin
+        spend. Submits a real chain transfer and records the tx in the
+        local ledger. Returns a ledger-shaped row including the tx hash."""
+        amount = float(amount_usdc)
+        if amount < 0:
+            raise WalletError("sweep amount must be non-negative")
+        if amount == 0:
+            return {"amount_usdc": 0.0, "destination": destination,
+                    "ts": float(self._clock()), "tx_hash": ""}
+        if not destination:
+            raise WalletError("sweep requires a destination")
+        if amount > self._chain.balance_usdc() + 1e-9:
+            raise WalletError(
+                f"sweep amount ${amount:.2f} exceeds on-chain balance"
+            )
+        try:
+            tx = self._chain.transfer(
+                to=destination, amount_usdc=amount,
+                memo="sweep:platform",
+            )
+        except Exception as exc:
+            raise WalletError(f"sweep transfer failed: {exc}") from exc
+        tx_hash = tx.get("tx_hash", "") if isinstance(tx, dict) else ""
+        row = {
+            "amount_usdc": amount,
+            "destination": destination,
+            "ts": float(self._clock()),
+            "tx_hash": str(tx_hash),
+        }
+        self.ledger.append({"sweep_out": row})
+        return row

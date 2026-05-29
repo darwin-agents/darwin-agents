@@ -353,3 +353,63 @@ def test_set_preapproval_rejects_non_rule_input():
     w = RealWallet(_StubChain(), clock=_vclock())
     with pytest.raises(WalletError, match="PreApprovalRule"):
         w.set_preapproval("not a rule")  # type: ignore[arg-type]
+
+
+# -- platform-driven sweep (dead-Darwin cleanup) -------------------------
+def test_sweep_to_submits_chain_transfer_and_records_ledger():
+    chain = _StubChain(balance=100.0)
+    w = RealWallet(chain, clock=_vclock())
+    row = w.sweep_to(destination="0xomnibus", amount_usdc=25.0)
+    assert row["amount_usdc"] == pytest.approx(25.0)
+    assert row["destination"] == "0xomnibus"
+    assert row["tx_hash"].startswith("0xtx")
+    assert chain.transfers[-1]["to"] == "0xomnibus"
+    assert chain.balance == pytest.approx(75.0)
+    sweeps = [mv for mv in w.movements() if "sweep_out" in mv]
+    assert len(sweeps) == 1
+
+
+def test_sweep_to_bypasses_per_action_cap():
+    """Platform sweeps are not Darwin spends — they ignore the policy
+    caps the genome holds itself to."""
+    from darwin_dna.hyperparameters import HARD_CAPS
+
+    chain = _StubChain(balance=HARD_CAPS.per_action_usdc + 100.0)
+    w = RealWallet(chain, clock=_vclock())
+    # An amount above per_action_usdc would refuse via pay; sweep_to
+    # treats this as a platform move and lets it through.
+    row = w.sweep_to(
+        destination="0xomnibus",
+        amount_usdc=HARD_CAPS.per_action_usdc + 1.0,
+    )
+    assert row["amount_usdc"] > HARD_CAPS.per_action_usdc
+
+
+def test_sweep_to_refuses_empty_destination():
+    w = RealWallet(_StubChain(balance=100.0), clock=_vclock())
+    with pytest.raises(WalletError, match="destination"):
+        w.sweep_to(destination="", amount_usdc=10.0)
+
+
+def test_sweep_to_refuses_over_balance():
+    w = RealWallet(_StubChain(balance=5.0), clock=_vclock())
+    with pytest.raises(WalletError, match="exceeds"):
+        w.sweep_to(destination="0xomnibus", amount_usdc=10.0)
+
+
+def test_sweep_to_zero_is_noop():
+    chain = _StubChain(balance=100.0)
+    w = RealWallet(chain, clock=_vclock())
+    row = w.sweep_to(destination="0xomnibus", amount_usdc=0.0)
+    assert row["amount_usdc"] == 0.0
+    assert chain.transfers == []
+    assert chain.balance == pytest.approx(100.0)
+
+
+def test_sweep_to_chain_failure_wraps_as_wallet_error():
+    chain = _StubChain(balance=100.0, fail_next=1)
+    w = RealWallet(chain, clock=_vclock())
+    with pytest.raises(WalletError, match="sweep transfer failed"):
+        w.sweep_to(destination="0xomnibus", amount_usdc=10.0)
+    # Nothing moved.
+    assert chain.balance == pytest.approx(100.0)
