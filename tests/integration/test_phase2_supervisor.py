@@ -909,3 +909,78 @@ async def test_darwin_fiat_payout_escalation_id_optional(_omnibus_chain):
         assert entries[0].metadata["escalation_id"] is None
     finally:
         await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_set_preapproval_threads_max_uses_to_wallet():
+    """Owner-set max_uses lands on the wallet rule so the engine can
+    enforce it and the facilitator's consume hook bumps used_count."""
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        await sup.set_preapproval(
+            status.darwin_id,
+            rule_id="upwork-3-times",
+            max_amount_usdc=20.0,
+            counterparty_category="freelancer",
+            counterparty_substring="upwork",
+            max_uses=3,
+            actor="alice",
+        )
+        wallet = sup._darwins[status.darwin_id].stack.wallet
+        rules = wallet.owner_preapprovals()
+        assert len(rules) == 1
+        assert rules[0].max_uses == 3
+        assert rules[0].used_count == 0
+        # Audit metadata carries it too.
+        audits = sup.audit_log.entries(action="set_preapproval")
+        assert len(audits) == 1
+        assert audits[0].metadata["max_uses"] == 3
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_preapproval_max_uses_blocks_after_quota_exhausted():
+    """End-to-end via the facilitator: once max_uses spends have
+    cleared, the next matching spend falls through to escalation."""
+    from darwin_dna.neurons import Task
+
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        await sup.set_preapproval(
+            status.darwin_id,
+            rule_id="r1",
+            max_amount_usdc=20.0,
+            counterparty_category="freelancer",
+            counterparty_substring="upwork",
+            max_uses=2,
+            actor="alice",
+        )
+        handle = sup._darwins[status.darwin_id]
+        fac = handle.runtime.catalog["payments.facilitator"]
+        nctx = handle.runtime._build_neuron_context("payments.facilitator")
+
+        async def _pay(task_id: str):
+            task = Task(
+                id=task_id, kind="payment", category="content.affiliate",
+                payload={
+                    "amount_usdc": 5.0,
+                    "counterparty": "upwork:writer-1",
+                    "counterparty_category": "freelancer",
+                },
+            )
+            plan = await fac.plan(task, nctx)
+            return await fac.execute(plan, nctx)
+
+        # First two spends: cleared by pre-approval.
+        r1 = await _pay("p1")
+        assert r1.ok and not r1.escalated
+        r2 = await _pay("p2")
+        assert r2.ok and not r2.escalated
+        # Third spend: quota exhausted → escalation.
+        r3 = await _pay("p3")
+        assert r3.escalated is True
+    finally:
+        await sup.shutdown(kill_running=True)

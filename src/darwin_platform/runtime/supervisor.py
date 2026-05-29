@@ -2186,13 +2186,21 @@ class Supervisor:
         counterparty_category: str | None = None,
         counterparty_substring: str | None = None,
         expires_at: float | None = None,
+        max_uses: int | None = None,
         actor: str = "anonymous",
     ) -> dict[str, Any]:
         """Install (or replace) an owner pre-approval rule on a Darwin's
         wallet. Pre-approvals are typed exceptions to layer-4 escalation:
         a matching ``freelancer`` / ``legal_financial`` / over-threshold
         spend skips the human-review step and is logged with the rule_id
-        that cleared it. Returns the rule as stored."""
+        that cleared it.
+
+        ``max_uses`` caps how many spends a single rule may clear before
+        becoming inert; ``None`` is unlimited (use sparingly — a
+        standing pre-approval is closer to a policy change than a
+        convenience grant). Replacing an existing rule resets its
+        ``used_count`` to 0 — installing a new rule under the same id is
+        treated as a fresh authorisation. Returns the rule as stored."""
         from darwin_dna.constitution import PreApprovalRule
 
         rule = PreApprovalRule(
@@ -2201,6 +2209,7 @@ class Supervisor:
             counterparty_category=counterparty_category,
             counterparty_substring=counterparty_substring,
             expires_at=expires_at,
+            max_uses=max_uses,
         )
         with span(
             "supervisor.set_preapproval",
@@ -2237,6 +2246,7 @@ class Supervisor:
                     "counterparty_category": counterparty_category,
                     "counterparty_substring": counterparty_substring,
                     "expires_at": expires_at,
+                    "max_uses": max_uses,
                 },
             )
             return rule.model_dump()

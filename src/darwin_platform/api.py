@@ -190,12 +190,14 @@ class PreApprovalRequest(BaseModel):
     """Owner pre-approval rule body (doc 17 §"Darwin paying a human").
     The rule_id is the URL parameter — this body carries the match
     criteria + lifetime. ``max_amount_usdc`` is required; the other
-    fields are conjunctive filters."""
+    fields are conjunctive filters. ``max_uses`` caps how many spends
+    the rule may clear before becoming inert; null is unlimited."""
 
     max_amount_usdc: float = Field(gt=0)
     counterparty_category: str | None = None
     counterparty_substring: str | None = None
     expires_at: float | None = Field(default=None, gt=0)
+    max_uses: int | None = Field(default=None, ge=1)
 
 
 class ThrottleRequest(BaseModel):
@@ -1619,6 +1621,7 @@ def build_app(
                 counterparty_category=req.counterparty_category,
                 counterparty_substring=req.counterparty_substring,
                 expires_at=req.expires_at,
+                max_uses=req.max_uses,
                 actor=_actor(ctx),
             )
         except UnknownDarwin as exc:
