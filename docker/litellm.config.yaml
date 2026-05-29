@@ -15,7 +15,7 @@ model_list:
   - model_name: tier-fast
     litellm_params:
       model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_key: os.environ/CLAUDE_API_KEY
   - model_name: tier-fast
     litellm_params:
       model: gemini/gemini-2.0-flash
@@ -25,7 +25,7 @@ model_list:
   - model_name: tier-reasoning
     litellm_params:
       model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_key: os.environ/CLAUDE_API_KEY
   - model_name: tier-reasoning
     litellm_params:
       model: openai/gpt-5.5
@@ -35,7 +35,7 @@ model_list:
   - model_name: tier-coding
     litellm_params:
       model: anthropic/claude-opus-4-7
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_key: os.environ/CLAUDE_API_KEY
 
   # tier=embedding — episodic memory + retrieval
   - model_name: tier-embedding

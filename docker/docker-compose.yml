@@ -111,7 +111,7 @@ services:
     environment:
       # Provider keys for the model_list in litellm.config.yaml. Empty
       # when no .env is present — litellm still boots; model calls fail.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # Redis connection for the response cache (see litellm.config.yaml).

@@ -72,7 +72,7 @@ echo
 
 echo "-- LLM providers (at least one is required) --"
 have_llm=0
-for v in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
+for v in CLAUDE_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
   if [[ -n "${!v:-}" ]]; then
     have_llm=$((have_llm+1))
     printf "${C_G}OK     ${C_X}  %-32s set\n" "$v"
@@ -81,7 +81,7 @@ for v in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
   fi
 done
 if [[ $have_llm -eq 0 ]]; then
-  printf "${C_R}MISSING${C_X}  %-32s no LLM provider configured\n" "ANTHROPIC_API_KEY"
+  printf "${C_R}MISSING${C_X}  %-32s no LLM provider configured\n" "CLAUDE_API_KEY"
   fail=$((fail+1))
 fi
 echo
