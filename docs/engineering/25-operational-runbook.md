@@ -206,6 +206,162 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 
 ---
 
+### FM-6: Darwin → fiat payout failed on leg 2
+
+**Detection:** A `darwin_fiat_payout` returned 409 from the fiat ramp (Stripe Connect / MoonPay outage), OR the audit log shows the supervisor's `darwin_fiat_payout_second_leg_failed` event.
+
+**Signals:**
+- `OmnibusError("fiat ramp withdraw failed: ...")` in the audit metadata.
+- The Darwin's USDC is debited (leg 1 succeeded) but no fiat receipt in the ramp dashboard.
+- `omnibus.ledger()` shows no `DARWIN_FIAT_PAYOUT` entry for that timestamp.
+
+**Response:**
+1. Confirm the ramp is back up (Stripe status, MoonPay dashboard). Don't refund until you've decided whether to retry.
+2. **If retrying:** re-run `POST /darwins/{id}/fiat_payment` with a fresh `Idempotency-Key`. The omnibus already has the USDC from leg 1, so the second leg will fire against the existing balance.
+3. **If giving up:** call the refund route to put the Darwin's USDC back where it came from.
+
+```bash
+# Refund via curl
+curl -X POST "$PLATFORM/darwins/$DID/fiat_payment/refund" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"amount_usdc": 25.0, "reason": "ramp_outage_2026-05-30"}'
+```
+
+Or via SDK:
+
+```python
+from darwin_platform.client import DarwinClient, FiatRefundRequest
+
+client = DarwinClient(base_url=PLATFORM, token=TOKEN)
+client.darwin_fiat_refund(
+    darwin_id=did,
+    request=FiatRefundRequest(amount_usdc=25.0, reason="ramp_outage"),
+)
+```
+
+Or via dashboard: open `/darwins/{id}/payments`, fill the "Refund failed payout" card, click submit.
+
+**Verification:** The Darwin's wallet `balance_usdc` returns to the pre-payout value; the omnibus ledger gains a `REFUND_TO_DARWIN` entry; `audit_log.entries(action="refund_fiat_payout")` shows the operator's reason.
+
+---
+
+### FM-7: Spawn-time omnibus fund_child skipped
+
+**Detection:** A new Darwin's wallet shows the FakeWallet's symbolic opening balance, but the owner's `user_credits` weren't debited and no `FUND_CHILD` entry was recorded on the omnibus ledger. The audit log shows `omnibus_fund_skipped`.
+
+**Signals:**
+- Chain RPC outage in the supervisor logs around spawn time, OR
+- `user_credits[owner_subject]` was 0 at spawn time and the user has since deposited.
+
+**Response:**
+1. Confirm the chain is healthy + the user now has enough credit.
+2. Retry the fund explicitly:
+
+```bash
+curl -X POST "$PLATFORM/darwins/$DID/omnibus/fund" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"amount_usdc": 100.0}'
+```
+
+```python
+client.retry_omnibus_fund(darwin_id=did, amount_usdc=100.0)
+```
+
+Or via dashboard: `/darwins/{id}/payments` → "Retry omnibus fund" card.
+
+**Notes:**
+- Refuses for anonymous-owned Darwins — no `user_credits` to attribute the debit to.
+- Surface area: this drives `omnibus.fund_child` directly. Any error (`omnibus_fund_retry_failed`) is the same shape an operator sees from a manual `fund_child` call.
+
+**Verification:** `omnibus.ledger()` gains a `FUND_CHILD` entry; `user_credits[owner_subject]` is debited by the amount; the Darwin's on-chain balance now matches the symbolic opening.
+
+---
+
+## Common operator workflows (payments)
+
+### Manage owner pre-approvals
+
+Pre-approvals are typed exceptions to layer-4 escalation. An owner who pays Upwork escrow weekly doesn't want to approve every $30 payment manually.
+
+**Via dashboard:** `/darwins/{id}/preapprovals` lists active rules and exposes install / revoke. The card view shows `used_count / max_uses` and expiry countdown so quota state is visible at a glance.
+
+**Via SDK:**
+
+```python
+from darwin_platform.client import DarwinClient, PreApprovalSpec
+
+client = DarwinClient(base_url=PLATFORM, token=TOKEN)
+
+# Install: "auto-allow up to 10 Upwork freelancer payments under $50,
+# expiring in 7 days".
+client.set_preapproval(
+    darwin_id=did,
+    rule_id="upwork-weekly",
+    spec=PreApprovalSpec(
+        max_amount_usdc=50.0,
+        counterparty_category="freelancer",
+        counterparty_substring="upwork",
+        max_uses=10,
+        expires_at=time.time() + 7 * 86400,
+    ),
+)
+
+# List active rules + their consume counter.
+for rule in client.list_preapprovals(did):
+    print(rule["rule_id"], rule["used_count"], "/", rule.get("max_uses"))
+
+# Revoke.
+client.revoke_preapproval(did, "upwork-weekly")
+```
+
+**Inheritance:** When a parent reproduces, its rules are copied onto the child's wallet with `used_count` reset to 0. The owner can revoke per-child if they want a narrower scope.
+
+### Register a freelancer (KYC gate)
+
+A `darwin_fiat_payment` only fires against a freelancer registered for the calling owner. Operators onboard the freelancer once; subsequent payments resolve through the registry.
+
+**Via dashboard:** `/freelancers` (owner self-serve, `/me/freelancers` server-side).
+
+**Via SDK:**
+
+```python
+from darwin_platform.client import DarwinClient, FreelancerRegistration
+
+client.register_freelancer(FreelancerRegistration(
+    owner_subject="alice@example.com",
+    freelancer_id="upwork:writer-42",
+    fiat_destination="acct_1QAbcDeFgHiJk",
+    display_name="Jane Writer",
+    kyc_status="verified",
+))
+```
+
+### Send a Darwin fiat payment
+
+After the genome's facilitator escalates a freelancer payment and the owner approves the escalation, the operator settles it via fiat:
+
+```python
+from darwin_platform.client import DarwinClient, FiatPaymentRequest
+
+receipt = client.darwin_fiat_payment(
+    darwin_id=did,
+    request=FiatPaymentRequest(
+        amount_usdc=25.0,
+        freelancer_id="upwork:writer-42",
+        escalation_id="esc-9001",   # ties payout to approval
+    ),
+)
+print(receipt["tx_hash"], receipt["metadata"]["provider"])
+```
+
+Refuses with 409 if the freelancer isn't registered for the Darwin's `owner_subject` — the registry is the platform's KYC gate.
+
+For recovery from leg-2 failures see [FM-6](#fm-6-darwin--fiat-payout-failed-on-leg-2). For recovery from skipped spawn-time funding see [FM-7](#fm-7-spawn-time-omnibus-fund_child-skipped).
+
+---
+
 ## Leader failover procedure
 
 When the leader pod dies (eviction, crash, OOM):
