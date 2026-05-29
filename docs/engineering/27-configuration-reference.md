@@ -114,6 +114,39 @@ When set, `E2BSandbox` replaces `FakeSandbox`. Requires the `[e2b]` extra.
 - `--sanctions-provider local` uses `--sanctions-denylist` (or no screening if omitted).
 - Screening runs before every outbound wallet transfer regardless of provider choice.
 
+## Payment HTTP endpoints (doc 17)
+
+These routes are added by `build_app` whenever the supervisor is constructed; no separate flag enables them. All are platform-operator scoped.
+
+### Pre-approval rules
+
+| Method | Path | Body / Notes |
+| ------ | ---- | ------------ |
+| `PUT` | `/platform/wallets/{darwin_id}/preapprovals/{rule_id}` | `{max_amount_usdc, counterparty_category?, counterparty_substring?, expires_at?, max_uses?}`. Create or replace. Replacing resets `used_count` to 0. |
+| `DELETE` | `/platform/wallets/{darwin_id}/preapprovals/{rule_id}` | Idempotent revoke. |
+| `GET` | `/platform/wallets/{darwin_id}/preapprovals` | List active rules. |
+
+Rules persist in the `darwin_preapprovals` SQL table (schema v6). Inherited parent → child on reproduction. The genome's `payments.facilitator` calls `wallet.consume_preapproval(rule_id)` after a successful pre-approved pay so `used_count` advances and writes through to persistence.
+
+### Freelancer registry
+
+Verified fiat-payout destinations, owner-scoped. The KYC gate at the fiat edge.
+
+| Method | Path | Body / Notes |
+| ------ | ---- | ------------ |
+| `POST` | `/platform/freelancers` | `{owner_subject, freelancer_id, fiat_destination, display_name?, kyc_status?, metadata?}`. Create or replace. |
+| `DELETE` | `/platform/freelancers/{owner_subject}/{freelancer_id}` | Idempotent revoke. |
+| `GET` | `/platform/freelancers/{owner_subject}` | List entries for one owner. |
+
+Entries persist in the `freelancer_registry` SQL table (schema v5).
+
+### Darwin → fiat payout (and refund)
+
+| Method | Path | Body / Notes |
+| ------ | ---- | ------------ |
+| `POST` | `/darwins/{darwin_id}/fiat_payment` | `{amount_usdc, freelancer_id, escalation_id?}`. Two-leg: wallet → omnibus address (chain), omnibus → fiat ramp. Refuses if `freelancer_id` isn't registered for the Darwin's owner. |
+| `POST` | `/darwins/{darwin_id}/fiat_payment/refund` | `{amount_usdc, reason?}`. Recovery path: omnibus → Darwin wallet chain transfer, undoing a failed leg-2. |
+
 ## `serve` — notification sinks (doc 08)
 
 Multiple sinks can be active simultaneously (fan-out).

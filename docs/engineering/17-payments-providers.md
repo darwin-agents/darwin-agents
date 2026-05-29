@@ -134,20 +134,22 @@ PreApprovalRule(
     counterparty_substring="upwork",     # optional; case-insensitive
     max_amount_usdc=50.0,                # required; per-spend ceiling
     expires_at=1_717_200_000.0,          # optional; epoch seconds
+    max_uses=10,                         # optional; None = unlimited
+    used_count=0,                        # bumped by consume_preapproval
 )
 ```
 
-Match is conjunctive: every non-`None` field must hold against the `SpendIntent`. A matching rule converts what would have been an `ESCALATE` into an `ALLOW` whose `layer` is `pre_approval:<rule_id>`, audit-logged with the rationale.
+Match is conjunctive: every non-`None` field must hold against the `SpendIntent`. A matching rule converts what would have been an `ESCALATE` into an `ALLOW` whose `layer` is `pre_approval:<rule_id>`, audit-logged with the rationale. After a successful pre-approved pay the facilitator calls `wallet.consume_preapproval(rule_id)` which bumps `used_count` and writes through to the persistent store via a callback the supervisor installed at spawn time. Once `used_count >= max_uses` the rule stops matching and subsequent spends fall through to escalation.
 
 Pre-approvals **never** loosen the constitution's hard rules: the forbidden screen (layer 1), DNA hard caps (layer 2), strategy envelope (layer 3), solvency, sanctions screening, and anomaly detection still apply unchanged. A rule with `max_amount_usdc=1_000_000` against a `per_action_usdc=50` hard cap still refuses anything over $50.
 
 The platform manages the rule set via the operator API:
 
-- `PUT  /platform/wallets/{darwin_id}/preapprovals/{rule_id}` — create or replace
+- `PUT  /platform/wallets/{darwin_id}/preapprovals/{rule_id}` — create or replace. Body carries `max_amount_usdc`, `counterparty_category`, `counterparty_substring`, `expires_at`, `max_uses`. Replacing an existing rule resets `used_count` to 0.
 - `DELETE /platform/wallets/{darwin_id}/preapprovals/{rule_id}` — revoke (idempotent)
 - `GET  /platform/wallets/{darwin_id}/preapprovals` — list active rules
 
-Rules live on the wallet (`set_preapproval` / `revoke_preapproval` / `owner_preapprovals`); the genome's `payments.facilitator` reads them every time it builds the `TreasuryState` so a revoke takes effect on the next policy check. An expired rule is inert without a revoke.
+Rules live on the wallet (`set_preapproval` / `revoke_preapproval` / `owner_preapprovals`); the genome's `payments.facilitator` reads them every time it builds the `TreasuryState` so a revoke takes effect on the next policy check. Persistence: rules + `max_uses` + `used_count` round-trip through the `darwin_preapprovals` SQL table (schema v6), so an expired rule is inert without a revoke, and `used_count` survives a supervisor restart. Inheritance: when a parent reproduces, `_inherit_preapprovals` copies the parent's rule set onto the child's wallet so the owner's "Upwork under $50" intent applies to the lineage; the operator can revoke per-child if narrower scope is needed.
 
 ## What about a Darwin paying a human?
 
@@ -155,12 +157,25 @@ Some strategies involve hiring humans — pay a freelance writer, pay a translat
 
 **1. Direct USDC to a verified wallet** (low friction, low compliance overhead). The standard `wallet.pay(to, amount_usdc, memo)` path. The Darwin's `payments.facilitator` calls it after the escalation is approved (or after a matching pre-approval clears it directly). On-chain settlement; the recipient sees USDC in their wallet seconds later.
 
-**2. Fiat via Stripe Connect / MoonPay** (higher friction, higher compliance overhead). For freelancers who only take a bank transfer. The platform exposes `POST /darwins/{id}/fiat_payment` (operator-only). Two legs:
+**2. Fiat via Stripe Connect / MoonPay** (higher friction, higher compliance overhead). For freelancers who only take a bank transfer. The platform exposes `POST /darwins/{id}/fiat_payment` (operator-only). Two legs, gated by the freelancer registry:
 
+   - **Registry lookup** — the request body carries `freelancer_id`, not a raw destination. The supervisor resolves it through the `FreelancerRegistry` scoped to the Darwin's `owner_subject`. An id not registered for the requesting owner refuses with a 409 *before* any chain transfer fires — registry membership is the platform's KYC gate at the fiat edge, and the per-owner scoping prevents user A from fiat-routing through user B's onboarded freelancers.
    - **Leg 1** — `wallet.transfer_out_for_fiat_payout(amount, destination=omnibus.address())` debits the Darwin's USDC wallet to the omnibus address on-chain.
-   - **Leg 2** — `omnibus.relay_fiat_payout(darwin_id, amount, fiat_destination, fiat_ramp)` calls `fiat_ramp.withdraw(amount_usdc, destination)` which executes the Stripe Connect Transfer (or MoonPay payout) to the freelancer's verified bank account. The omnibus records a `DARWIN_FIAT_PAYOUT` ledger entry with the provider transaction id. `user_credits` is untouched — the source is the Darwin's wallet, not a user deposit.
+   - **Leg 2** — `omnibus.relay_fiat_payout(darwin_id, amount, fiat_destination, fiat_ramp, escalation_id)` calls `fiat_ramp.withdraw(amount_usdc, destination)` which executes the Stripe Connect Transfer (or MoonPay payout) to the freelancer's verified bank account. The omnibus records a `DARWIN_FIAT_PAYOUT` ledger entry with the provider transaction id and the originating `escalation_id` so a forensic timeline ties the approval to the settlement. `user_credits` is untouched — the source is the Darwin's wallet, not a user deposit.
 
-   This is an *operator-initiated* call: the genome can't reach fiat directly. Typical flow: Darwin escalates → owner approves through the escalation API → operator invokes `darwin_fiat_payout` to settle via fiat. The intermediate omnibus hop insulates the Darwin's wallet from the ramp's settlement timing and gives the operator a clean reversal point if the fiat leg fails.
+   This is an *operator-initiated* call: the genome can't reach fiat directly. Typical flow: Darwin escalates → owner approves through the escalation API → operator invokes `darwin_fiat_payout(freelancer_id=..., escalation_id=...)` to settle via fiat. The intermediate omnibus hop insulates the Darwin's wallet from the ramp's settlement timing and gives the operator a clean reversal point if the fiat leg fails.
+
+   **Failure recovery (leg 2 fails after leg 1 succeeded).** When `fiat_ramp.withdraw` throws, the Darwin has already lost USDC to the omnibus address. `POST /darwins/{id}/fiat_payment/refund` calls `omnibus.refund_to_darwin(darwin_address, amount, reason)` which submits a chain transfer from the omnibus back to the Darwin's wallet and records a `REFUND_TO_DARWIN` entry; the supervisor then credits the Darwin's local ledger via `wallet.credit` so the genome's `balance_usdc` reflects the inbound. Operator-initiated (not automatic on leg-2 failure) so a real ramp outage doesn't silently mask itself.
+
+### Freelancer registry
+
+Each owner registers their fiat destinations once. The platform exposes:
+
+- `POST  /platform/freelancers` — create or replace. Body: `owner_subject`, `freelancer_id`, `fiat_destination` (Stripe Connect account id, MoonPay payout token, etc.), `display_name`, `kyc_status`, optional `metadata`.
+- `DELETE /platform/freelancers/{owner_subject}/{freelancer_id}` — revoke (idempotent).
+- `GET    /platform/freelancers/{owner_subject}` — list entries for one owner.
+
+Routes are platform-operator scoped today; owners onboard via the operator. A self-service `/me/freelancers` path scoped to the authenticated owner is a future addition. Entries persist through the `freelancer_registry` SQL table (schema v5); a process restart preserves every owner's already-onboarded freelancers.
 
 **3. x402 / web service that handles fiat conversion downstream.** The Darwin pays USDC via the standard `x402` client; the upstream merchant (a content network, an AI API, an ad platform) settles in fiat downstream on their own books. The Darwin never sees fiat. This is the dominant path the system is designed for — most agent-economy services accept USDC at the merchant edge today.
 
