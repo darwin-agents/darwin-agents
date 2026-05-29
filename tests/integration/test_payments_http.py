@@ -385,3 +385,68 @@ async def test_fiat_payment_refund_unknown_darwin_404(fiat_client):
         "amount_usdc": 1.0,
     })
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Owner self-serve /me/freelancers
+# ---------------------------------------------------------------------------
+
+
+async def test_me_freelancers_round_trip(fiat_client):
+    """Auth-disabled mode → ctx.subject = 'anonymous'. The /me routes
+    implicitly scope to that subject. Registering, listing, deleting
+    from /me lands in the same store the /platform routes use."""
+    c, _ = fiat_client
+    # Owner registers via /me — no owner_subject in the body needs to match.
+    r = await c.post("/me/freelancers", json={
+        "owner_subject": "ignored-by-route",   # overridden to ctx.subject
+        "freelancer_id": "f-self-serve",
+        "fiat_destination": "acct_self",
+        "kyc_status": "verified",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["owner_subject"] == "anonymous"   # NOT "ignored-by-route"
+    assert body["freelancer_id"] == "f-self-serve"
+
+    # List via /me returns just this owner's entries.
+    listed = (await c.get("/me/freelancers")).json()
+    assert [d["freelancer_id"] for d in listed] == ["f-self-serve"]
+
+    # Revoke via /me.
+    r = await c.delete("/me/freelancers/f-self-serve")
+    assert r.status_code == 200
+    assert r.json() == {"revoked": True, "freelancer_id": "f-self-serve"}
+    assert (await c.get("/me/freelancers")).json() == []
+
+
+async def test_me_freelancers_cannot_reach_another_owner(fiat_client):
+    """The body's owner_subject is overridden by ctx.subject — an owner
+    cannot register under someone else's identity by spoofing the body."""
+    c, sup = fiat_client
+    # Alice (via the operator routes) seeds an entry.
+    await c.post("/platform/freelancers", json={
+        "owner_subject": "alice",
+        "freelancer_id": "alice-only",
+        "fiat_destination": "acct_alice",
+    })
+    # The /me caller (ctx.subject="anonymous") tries to spoof alice in body.
+    await c.post("/me/freelancers", json={
+        "owner_subject": "alice",
+        "freelancer_id": "imposter",
+        "fiat_destination": "acct_evil",
+    })
+    # /me list only shows the imposter under "anonymous" — alice's row
+    # is untouched.
+    me_listed = (await c.get("/me/freelancers")).json()
+    assert [d["freelancer_id"] for d in me_listed] == ["imposter"]
+    # Alice's list still has just alice-only.
+    alice_listed = (await c.get("/platform/freelancers/alice")).json()
+    assert [d["freelancer_id"] for d in alice_listed] == ["alice-only"]
+
+
+async def test_me_freelancers_delete_unknown_is_idempotent(fiat_client):
+    c, _ = fiat_client
+    r = await c.delete("/me/freelancers/never-existed")
+    assert r.status_code == 200
+    assert r.json()["revoked"] is False

@@ -446,3 +446,103 @@ async def test_preapproval_max_uses_round_trips_through_persistence(tmp_path):
     assert rules[0].used_count == 0
     await sup_b.shutdown(kill_running=False)
     sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_v3_db_upgrades_through_v6_with_data(tmp_path):
+    """A real v3 database — quarantine columns present, no pre-approvals
+    or freelancer tables — upgrades cleanly through v4 (preapprovals
+    table), v5 (freelancer_registry table), and v6 (max_uses / used_count
+    columns on preapprovals).
+
+    The point of this test (vs. the in-place v2 one above) is that it
+    seeds actual ROWS in the pre-existing tables and verifies they
+    survive the migration AND the new tables are immediately usable
+    against the upgraded backend."""
+    import sqlite3
+
+    db = tmp_path / "platform.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        # darwin_lifecycle WITH quarantine columns (the v3 shape).
+        "CREATE TABLE darwin_lifecycle ("
+        " darwin_id TEXT PRIMARY KEY, opening_usdc REAL NOT NULL,"
+        " last_balance REAL, parent_id TEXT, spawned_at REAL NOT NULL,"
+        " alive INTEGER NOT NULL, killed INTEGER NOT NULL,"
+        " kill_reason TEXT, escalation_auto TEXT,"
+        " quarantined INTEGER NOT NULL DEFAULT 0,"
+        " quarantine_reason TEXT, quarantine_operator TEXT,"
+        " quarantine_applied_ts REAL);"
+        "CREATE TABLE schema_version ("
+        " id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL,"
+        " applied_at REAL NOT NULL, code_version TEXT NOT NULL);"
+        "INSERT INTO schema_version VALUES (1, 3, 0.0, 'test-v3');"
+        # Seed a row that must survive the upgrade.
+        "INSERT INTO darwin_lifecycle VALUES("
+        " 'pre-existing', 42.0, 42.0, NULL, 1.0, 1, 0, NULL, 'approve',"
+        " 0, NULL, NULL, NULL);"
+    )
+    conn.commit()
+    conn.close()
+
+    sup = Supervisor(persistence_path=str(db))
+    try:
+        from darwin_platform.runtime.persistence import CURRENT_SCHEMA_VERSION
+
+        # All forward migrations applied.
+        assert sup._persistence.schema_version() == CURRENT_SCHEMA_VERSION
+        # Pre-existing v3 row is intact.
+        rec = sup._lifecycle.get("pre-existing")
+        assert rec is not None
+        assert rec.opening_usdc == 42.0
+
+        # v4 table: darwin_preapprovals is now usable.
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        await sup.set_preapproval(
+            status.darwin_id,
+            rule_id="r1",
+            max_amount_usdc=50.0,
+            counterparty_category="freelancer",
+            actor="alice",
+        )
+        rules = sup._preapproval_store.load(darwin_id=status.darwin_id)
+        assert len(rules) == 1
+
+        # v5 table: freelancer_registry is now usable. Default in the
+        # supervisor is the persistent store (auto-wired when persistence
+        # is configured), so a direct call lands there.
+        from darwin_platform.payments.freelancer_registry import (
+            FreelancerDestination,
+        )
+        sup._freelancer_registry.register(FreelancerDestination(
+            owner_subject="alice", freelancer_id="f1",
+            fiat_destination="acct_x", display_name="One",
+            kyc_status="verified",
+            registered_at=0.0,
+        ))
+        listed = sup._freelancer_registry.list(owner_subject="alice")
+        assert [d.freelancer_id for d in listed] == ["f1"]
+
+        # v6 columns: max_uses + used_count present on the preapprovals
+        # table — write a rule with max_uses + a consumed count and
+        # round-trip it.
+        from darwin_dna.constitution import PreApprovalRule
+        sup._preapproval_store.save(
+            darwin_id=status.darwin_id,
+            rule=PreApprovalRule(
+                rule_id="capped",
+                counterparty_category="freelancer",
+                max_amount_usdc=10.0,
+                max_uses=5,
+                used_count=2,
+            ),
+        )
+        loaded = {
+            r.rule_id: r
+            for r in sup._preapproval_store.load(darwin_id=status.darwin_id)
+        }
+        assert loaded["capped"].max_uses == 5
+        assert loaded["capped"].used_count == 2
+    finally:
+        await sup.shutdown(kill_running=False)
+        sup._persistence.close()

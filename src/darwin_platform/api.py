@@ -151,6 +151,13 @@ class DarwinFiatRefundRequest(BaseModel):
     reason: str = "fiat_payout_leg2_failed"
 
 
+class RetryOmnibusFundRequest(BaseModel):
+    """Operator retry of a fund_child that was skipped at spawn time
+    (chain hiccup, transient outage)."""
+
+    amount_usdc: float = Field(gt=0)
+
+
 class FiatWithdrawRequest(BaseModel):
     amount_usdc: float = Field(gt=0)
     destination: str = Field(min_length=1)
@@ -1190,6 +1197,80 @@ def build_app(
     ) -> list[dict[str, Any]]:
         _require_scope(ctx, PLATFORM_OPERATOR)
         return _sup(request).list_freelancers(owner_subject=owner_subject)
+
+    # -- /me/freelancers — owner self-serve (doc 17) -----------------------
+    # Same store, but the owner_subject is implicit from ctx.subject so
+    # the owner cannot reach another user's destinations. Requires OWNER
+    # scope, which is satisfied by both PLATFORM_OPERATOR and a normal
+    # owner token (AuthContext.has_scope).
+    @app.post("/me/freelancers")
+    async def me_register_freelancer(
+        request: Request,
+        req: RegisterFreelancerRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        # An owner can only register under their own subject — body
+        # owner_subject is ignored / overridden.
+        subject = ctx.subject or "anonymous"
+        try:
+            return _sup(request).register_freelancer(
+                owner_subject=subject,
+                freelancer_id=req.freelancer_id,
+                fiat_destination=req.fiat_destination,
+                display_name=req.display_name,
+                kyc_status=req.kyc_status,
+                metadata=req.metadata,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/me/freelancers")
+    async def me_list_freelancers(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> list[dict[str, Any]]:
+        _require_scope(ctx, OWNER)
+        subject = ctx.subject or "anonymous"
+        return _sup(request).list_freelancers(owner_subject=subject)
+
+    @app.delete("/me/freelancers/{freelancer_id}")
+    async def me_revoke_freelancer(
+        freelancer_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        subject = ctx.subject or "anonymous"
+        try:
+            return _sup(request).revoke_freelancer(
+                owner_subject=subject,
+                freelancer_id=freelancer_id,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/darwins/{darwin_id}/omnibus/fund")
+    async def retry_omnibus_fund(
+        darwin_id: str,
+        request: Request,
+        req: RetryOmnibusFundRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Retry a fund_child that was skipped at spawn time."""
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).retry_omnibus_fund(
+                darwin_id,
+                amount_usdc=req.amount_usdc,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
 
     @app.post("/darwins/{darwin_id}/fiat_payment/refund")
     async def darwin_fiat_refund(
