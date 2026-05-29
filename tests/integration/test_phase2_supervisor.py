@@ -984,3 +984,124 @@ async def test_preapproval_max_uses_blocks_after_quota_exhausted():
         assert r3.escalated is True
     finally:
         await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_kill_actually_sweeps_chain_bytes_to_omnibus(_omnibus_chain):
+    """Dead-Darwin residual moves on-chain (FakeWallet doesn't talk to a
+    real chain so we assert via the ledger entry, but the new sweep_to
+    method is what RealWallet would call against the real chain)."""
+    omnibus = OmnibusWallet(_omnibus_chain)
+    omnibus.record_deposit(
+        user_subject="alice", amount_usdc=200.0, source_ref="x",
+    )
+    sup = Supervisor(heartbeat_seconds=0.001, omnibus_wallet=omnibus)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        wallet = sup._darwins[status.darwin_id].stack.wallet
+        balance_before_kill = wallet.balance_usdc()
+        await sup.kill(status.darwin_id, reason="test", actor="alice")
+        # Chain leg: the wallet's ledger shows a sweep_out entry to
+        # the omnibus address.
+        sweeps = [mv for mv in wallet.movements() if "sweep_out" in mv]
+        assert len(sweeps) == 1
+        assert sweeps[0]["sweep_out"]["destination"] == omnibus.address()
+        assert sweeps[0]["sweep_out"]["amount_usdc"] == pytest.approx(
+            balance_before_kill,
+        )
+        # Wallet balance is now zero.
+        assert wallet.balance_usdc() == pytest.approx(0.0)
+        # Ledger leg: omnibus.sweep_child credited alice.
+        ledger_sweeps = [
+            e for e in omnibus.ledger() if e.kind.value == "sweep_child"
+        ]
+        assert len(ledger_sweeps) == 1
+    finally:
+        await sup.shutdown(kill_running=False)
+
+
+# ---------------------------------------------------------------------------
+# retry_omnibus_fund — operator recovery for skipped spawn-time funding
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_omnibus_fund_settles_after_deferred_funding(
+    _omnibus_chain,
+):
+    """The owner spawns a Darwin with no user_credits — initial funding
+    is skipped + audit-logged. The owner later deposits, the operator
+    retries, the omnibus debits credits + records FUND_CHILD."""
+    omnibus = OmnibusWallet(_omnibus_chain)
+    sup = Supervisor(heartbeat_seconds=0.001, omnibus_wallet=omnibus)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        # No credit at spawn time → spawn-time fund_child skipped.
+        skipped = sup.audit_log.entries(action="omnibus_fund_skipped")
+        assert len(skipped) == 1
+        # Alice deposits.
+        omnibus.record_deposit(
+            user_subject="alice", amount_usdc=100.0, source_ref="x",
+        )
+        # Operator retries.
+        result = await sup.retry_omnibus_fund(
+            status.darwin_id, amount_usdc=100.0, actor="operator",
+        )
+        assert result["kind"] == "fund_child"
+        funds = [e for e in omnibus.ledger() if e.kind.value == "fund_child"]
+        assert len(funds) == 1
+        # user_credits debited.
+        assert omnibus.user_credit("alice") == pytest.approx(0.0)
+        # Audit trail.
+        retries = sup.audit_log.entries(action="retry_omnibus_fund")
+        assert len(retries) == 1
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_retry_omnibus_fund_refuses_anonymous_owner(_omnibus_chain):
+    """An anonymous owner has nothing to debit credits from — refuse."""
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=100.0)  # anonymous
+        with pytest.raises(Exception, match="anonymous"):
+            await sup.retry_omnibus_fund(
+                status.darwin_id, amount_usdc=10.0, actor="operator",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_retry_omnibus_fund_requires_omnibus_configured():
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        with pytest.raises(Exception, match="omnibus"):
+            await sup.retry_omnibus_fund(
+                status.darwin_id, amount_usdc=10.0, actor="operator",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_retry_omnibus_fund_propagates_omnibus_refusal(_omnibus_chain):
+    """Retrying when the user still has no credit surfaces the omnibus
+    error — operator sees the actual reason, not a silent skip."""
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        with pytest.raises(Exception, match="omnibus fund retry failed"):
+            await sup.retry_omnibus_fund(
+                status.darwin_id, amount_usdc=100.0, actor="operator",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)

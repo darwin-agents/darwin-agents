@@ -3679,12 +3679,19 @@ class Supervisor:
             )
 
     def _sweep_dead_darwin_to_omnibus(self, handle: _Handle) -> None:
-        """Best-effort: on kill, credit the owning user with whatever
-        residual USDC the Darwin's wallet still holds. Recording-only:
-        the on-chain reconciliation (an actual transfer from the dead
-        Darwin's wallet to the omnibus address) is operator-driven and
-        not performed here. Same skip conditions as the funding helper.
-        """
+        """On kill, move the dead Darwin's residual USDC back to the
+        omnibus address on-chain AND credit the owning user via
+        ``omnibus.sweep_child``. Both legs are best-effort:
+
+        - **Chain leg**: ``wallet.sweep_to(destination=omnibus_address)``
+          actually transfers bytes back. A wallet without ``sweep_to``
+          (older / minimal adapter) falls back to recording-only — the
+          residual stays at the dead address and the operator
+          reconciles by hand.
+        - **Ledger leg**: ``omnibus.sweep_child`` credits user_credits.
+
+        Skip conditions: no omnibus, anonymous owner, zero residual.
+        Failures are audit-logged but never block kill."""
         if self._omnibus_wallet is None:
             return
         if handle.owner_subject == "anonymous":
@@ -3702,6 +3709,33 @@ class Supervisor:
             ) else ""
         except Exception:
             from_address = ""
+        # Chain leg: actually move bytes back. Optional capability —
+        # adapters without sweep_to keep the legacy record-only behaviour.
+        sweeper = getattr(wallet, "sweep_to", None)
+        if callable(sweeper):
+            try:
+                omnibus_address = self._omnibus_wallet.address()
+            except Exception:
+                omnibus_address = ""
+            if omnibus_address:
+                try:
+                    sweeper(
+                        destination=str(omnibus_address),
+                        amount_usdc=residual,
+                    )
+                except Exception as exc:
+                    # Chain failure: log and CONTINUE to the ledger leg.
+                    # The accounting credit still belongs to the user;
+                    # the on-chain bytes can be reconciled separately.
+                    self._audit.record(
+                        actor="supervisor.kill",
+                        action="omnibus_sweep_chain_failed",
+                        darwin_id=handle.darwin_id,
+                        metadata={
+                            "amount_usdc": residual,
+                            "reason": str(exc),
+                        },
+                    )
         try:
             self._omnibus_wallet.sweep_child(
                 darwin_id=handle.darwin_id,
@@ -4123,6 +4157,83 @@ class Supervisor:
                 owner_subject=owner_subject,
             )
         ]
+
+    async def retry_omnibus_fund(
+        self,
+        darwin_id: str,
+        *,
+        amount_usdc: float,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Retry an omnibus.fund_child that was skipped at spawn time
+        (typically a chain hiccup recorded in the audit as
+        ``omnibus_fund_skipped``). Operator-initiated — there's no
+        automatic retry loop, because the right cadence depends on the
+        operator's reconciliation cycle.
+
+        Same shape as the spawn-time funding helper:
+
+        - Looks up the Darwin's owner_subject and wallet address.
+        - Calls ``omnibus.fund_child(amount, user_subject=owner,
+          to_address=wallet_address)`` which debits user_credits and
+          submits the chain transfer.
+        - Audits the retry on success or surface the omnibus error.
+        """
+        if self._omnibus_wallet is None:
+            raise SupervisorError("omnibus wallet is not configured")
+        amount = float(amount_usdc)
+        if amount <= 0:
+            raise SupervisorError("amount_usdc must be positive")
+        with span(
+            "supervisor.retry_omnibus_fund",
+            darwin_id=darwin_id,
+            attributes={"amount_usdc": amount},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            if h.owner_subject == "anonymous":
+                raise SupervisorError(
+                    "cannot retry fund for an anonymous-owned Darwin "
+                    "(no user_credits to attribute the debit to)",
+                )
+            wallet = h.stack.wallet
+            address_getter = getattr(wallet, "address", None)
+            if not callable(address_getter):
+                raise SupervisorError(
+                    "wallet has no on-chain address — cannot fund",
+                )
+            try:
+                to_address = address_getter()
+            except Exception as exc:
+                raise SupervisorError(
+                    f"wallet address unavailable: {exc}",
+                ) from exc
+            if not to_address:
+                raise SupervisorError("wallet address is empty")
+            try:
+                entry = self._omnibus_wallet.fund_child(
+                    darwin_id=darwin_id,
+                    to_address=str(to_address),
+                    amount_usdc=amount,
+                    user_subject=h.owner_subject,
+                    actor=actor,
+                )
+            except Exception as exc:
+                raise SupervisorError(
+                    f"omnibus fund retry failed: {exc}",
+                ) from exc
+            self._audit.record(
+                actor=actor,
+                action="retry_omnibus_fund",
+                darwin_id=darwin_id,
+                metadata={
+                    "amount_usdc": amount,
+                    "user_subject": h.owner_subject,
+                    "to_address": str(to_address),
+                    "tx_hash": entry.tx_hash,
+                },
+            )
+            return entry.to_json()
 
     async def refund_fiat_payout(
         self,
