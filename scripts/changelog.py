@@ -73,10 +73,9 @@ def _unreleased_bounds(lines: list[str]) -> tuple[int, int]:
 
 
 def _normalize_block(block: str) -> str:
-    block = block.strip() + "\n"
-    if not block.endswith("\n\n"):
-        block += "\n"
-    return block
+    """Trim git-cliff output and ensure a blank line before the next ## section."""
+    block = re.sub(r"\n{3,}", "\n\n", block.strip())
+    return block + "\n\n"
 
 
 def _replace_unreleased(text: str, new_section: str) -> str:

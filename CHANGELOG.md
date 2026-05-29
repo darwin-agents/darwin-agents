@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- test(k8s): assert wallet-provider is forwarded to orchestrator pods
+- feat(platform): add freelancer registry, persistent pre-approvals, and fiat refund
+- feat(dna): enforce pre-approval max_uses and consume counters after pay
+- feat(platform): add owner pre-approvals and Darwin fiat payout settlement
+- feat(dna): add owner pre-approval rules to treasury policy evaluation
+
+### Changed
+
+- docs(engineering): document pre-approvals and Darwin fiat payout flows
+
 ## [0.0.3] - 2026-05-29
 
-
 ### Added
+
 - test(platform): harden factory-empty assertion against dotenv side effects
 - feat(platform): forward wallet provider selection into orchestrator pods
 - feat(platform): relay reproduction transfers from omnibus to child wallets
@@ -44,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(platform): wire Stripe and MoonPay fiat ramps in serve CLI
 
 ### Changed
+
 - docs(frontend): restructure build plan as M0–M4 milestones
 - docs(frontend): align auth and owner-controls with wired providers
 - docs(frontend): update API integration doc for shipped endpoints
@@ -66,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs(frontend): expand phased delivery and document API gaps
 
 ### Fixed
+
 - fix(platform): ignore metered infra debits in spread-spend detector
 - fix(platform): persist child lifecycle and mirror escalation auto decisions
 - ci: add GitHub workflow for web lint, test, and build
@@ -74,8 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.2] - 2026-05-22
 
-
 ### Added
+
 - test(dna): align reproduction and ledger tests with runtime behavior
 - feat(platform): apply per-tier LLM timeouts in LiteLLMTransport
 - feat(platform): add doc-28 retry policies for sinks, sanctions, and Postgres
@@ -112,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(platform): add sandboxed patch staging service for Phase 1 eval
 
 ### Changed
+
 - docs(dna): clarify content-affiliate strategy stays active after seeding
 - docs: fix doc drift in threat model, runbook, and tuning guide
 - perf(sim): avoid O(n²) invariant scans on long simulated runs
@@ -135,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor(platform/runtime): move supervisor, persistence, and driver into runtime/
 
 ### Fixed
+
 - fix(dna): fail closed when kill-switch source is unreachable
 - style: clear ruff violations across platform, genome, and tests
 - ci: point postgres persistence job at reorganised test path
