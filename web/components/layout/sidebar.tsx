@@ -2,12 +2,21 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Bell, FlaskConical, Inbox, LayoutGrid, Receipt } from "lucide-react";
+import {
+  Activity,
+  Bell,
+  FlaskConical,
+  Inbox,
+  LayoutGrid,
+  Receipt,
+  Users,
+} from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const NAV: Array<{ href: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { href: "/", label: "Fleet", icon: LayoutGrid },
   { href: "/escalations", label: "Escalations", icon: Inbox },
+  { href: "/freelancers", label: "Freelancers", icon: Users },
   { href: "/tokens", label: "Design tokens", icon: FlaskConical },
 ];
 
