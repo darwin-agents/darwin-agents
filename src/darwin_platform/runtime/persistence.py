@@ -208,13 +208,37 @@ CREATE TABLE IF NOT EXISTS platform_retired_keys (
 );
 CREATE INDEX IF NOT EXISTS platform_retired_keys_drain_idx
     ON platform_retired_keys(drain_until);
+
+CREATE TABLE IF NOT EXISTS darwin_preapprovals (
+    darwin_id                TEXT     NOT NULL,
+    rule_id                  TEXT     NOT NULL,
+    max_amount_usdc          {real}   NOT NULL,
+    counterparty_category    TEXT,
+    counterparty_substring   TEXT,
+    expires_at               {real},
+    max_uses                 INTEGER,
+    used_count               INTEGER  NOT NULL DEFAULT 0,
+    created_at               {real}   NOT NULL,
+    PRIMARY KEY (darwin_id, rule_id)
+);
+
+CREATE TABLE IF NOT EXISTS freelancer_registry (
+    owner_subject     TEXT     NOT NULL,
+    freelancer_id     TEXT     NOT NULL,
+    fiat_destination  TEXT     NOT NULL,
+    display_name      TEXT     NOT NULL DEFAULT '',
+    kyc_status        TEXT     NOT NULL DEFAULT 'unverified',
+    registered_at     {real}   NOT NULL,
+    metadata_json     TEXT     NOT NULL DEFAULT '{{}}',
+    PRIMARY KEY (owner_subject, freelancer_id)
+);
 """
 
 
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 3
+CURRENT_SCHEMA_VERSION: int = 6
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -562,6 +586,17 @@ class PersistenceStore:
 
     def lineage_registry(self) -> "PersistentLineageRegistry":
         return PersistentLineageRegistry(self._backend)
+
+    def preapproval_store(self) -> "PersistentPreApprovalStore":
+        """Per-Darwin pre-approval rule store. The supervisor writes
+        through on every set/revoke and rehydrates the wallet on spawn
+        so a restart preserves the owner's typed escalation exceptions."""
+        return PersistentPreApprovalStore(self._backend, clock=self._clock)
+
+    def freelancer_registry(self) -> "PersistentFreelancerRegistry":
+        """Owner-scoped registry of verified fiat-payout destinations.
+        Wired into darwin_fiat_payout as the KYC gate."""
+        return PersistentFreelancerRegistry(self._backend, clock=self._clock)
 
     def lifecycle_store(self) -> "PersistentLifecycleStore":
         return PersistentLifecycleStore(self._backend)
@@ -926,6 +961,211 @@ class PersistentLineageRegistry(LineageRegistry):
                     float(edge.spawned_at), float(edge.budget_usdc),
                 ),
             )
+
+
+# -- pre-approvals (doc 17 §"Darwin paying a human") ----------------------
+class PersistentPreApprovalStore:
+    """SQL-backed store of owner pre-approval rules, keyed by
+    ``(darwin_id, rule_id)``. The supervisor writes through on every
+    set / revoke and reloads the per-Darwin set on spawn so a restart
+    preserves the owner's "auto-approve Upwork under $50" intent.
+
+    The Pydantic model is rebuilt on read — the engine never sees the
+    SQL row shape."""
+
+    def __init__(self, backend: _Backend, *, clock=time.time) -> None:
+        self._backend = backend
+        self._clock = clock
+
+    def save(self, *, darwin_id: str, rule) -> None:
+        """Insert-or-replace a rule. ``rule`` is a
+        :class:`darwin_dna.constitution.PreApprovalRule`. Round-trips
+        ``max_uses`` + ``used_count`` so a consumed-rule counter
+        survives a supervisor restart."""
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO darwin_preapprovals"
+                "(darwin_id, rule_id, max_amount_usdc, "
+                "counterparty_category, counterparty_substring, "
+                "expires_at, max_uses, used_count, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (darwin_id, rule_id) DO UPDATE SET "
+                "max_amount_usdc = excluded.max_amount_usdc, "
+                "counterparty_category = excluded.counterparty_category, "
+                "counterparty_substring = excluded.counterparty_substring, "
+                "expires_at = excluded.expires_at, "
+                "max_uses = excluded.max_uses, "
+                "used_count = excluded.used_count",
+                (
+                    darwin_id, rule.rule_id, float(rule.max_amount_usdc),
+                    rule.counterparty_category, rule.counterparty_substring,
+                    rule.expires_at,
+                    rule.max_uses,
+                    int(rule.used_count),
+                    float(self._clock()),
+                ),
+            )
+
+    def delete(self, *, darwin_id: str, rule_id: str) -> bool:
+        """Return True if a row was removed; False otherwise. Idempotent."""
+        with self._backend:
+            cursor = self._backend.execute(
+                "DELETE FROM darwin_preapprovals "
+                "WHERE darwin_id = ? AND rule_id = ?",
+                (darwin_id, rule_id),
+            )
+        # The _Backend execute() returns a cursor-shaped object whose
+        # rowcount tells us whether anything was actually deleted.
+        rowcount = getattr(cursor, "rowcount", None)
+        if rowcount is None:
+            # Fallback: re-query to determine presence. Best-effort —
+            # callers treat the result as a hint, not a guarantee.
+            row = self._backend.execute(
+                "SELECT 1 FROM darwin_preapprovals "
+                "WHERE darwin_id = ? AND rule_id = ?",
+                (darwin_id, rule_id),
+            ).fetchone()
+            return row is None
+        return int(rowcount) > 0
+
+    def delete_all(self, *, darwin_id: str) -> None:
+        """Wipe every rule for a Darwin. Called on kill so a future
+        re-spawn of the same id doesn't resurrect stale rules."""
+        with self._backend:
+            self._backend.execute(
+                "DELETE FROM darwin_preapprovals WHERE darwin_id = ?",
+                (darwin_id,),
+            )
+
+    def load(self, *, darwin_id: str) -> list:
+        """Return every persisted rule for ``darwin_id`` as a list of
+        :class:`PreApprovalRule`. Used by the supervisor on spawn to
+        rehydrate the wallet's in-memory set."""
+        from darwin_dna.constitution import PreApprovalRule
+
+        rows = self._backend.execute(
+            "SELECT rule_id, max_amount_usdc, counterparty_category, "
+            "counterparty_substring, expires_at, max_uses, used_count "
+            "FROM darwin_preapprovals WHERE darwin_id = ? "
+            "ORDER BY rule_id ASC",
+            (darwin_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append(PreApprovalRule(
+                rule_id=r["rule_id"],
+                max_amount_usdc=float(r["max_amount_usdc"]),
+                counterparty_category=r["counterparty_category"],
+                counterparty_substring=r["counterparty_substring"],
+                expires_at=(
+                    float(r["expires_at"])
+                    if r["expires_at"] is not None else None
+                ),
+                max_uses=(
+                    int(r["max_uses"])
+                    if r["max_uses"] is not None else None
+                ),
+                used_count=int(r["used_count"] or 0),
+            ))
+        return out
+
+
+# -- freelancer registry (doc 17 §"Darwin paying a human") ----------------
+class PersistentFreelancerRegistry:
+    """SQL-backed FreelancerRegistry. Stores verified fiat-payout
+    destinations per (owner_subject, freelancer_id) so a supervisor
+    restart preserves the owner's already-onboarded freelancers."""
+
+    def __init__(self, backend: _Backend, *, clock=time.time) -> None:
+        self._backend = backend
+        self._clock = clock
+
+    def register(self, dest):
+        import json as _json
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO freelancer_registry"
+                "(owner_subject, freelancer_id, fiat_destination, "
+                "display_name, kyc_status, registered_at, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (owner_subject, freelancer_id) DO UPDATE SET "
+                "fiat_destination = excluded.fiat_destination, "
+                "display_name = excluded.display_name, "
+                "kyc_status = excluded.kyc_status, "
+                "registered_at = excluded.registered_at, "
+                "metadata_json = excluded.metadata_json",
+                (
+                    dest.owner_subject, dest.freelancer_id,
+                    dest.fiat_destination, dest.display_name,
+                    dest.kyc_status,
+                    float(dest.registered_at or self._clock()),
+                    _json.dumps(dict(dest.metadata or {})),
+                ),
+            )
+        return dest
+
+    def lookup(self, *, owner_subject: str, freelancer_id: str):
+        from ..payments.freelancer_registry import FreelancerDestination
+        import json as _json
+        row = self._backend.execute(
+            "SELECT owner_subject, freelancer_id, fiat_destination, "
+            "display_name, kyc_status, registered_at, metadata_json "
+            "FROM freelancer_registry "
+            "WHERE owner_subject = ? AND freelancer_id = ?",
+            (owner_subject, freelancer_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return FreelancerDestination(
+            owner_subject=row["owner_subject"],
+            freelancer_id=row["freelancer_id"],
+            fiat_destination=row["fiat_destination"],
+            display_name=row["display_name"] or "",
+            kyc_status=row["kyc_status"] or "unverified",
+            registered_at=float(row["registered_at"]),
+            metadata=_json.loads(row["metadata_json"] or "{}"),
+        )
+
+    def list(self, *, owner_subject: str):
+        from ..payments.freelancer_registry import FreelancerDestination
+        import json as _json
+        rows = self._backend.execute(
+            "SELECT owner_subject, freelancer_id, fiat_destination, "
+            "display_name, kyc_status, registered_at, metadata_json "
+            "FROM freelancer_registry "
+            "WHERE owner_subject = ? "
+            "ORDER BY freelancer_id ASC",
+            (owner_subject,),
+        ).fetchall()
+        out = []
+        for row in rows:
+            out.append(FreelancerDestination(
+                owner_subject=row["owner_subject"],
+                freelancer_id=row["freelancer_id"],
+                fiat_destination=row["fiat_destination"],
+                display_name=row["display_name"] or "",
+                kyc_status=row["kyc_status"] or "unverified",
+                registered_at=float(row["registered_at"]),
+                metadata=_json.loads(row["metadata_json"] or "{}"),
+            ))
+        return out
+
+    def revoke(self, *, owner_subject: str, freelancer_id: str) -> bool:
+        with self._backend:
+            cursor = self._backend.execute(
+                "DELETE FROM freelancer_registry "
+                "WHERE owner_subject = ? AND freelancer_id = ?",
+                (owner_subject, freelancer_id),
+            )
+        rowcount = getattr(cursor, "rowcount", None)
+        if rowcount is None:
+            row = self._backend.execute(
+                "SELECT 1 FROM freelancer_registry "
+                "WHERE owner_subject = ? AND freelancer_id = ?",
+                (owner_subject, freelancer_id),
+            ).fetchone()
+            return row is None
+        return int(rowcount) > 0
 
 
 # -- escalation router ----------------------------------------------------
@@ -1545,4 +1785,23 @@ _MIGRATIONS: dict[int, Any] = {
     # 1: no-op baseline (covered by CREATE TABLE IF NOT EXISTS).
     # 2: no-op (platform_retired_keys table covered by schema).
     3: _migrate_v3_quarantine_columns,
+    # 4: no-op (darwin_preapprovals table covered by schema).
+    # 5: no-op (freelancer_registry table covered by schema).
+    6: lambda backend: _migrate_v6_preapproval_use_counter(backend),
 }
+
+
+def _migrate_v6_preapproval_use_counter(backend: _Backend) -> None:
+    """v6: add max_uses + used_count to darwin_preapprovals so a max-uses
+    pre-approval rule can be enforced and consumes survive restart."""
+    for col, default in (
+        ("max_uses", ""),
+        ("used_count", "DEFAULT 0"),
+    ):
+        if not _column_exists(backend, "darwin_preapprovals", col):
+            coldef = "INTEGER " + (default or "")
+            if col == "used_count":
+                coldef = "INTEGER NOT NULL DEFAULT 0"
+            backend.execute(
+                f"ALTER TABLE darwin_preapprovals ADD COLUMN {col} {coldef}"
+            )

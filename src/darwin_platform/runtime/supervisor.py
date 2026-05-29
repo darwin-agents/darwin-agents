@@ -277,6 +277,12 @@ class _Handle:
     runtime: DarwinRuntime
     spawned_at: float
     parent_id: str | None = None
+    # The user_subject (owner) who initiated this Darwin's spawn. Used to
+    # attribute omnibus operations (fund_child, sweep_child, withdrawals)
+    # back to the right user_credit balance. Inherited parent→child on
+    # reproduction since a Darwin can only be born from another Darwin
+    # owned by the same user.
+    owner_subject: str = "anonymous"
     children: list[str] = field(default_factory=list)
     children_observed: int = 0
     reproduce_requested: bool = False
@@ -369,6 +375,7 @@ class Supervisor:
         cross_pollination_archive: CrossPollinationArchive | None = None,
         cross_pollination_per_scope_limit: int = 3,
         fiat_ramp: FiatRamp | None = None,
+        freelancer_registry: Any | None = None,
         sms_client: Any | None = None,
         resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
@@ -446,6 +453,14 @@ class Supervisor:
         )
         self._checkpoint_store = (
             self._persistence.checkpoint_store()
+            if self._persistence is not None else None
+        )
+        # Per-Darwin pre-approval rule store (doc 17). When persistence
+        # is configured, set_preapproval / revoke_preapproval write
+        # through and a restart re-loads the rules onto the wallet on
+        # spawn. Without persistence, rules live only in memory.
+        self._preapproval_store = (
+            self._persistence.preapproval_store()
             if self._persistence is not None else None
         )
         # The platform-side escalation router (doc 08). Tickets the genome
@@ -680,6 +695,16 @@ class Supervisor:
         # via the same provider. Default None means the platform is
         # crypto-only — owners pre-fund Darwins manually.
         self._fiat_ramp: FiatRamp | None = fiat_ramp
+        # Owner-scoped registry of verified fiat-payout destinations
+        # (doc 17). Defaults to the persistent variant when persistence
+        # is wired; an explicit kwarg overrides. None means the platform
+        # rejects every darwin_fiat_payout — operators must wire one.
+        if freelancer_registry is None and self._persistence is not None:
+            self._freelancer_registry: Any | None = (
+                self._persistence.freelancer_registry()
+            )
+        else:
+            self._freelancer_registry = freelancer_registry
         # Twilio SMS inbox for inbound 2FA codes (doc 15). None = the
         # platform has no shared phone number; accounts.manager escalates
         # every code to the owner instead of the platform auto-answering.
@@ -991,6 +1016,45 @@ class Supervisor:
                 stack.wallet = self._wallet_factory(
                     darwin_id_now, self._clock, stack.vault,
                 )
+            # Rehydrate persisted pre-approval rules (doc 17). A restart
+            # would otherwise wipe the owner's "Upwork under $50" intent
+            # even though the rule is still meant to be in effect.
+            if (
+                self._preapproval_store is not None
+                and hasattr(stack.wallet, "set_preapproval")
+            ):
+                try:
+                    persisted = self._preapproval_store.load(
+                        darwin_id=darwin_id_now,
+                    )
+                except Exception:
+                    persisted = []
+                for rule in persisted:
+                    try:
+                        stack.wallet.set_preapproval(rule)
+                    except Exception:
+                        # A single malformed row should not block boot;
+                        # the operator sees the row in the DB and can
+                        # delete it explicitly.
+                        continue
+                # Wire the wallet's consume-counter bumps through to
+                # persistence so a max_uses rule's countdown survives a
+                # restart. Best-effort: a wallet without the persister
+                # setter is a no-op.
+                set_persister = getattr(
+                    stack.wallet, "set_preapproval_persister", None,
+                )
+                if callable(set_persister):
+                    store = self._preapproval_store
+                    did = darwin_id_now
+
+                    def _persist(rule, *, _store=store, _did=did):
+                        try:
+                            _store.save(darwin_id=_did, rule=rule)
+                        except Exception:
+                            pass
+
+                    set_persister(_persist)
             # Real browser substrate: replace FakeBrowser with BrowserUseClient
             # on Browserbase (doc 15). Factory receives the active wallet so
             # session-billing debits go to the correct Darwin.
@@ -1108,6 +1172,7 @@ class Supervisor:
                 runtime=runtime,
                 spawned_at=self._clock(),
                 parent_id=parent_id,
+                owner_subject=actor,
                 escalation_auto=escalation_auto,
             )
             self._darwins[handle.darwin_id] = handle
@@ -1115,6 +1180,12 @@ class Supervisor:
             handle.task = asyncio.create_task(
                 self._drive(handle), name=f"darwin:{handle.darwin_id}"
             )
+            # Best-effort: debit user_credits + chain-transfer from
+            # omnibus to the new wallet for root spawns. Skipped silently
+            # for anonymous/in-process flows where the FakeWallet's
+            # opening balance is the in-memory proxy.
+            if parent_id is None:
+                self._fund_darwin_from_omnibus(handle, opening_usdc)
             self._audit.record(
                 actor=actor,
                 action="spawn",
@@ -2147,6 +2218,16 @@ class Supervisor:
                     "wallet does not support pre-approvals",
                 )
             wallet.set_preapproval(rule)
+            # Persist through so a restart restores the same rule set.
+            # Best-effort: a persistence write-failure should not refuse
+            # the in-memory install (audit is the loud failure surface).
+            if self._preapproval_store is not None:
+                try:
+                    self._preapproval_store.save(
+                        darwin_id=darwin_id, rule=rule,
+                    )
+                except Exception:
+                    pass
             self._audit.record(
                 actor=actor, action="set_preapproval",
                 darwin_id=darwin_id,
@@ -2180,6 +2261,16 @@ class Supervisor:
                     "wallet does not support pre-approvals",
                 )
             removed = bool(wallet.revoke_preapproval(rule_id))
+            # Always attempt the persistence delete: a wallet-side miss
+            # plus a stale persisted row would otherwise resurrect the
+            # rule on the next spawn.
+            if self._preapproval_store is not None:
+                try:
+                    self._preapproval_store.delete(
+                        darwin_id=darwin_id, rule_id=rule_id,
+                    )
+                except Exception:
+                    pass
             if removed:
                 self._audit.record(
                     actor=actor, action="revoke_preapproval",
@@ -2400,6 +2491,17 @@ class Supervisor:
                     )
                 except Exception:
                     pass
+            # Drop persisted pre-approval rules so a future re-spawn of
+            # the same darwin_id doesn't inherit stale owner grants.
+            if self._preapproval_store is not None:
+                try:
+                    self._preapproval_store.delete_all(darwin_id=darwin_id)
+                except Exception:
+                    pass
+            # Credit any residual USDC the Darwin still held back to the
+            # owning user's omnibus balance. Recording-only; the on-chain
+            # reconciliation is operator-driven.
+            self._sweep_dead_darwin_to_omnibus(h)
 
     # -- force reproduction (doc 08: POST /darwins/{id}/reproduce/force) --
     async def force_reproduce(
@@ -3470,6 +3572,145 @@ class Supervisor:
                     parent.killed = False
                 parent.kill_after_reproduction_reason = None
 
+    def _inherit_preapprovals(
+        self, parent: _Handle, child_wallet, child_id: str,
+    ) -> None:
+        """Copy owner pre-approval rules from parent → child wallet on
+        reproduction and persist them under the child's id so a future
+        restart still has them. Best-effort: a wallet without the
+        pre-approval surface is a no-op."""
+        getter = getattr(parent.stack.wallet, "owner_preapprovals", None)
+        setter = getattr(child_wallet, "set_preapproval", None)
+        if not callable(getter) or not callable(setter):
+            return
+        try:
+            rules = tuple(getter() or ())
+        except Exception:
+            return
+        if not rules:
+            return
+        for rule in rules:
+            try:
+                setter(rule)
+            except Exception:
+                continue
+            if self._preapproval_store is not None:
+                try:
+                    self._preapproval_store.save(
+                        darwin_id=child_id, rule=rule,
+                    )
+                except Exception:
+                    pass
+        try:
+            self._audit.record(
+                actor="supervisor.reproduction",
+                action="preapprovals_inherited",
+                darwin_id=child_id,
+                metadata={
+                    "parent_id": parent.darwin_id,
+                    "rule_ids": [r.rule_id for r in rules],
+                },
+            )
+        except Exception:
+            pass
+
+    def _fund_darwin_from_omnibus(
+        self, handle: _Handle, opening_usdc: float,
+    ) -> None:
+        """Best-effort: debit the owning user's omnibus credit by
+        ``opening_usdc`` and chain-transfer the funds to the new Darwin's
+        wallet address. Called after the wallet is bound and the handle
+        is registered. Silently skips when:
+
+        - no omnibus wallet is wired (in-process dev / 90-day sim),
+        - the owner is anonymous (no credit attribution possible),
+        - the user has insufficient credit, or
+        - the wallet has no routable address.
+
+        Failures are audit-logged via ``omnibus_fund_skipped`` so the
+        operator can see why a spawn didn't pull from the expected
+        user credit pool, but never block the spawn itself — the local
+        FakeWallet's opening balance is the in-memory proxy for the
+        funding intent."""
+        if self._omnibus_wallet is None:
+            return
+        if handle.owner_subject == "anonymous":
+            return
+        amount = float(opening_usdc)
+        if amount <= 0:
+            return
+        wallet = handle.stack.wallet
+        address_getter = getattr(wallet, "address", None)
+        if not callable(address_getter):
+            return
+        try:
+            to_address = address_getter()
+        except Exception:
+            return
+        if not to_address:
+            return
+        try:
+            self._omnibus_wallet.fund_child(
+                darwin_id=handle.darwin_id,
+                to_address=str(to_address),
+                amount_usdc=amount,
+                user_subject=handle.owner_subject,
+            )
+        except Exception as exc:
+            self._audit.record(
+                actor="supervisor.spawn",
+                action="omnibus_fund_skipped",
+                darwin_id=handle.darwin_id,
+                metadata={
+                    "amount_usdc": amount,
+                    "user_subject": handle.owner_subject,
+                    "reason": str(exc),
+                },
+            )
+
+    def _sweep_dead_darwin_to_omnibus(self, handle: _Handle) -> None:
+        """Best-effort: on kill, credit the owning user with whatever
+        residual USDC the Darwin's wallet still holds. Recording-only:
+        the on-chain reconciliation (an actual transfer from the dead
+        Darwin's wallet to the omnibus address) is operator-driven and
+        not performed here. Same skip conditions as the funding helper.
+        """
+        if self._omnibus_wallet is None:
+            return
+        if handle.owner_subject == "anonymous":
+            return
+        wallet = handle.stack.wallet
+        try:
+            residual = float(wallet.balance_usdc())
+        except Exception:
+            return
+        if residual <= 0:
+            return
+        try:
+            from_address = wallet.address() if callable(
+                getattr(wallet, "address", None)
+            ) else ""
+        except Exception:
+            from_address = ""
+        try:
+            self._omnibus_wallet.sweep_child(
+                darwin_id=handle.darwin_id,
+                amount_usdc=residual,
+                user_subject=handle.owner_subject,
+                from_address=str(from_address or ""),
+            )
+        except Exception as exc:
+            self._audit.record(
+                actor="supervisor.kill",
+                action="omnibus_sweep_skipped",
+                darwin_id=handle.darwin_id,
+                metadata={
+                    "amount_usdc": residual,
+                    "user_subject": handle.owner_subject,
+                    "reason": str(exc),
+                },
+            )
+
     def _relay_reproduction_to_child(
         self, parent: _Handle, child_id: str, record: dict,
     ) -> None:
@@ -3658,7 +3899,8 @@ class Supervisor:
         darwin_id: str,
         *,
         amount_usdc: float,
-        fiat_destination: str,
+        freelancer_id: str,
+        escalation_id: str | None = None,
         actor: str = "anonymous",
     ) -> dict[str, Any]:
         """Pay a fiat counterparty on a Darwin's behalf — the path for
@@ -3666,11 +3908,16 @@ class Supervisor:
         settle in USDC because the recipient only accepts a bank
         transfer (doc 17 §"Darwin paying a human").
 
+        ``freelancer_id`` resolves through the :class:`FreelancerRegistry`
+        scoped to the Darwin's ``owner_subject``. Only previously
+        registered, verified destinations are reachable — the registry
+        is the platform's KYC gate. A misuse (id not registered for the
+        requesting owner) raises before any chain transfer fires.
+
         Two-leg flow: the Darwin's USDC wallet debits ``amount_usdc`` to
         the omnibus address (on-chain), and the omnibus converts the
         USDC into fiat via the configured :class:`FiatRamp` and pushes
-        the payout to ``fiat_destination`` (a verified Stripe Connect
-        account, bank id, or other ramp-specific destination).
+        the payout to the registered destination.
 
         This is an OPERATOR-initiated call: the genome's
         ``payments.facilitator`` cannot reach fiat directly. A typical
@@ -3684,17 +3931,22 @@ class Supervisor:
             raise SupervisorError("omnibus wallet is not configured")
         if self._fiat_ramp is None:
             raise SupervisorError("fiat ramp is not configured")
+        if self._freelancer_registry is None:
+            raise SupervisorError(
+                "freelancer registry is not configured — "
+                "darwin_fiat_payout is blocked until destinations can be verified",
+            )
         amount = float(amount_usdc)
         if amount <= 0:
             raise SupervisorError("amount_usdc must be positive")
-        if not fiat_destination:
-            raise SupervisorError("fiat_destination is required")
+        if not freelancer_id:
+            raise SupervisorError("freelancer_id is required")
         with span(
             "supervisor.darwin_fiat_payout",
             darwin_id=darwin_id,
             attributes={
                 "amount_usdc": amount,
-                "fiat_destination": fiat_destination,
+                "freelancer_id": freelancer_id,
             },
         ) as s:
             h = self._get(darwin_id)
@@ -3705,6 +3957,19 @@ class Supervisor:
                 raise SupervisorError(
                     "wallet does not support fiat payout transfer",
                 )
+            # Resolve freelancer through the owner-scoped registry. A
+            # destination not registered to the Darwin's owner is refused
+            # outright — the registry is the KYC gate at the platform edge.
+            destination = self._freelancer_registry.lookup(
+                owner_subject=h.owner_subject,
+                freelancer_id=freelancer_id,
+            )
+            if destination is None:
+                raise SupervisorError(
+                    f"freelancer {freelancer_id!r} is not registered "
+                    f"for owner {h.owner_subject!r}",
+                )
+            fiat_destination = destination.fiat_destination
             try:
                 omnibus_address = self._omnibus_wallet.address()
             except Exception as exc:
@@ -3729,6 +3994,7 @@ class Supervisor:
                     fiat_destination=fiat_destination,
                     fiat_ramp=self._fiat_ramp,
                     actor=actor,
+                    escalation_id=escalation_id,
                 )
             except Exception as exc:
                 self._audit.record(
@@ -3750,9 +4016,181 @@ class Supervisor:
                 darwin_id=darwin_id,
                 metadata={
                     "amount_usdc": amount,
+                    "freelancer_id": freelancer_id,
                     "fiat_destination": fiat_destination,
+                    "kyc_status": destination.kyc_status,
                     "provider": entry.metadata.get("provider", ""),
                     "provider_tx_id": entry.tx_hash,
+                    "escalation_id": escalation_id,
+                },
+            )
+            return entry.to_json()
+
+    # -- freelancer registry CRUD (doc 17 §"Darwin paying a human") --------
+    def register_freelancer(
+        self,
+        *,
+        owner_subject: str,
+        freelancer_id: str,
+        fiat_destination: str,
+        display_name: str = "",
+        kyc_status: str = "unverified",
+        metadata: dict[str, Any] | None = None,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Register (or replace) a verified fiat-payout destination for
+        an owner. Subsequent ``darwin_fiat_payout`` calls with this
+        ``freelancer_id`` resolve through this entry. Audit-logged so
+        the operator timeline shows who onboarded which freelancer."""
+        if self._freelancer_registry is None:
+            raise SupervisorError("freelancer registry is not configured")
+        from ..payments.freelancer_registry import FreelancerDestination
+
+        dest = FreelancerDestination(
+            owner_subject=owner_subject,
+            freelancer_id=freelancer_id,
+            fiat_destination=fiat_destination,
+            display_name=display_name,
+            kyc_status=kyc_status,
+            registered_at=float(self._clock()),
+            metadata=dict(metadata or {}),
+        )
+        try:
+            stored = self._freelancer_registry.register(dest)
+        except Exception as exc:
+            raise SupervisorError(
+                f"freelancer registry refused: {exc}",
+            ) from exc
+        self._audit.record(
+            actor=actor,
+            action="register_freelancer",
+            darwin_id=None,
+            metadata={
+                "owner_subject": owner_subject,
+                "freelancer_id": freelancer_id,
+                # destination is sensitive enough that we don't log it
+                # raw — the registry has it for the supervisor to resolve.
+                "display_name": display_name,
+                "kyc_status": kyc_status,
+            },
+        )
+        return stored.to_json()
+
+    def revoke_freelancer(
+        self,
+        *,
+        owner_subject: str,
+        freelancer_id: str,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Drop a freelancer registration. Idempotent."""
+        if self._freelancer_registry is None:
+            raise SupervisorError("freelancer registry is not configured")
+        removed = bool(self._freelancer_registry.revoke(
+            owner_subject=owner_subject,
+            freelancer_id=freelancer_id,
+        ))
+        if removed:
+            self._audit.record(
+                actor=actor,
+                action="revoke_freelancer",
+                darwin_id=None,
+                metadata={
+                    "owner_subject": owner_subject,
+                    "freelancer_id": freelancer_id,
+                },
+            )
+        return {"revoked": removed, "freelancer_id": freelancer_id}
+
+    def list_freelancers(
+        self, *, owner_subject: str,
+    ) -> list[dict[str, Any]]:
+        if self._freelancer_registry is None:
+            return []
+        return [
+            d.to_json()
+            for d in self._freelancer_registry.list(
+                owner_subject=owner_subject,
+            )
+        ]
+
+    async def refund_fiat_payout(
+        self,
+        darwin_id: str,
+        *,
+        amount_usdc: float,
+        reason: str = "fiat_payout_leg2_failed",
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Recovery for a failed fiat payout. When ``darwin_fiat_payout``
+        fails on leg 2 (omnibus → fiat ramp), leg 1 has already debited
+        the Darwin's USDC wallet to the omnibus address. This method:
+
+        - submits a chain transfer from omnibus → the Darwin's wallet
+          address, undoing leg 1 (recorded as a ``REFUND_TO_DARWIN``
+          omnibus entry),
+        - calls ``wallet.credit(amount, "fiat_payout_refund")`` so the
+          Darwin's local ledger reflects the inbound.
+
+        The operator decides when to invoke this — automatic refunds
+        on leg-2 failure would mask a real ramp outage that the
+        operator may want to retry instead."""
+        if self._omnibus_wallet is None:
+            raise SupervisorError("omnibus wallet is not configured")
+        amount = float(amount_usdc)
+        if amount <= 0:
+            raise SupervisorError("amount_usdc must be positive")
+        with span(
+            "supervisor.refund_fiat_payout",
+            darwin_id=darwin_id,
+            attributes={"amount_usdc": amount},
+        ) as s:
+            h = self._get(darwin_id)
+            annotate_span_with_runtime(s, h.runtime)
+            wallet = h.stack.wallet
+            address_getter = getattr(wallet, "address", None)
+            if not callable(address_getter):
+                raise SupervisorError(
+                    "wallet has no on-chain address — cannot refund",
+                )
+            try:
+                darwin_address = address_getter()
+            except Exception as exc:
+                raise SupervisorError(
+                    f"wallet address unavailable: {exc}",
+                ) from exc
+            if not darwin_address:
+                raise SupervisorError("wallet address is empty")
+            try:
+                entry = self._omnibus_wallet.refund_to_darwin(
+                    darwin_id=darwin_id,
+                    darwin_address=str(darwin_address),
+                    amount_usdc=amount,
+                    reason=reason,
+                    actor=actor,
+                )
+            except Exception as exc:
+                raise SupervisorError(
+                    f"omnibus refund failed: {exc}",
+                ) from exc
+            # Best-effort: credit the Darwin's local ledger so its
+            # balance_usdc reflects the inbound. Real wallets are
+            # authoritative against the chain; FakeWallet's local
+            # balance is the proxy in tests + sim.
+            crediter = getattr(wallet, "credit", None)
+            if callable(crediter):
+                try:
+                    crediter(amount, "fiat_payout_refund")
+                except Exception:
+                    pass
+            self._audit.record(
+                actor=actor,
+                action="refund_fiat_payout",
+                darwin_id=darwin_id,
+                metadata={
+                    "amount_usdc": amount,
+                    "reason": reason,
+                    "tx_hash": entry.tx_hash,
                 },
             )
             return entry.to_json()
@@ -4309,9 +4747,17 @@ class Supervisor:
                 parent_id=parent.darwin_id,
                 # Children inherit the parent's escalation policy so a
                 # reproduction event doesn't silently lose the owner's
-                # auto-approve / auto-deny preference.
+                # auto-approve / auto-deny preference. Owner attribution
+                # is also inherited so the child's omnibus credit / sweep
+                # operations attribute to the same user as the parent.
+                owner_subject=parent.owner_subject,
                 escalation_auto=parent.escalation_auto,
             )
+            # Inherit owner pre-approvals from parent → child. The owner's
+            # "Upwork under $50" intent should apply to the lineage, not
+            # just the parent. The owner can revoke on the child after
+            # spawn if they want narrower scope.
+            self._inherit_preapprovals(parent, child_stack.wallet, child_id)
             self._darwins[child_id] = child_handle
             child_handle.task = asyncio.create_task(
                 self._drive(child_handle), name=f"darwin:{child_id}"

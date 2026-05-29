@@ -56,6 +56,12 @@ class OmnibusEntryKind(str, Enum):
     # source is a Darwin's wallet — user_credits is NOT touched. Used when
     # a freelancer / legal / professional counterparty only accepts fiat.
     DARWIN_FIAT_PAYOUT = "darwin_fiat_payout"
+    # Refund: when a Darwin → fiat payout fails on leg 2 (omnibus → fiat),
+    # leg 1 has already moved USDC from the Darwin's wallet to the omnibus
+    # address. This kind records the recovery: a chain transfer from the
+    # omnibus back to the Darwin's wallet undoing leg 1, so the Darwin's
+    # treasury reflects reality and the operator's reconciliation closes.
+    REFUND_TO_DARWIN = "refund_to_darwin"
 
 
 @dataclass(frozen=True)
@@ -332,6 +338,7 @@ class OmnibusWallet:
         fiat_destination: str,
         fiat_ramp: Any,
         actor: str = "platform.supervisor",
+        escalation_id: str | None = None,
     ) -> OmnibusEntry:
         """Second leg of the Darwin → fiat payout flow. The Darwin's USDC
         wallet has already debited the amount to the omnibus address
@@ -371,6 +378,61 @@ class OmnibusWallet:
                 "provider": getattr(receipt, "provider", ""),
                 "amount_usd": float(getattr(receipt, "amount_usd", 0.0)),
                 "fee_usd": float(getattr(receipt, "fee_usd", 0.0)),
+                # Link back to the approved escalation ticket so the
+                # operator timeline shows which authorisation each fiat
+                # hop settled. None when called outside an escalation flow.
+                "escalation_id": escalation_id,
+            },
+        ))
+
+    def refund_to_darwin(
+        self, *,
+        darwin_id: str,
+        darwin_address: str,
+        amount_usdc: float,
+        reason: str = "",
+        actor: str = "platform.supervisor",
+    ) -> OmnibusEntry:
+        """Send USDC back from the omnibus to a Darwin's on-chain address.
+
+        Recovery path for a failed Darwin → fiat payout: leg 1 succeeded
+        (the Darwin's wallet debited to the omnibus) but leg 2 failed
+        (omnibus → fiat ramp). Without this, the Darwin's USDC is parked
+        at the omnibus address and the operator has to reconcile by hand.
+
+        Does NOT touch ``user_credits`` — the funds being returned came
+        from the Darwin's wallet, not a user deposit. The chain submit is
+        sanctions-screened (the destination is the Darwin's own address,
+        so a real screener returns clean; a fake one in tests respects
+        the same shape)."""
+        amount = _require_positive(amount_usdc, "refund amount")
+        if not darwin_address:
+            raise OmnibusError("refund_to_darwin requires darwin_address")
+        if amount > self.balance_usdc() + 1e-9:
+            raise OmnibusError(
+                f"omnibus balance ${self.balance_usdc():.4f} insufficient "
+                f"for ${amount:.4f} refund",
+            )
+        self._screen(darwin_address)
+        try:
+            tx = self._chain.transfer(
+                to=darwin_address, amount_usdc=amount,
+                memo=f"refund:{darwin_id}",
+            )
+        except Exception as exc:
+            raise OmnibusError(
+                f"refund chain transfer failed: {exc}"
+            ) from exc
+        return self._append(OmnibusEntry(
+            kind=OmnibusEntryKind.REFUND_TO_DARWIN,
+            amount_usdc=amount, counterparty=darwin_id, actor=actor,
+            ts=self._clock(),
+            memo=reason or "",
+            tx_hash=str((tx or {}).get("tx_hash", "")),
+            metadata={
+                "darwin_id": darwin_id,
+                "darwin_address": darwin_address,
+                "reason": reason,
             },
         ))
 

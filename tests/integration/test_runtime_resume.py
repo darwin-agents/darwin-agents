@@ -258,10 +258,12 @@ async def test_v2_db_upgrades_to_quarantine_columns(tmp_path):
     conn.commit()
     conn.close()
 
-    # Opening with the current code runs the v3 migration in place.
+    # Opening with the current code runs every pending migration in
+    # place — including v3 (quarantine columns) and v4 (pre-approvals).
     sup = Supervisor(persistence_path=str(db))
     try:
-        assert sup._persistence.schema_version() == 3
+        from darwin_platform.runtime.persistence import CURRENT_SCHEMA_VERSION
+        assert sup._persistence.schema_version() == CURRENT_SCHEMA_VERSION
         status = await sup.spawn(opening_usdc=70.0)
         await sup.quarantine(
             status.darwin_id, reason="upgraded", operator="ops"
@@ -289,4 +291,158 @@ async def test_signing_key_persists_across_restart(tmp_path):
     assert pem_a == pem_b
 
     await sup_b.shutdown(kill_running=True)
+    sup_b._persistence.close()
+
+
+# ---------------------------------------------------------------------------
+# Pre-approval persistence (doc 17 §"Darwin paying a human")
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preapprovals_persist_across_restart(tmp_path):
+    """Owner installs a pre-approval rule. After a supervisor restart
+    the resumed Darwin's wallet still holds the rule, so the genome's
+    facilitator still auto-allows matching spends without escalating."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=100.0, actor="alice")
+    did = status.darwin_id
+    await sup_a.set_preapproval(
+        did,
+        rule_id="upwork-under-50",
+        max_amount_usdc=50.0,
+        counterparty_category="freelancer",
+        counterparty_substring="upwork",
+        actor="alice",
+    )
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    # Find the resumed Darwin (id is preserved via the manifest store).
+    assert did in sup_b._darwins
+    wallet = sup_b._darwins[did].stack.wallet
+    rules = wallet.owner_preapprovals()
+    assert len(rules) == 1
+    assert rules[0].rule_id == "upwork-under-50"
+    assert rules[0].max_amount_usdc == 50.0
+    assert rules[0].counterparty_substring == "upwork"
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_revoked_preapproval_does_not_resurrect(tmp_path):
+    """A revoked rule must stay revoked across a restart — otherwise
+    revoke is a temporary undo, which is the wrong contract."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=100.0, actor="alice")
+    did = status.darwin_id
+    await sup_a.set_preapproval(
+        did, rule_id="r1", max_amount_usdc=50.0,
+        counterparty_category="freelancer", actor="alice",
+    )
+    await sup_a.revoke_preapproval(did, "r1", actor="alice")
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    assert did in sup_b._darwins
+    wallet = sup_b._darwins[did].stack.wallet
+    assert wallet.owner_preapprovals() == ()
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_killed_darwin_preapprovals_purged(tmp_path):
+    """Kill wipes the persisted rule rows so a future re-spawn of the
+    same id can't accidentally resurrect the prior owner's grants."""
+    db = tmp_path / "platform.db"
+    sup = Supervisor(persistence_path=str(db))
+    status = await sup.spawn(opening_usdc=100.0, actor="alice")
+    did = status.darwin_id
+    await sup.set_preapproval(
+        did, rule_id="r1", max_amount_usdc=50.0,
+        counterparty_category="freelancer", actor="alice",
+    )
+    await sup.kill(did, reason="test", actor="alice")
+    persisted = sup._preapproval_store.load(darwin_id=did)
+    assert persisted == []
+    await sup.shutdown(kill_running=False)
+    sup._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_preapproval_used_count_persists_across_restart(tmp_path):
+    """A rule's used_count survives a supervisor restart so max_uses is
+    enforced across the bounce — otherwise a restart would reset the
+    counter and the owner's "up to 3 payments" budget would silently
+    refill."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=100.0, actor="alice")
+    did = status.darwin_id
+    await sup_a.set_preapproval(
+        did,
+        rule_id="r1",
+        max_amount_usdc=50.0,
+        counterparty_category="freelancer",
+        actor="alice",
+    )
+    # Simulate two consumes (the facilitator's hot path) — directly via
+    # the wallet so we don't need a full payment flow here.
+    wallet = sup_a._darwins[did].stack.wallet
+    wallet.consume_preapproval("r1")
+    wallet.consume_preapproval("r1")
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    wallet_b = sup_b._darwins[did].stack.wallet
+    rules = wallet_b.owner_preapprovals()
+    assert len(rules) == 1
+    assert rules[0].used_count == 2
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_preapproval_max_uses_round_trips_through_persistence(tmp_path):
+    """max_uses is a column on the rule, not just an in-memory field —
+    it survives a restart so the engine can keep enforcing it."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=100.0, actor="alice")
+    did = status.darwin_id
+    await sup_a.set_preapproval(
+        did, rule_id="r1", max_amount_usdc=50.0,
+        counterparty_category="freelancer", actor="alice",
+    )
+    # The supervisor's PUT signature doesn't yet take max_uses — patch
+    # the rule directly via the wallet to simulate an admin extension.
+    wallet = sup_a._darwins[did].stack.wallet
+    from darwin_dna.constitution import PreApprovalRule
+    wallet.set_preapproval(PreApprovalRule(
+        rule_id="r1", max_amount_usdc=50.0,
+        counterparty_category="freelancer", max_uses=3,
+    ))
+    # Sync through persistence so the restart finds the bumped shape.
+    sup_a._preapproval_store.save(
+        darwin_id=did, rule=wallet.owner_preapprovals()[0],
+    )
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    rules = sup_b._darwins[did].stack.wallet.owner_preapprovals()
+    assert rules[0].max_uses == 3
+    assert rules[0].used_count == 0
+    await sup_b.shutdown(kill_running=False)
     sup_b._persistence.close()

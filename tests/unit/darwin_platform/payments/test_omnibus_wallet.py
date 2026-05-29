@@ -395,3 +395,59 @@ def test_relay_fiat_payout_ramp_failure_propagates_as_omnibus_error():
             darwin_id="d-1", amount_usdc=1.0,
             fiat_destination="x", fiat_ramp=_FakeFiatRamp(fail=True),
         )
+
+
+# ---------------------------------------------------------------------------
+# refund_to_darwin — fiat-payout failure recovery
+# ---------------------------------------------------------------------------
+
+
+def test_refund_to_darwin_submits_chain_transfer_and_records_entry():
+    chain = _Chain(balance=1_000.0)
+    w = OmnibusWallet(chain, clock=_clock())
+    entry = w.refund_to_darwin(
+        darwin_id="d-42",
+        darwin_address="0xdarwin_wallet",
+        amount_usdc=30.0,
+        reason="stripe_payout_failed",
+    )
+    assert entry.kind is OmnibusEntryKind.REFUND_TO_DARWIN
+    assert entry.counterparty == "d-42"
+    assert chain.transfers[-1]["to"] == "0xdarwin_wallet"
+    assert chain.transfers[-1]["amount_usdc"] == pytest.approx(30.0)
+    assert entry.metadata["reason"] == "stripe_payout_failed"
+
+
+def test_refund_to_darwin_does_not_touch_user_credits():
+    w = OmnibusWallet(_Chain(balance=1_000.0), clock=_clock())
+    w.record_deposit(user_subject="alice", amount_usdc=100.0, source_ref="x")
+    before = w.user_credit("alice")
+    w.refund_to_darwin(
+        darwin_id="d-1", darwin_address="0xd", amount_usdc=20.0,
+    )
+    assert w.user_credit("alice") == before
+
+
+def test_refund_to_darwin_refuses_empty_address():
+    w = OmnibusWallet(_Chain(), clock=_clock())
+    with pytest.raises(OmnibusError, match="darwin_address"):
+        w.refund_to_darwin(
+            darwin_id="d", darwin_address="", amount_usdc=1.0,
+        )
+
+
+def test_refund_to_darwin_refuses_insufficient_balance():
+    w = OmnibusWallet(_Chain(balance=5.0), clock=_clock())
+    with pytest.raises(OmnibusError, match="insufficient"):
+        w.refund_to_darwin(
+            darwin_id="d", darwin_address="0xd", amount_usdc=10.0,
+        )
+
+
+def test_refund_to_darwin_chain_failure_wraps_as_omnibus_error():
+    chain = _Chain(balance=100.0, fail_next=True)
+    w = OmnibusWallet(chain, clock=_clock())
+    with pytest.raises(OmnibusError, match="refund chain transfer failed"):
+        w.refund_to_darwin(
+            darwin_id="d", darwin_address="0xd", amount_usdc=10.0,
+        )

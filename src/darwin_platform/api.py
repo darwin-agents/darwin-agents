@@ -119,10 +119,36 @@ class FiatConfirmDepositRequest(BaseModel):
 
 class DarwinFiatPayoutRequest(BaseModel):
     """Owner-approved fiat payout from a Darwin's wallet to a verified
-    fiat destination (doc 17 §"Darwin paying a human")."""
+    fiat destination (doc 17 §"Darwin paying a human"). ``freelancer_id``
+    must resolve through the platform's freelancer registry for the
+    Darwin's owning user. ``escalation_id`` ties the payout back to the
+    approved escalation ticket that authorised it (optional but
+    recommended — it's how the operator audit timeline correlates the
+    two events)."""
 
     amount_usdc: float = Field(gt=0)
+    freelancer_id: str = Field(min_length=1)
+    escalation_id: str | None = None
+
+
+class RegisterFreelancerRequest(BaseModel):
+    """Owner-onboarded fiat destination. ``fiat_destination`` is the
+    ramp-specific id (Stripe Connect account, MoonPay payout token)."""
+
+    owner_subject: str = Field(min_length=1)
+    freelancer_id: str = Field(min_length=1)
     fiat_destination: str = Field(min_length=1)
+    display_name: str = ""
+    kyc_status: str = "unverified"
+    metadata: dict[str, Any] | None = None
+
+
+class DarwinFiatRefundRequest(BaseModel):
+    """Recovery for a failed fiat payout: refund the leg-1 USDC from
+    the omnibus address back to the Darwin's wallet."""
+
+    amount_usdc: float = Field(gt=0)
+    reason: str = "fiat_payout_leg2_failed"
 
 
 class FiatWithdrawRequest(BaseModel):
@@ -1107,7 +1133,77 @@ def build_app(
             return await _sup(request).darwin_fiat_payout(
                 darwin_id,
                 amount_usdc=req.amount_usdc,
+                freelancer_id=req.freelancer_id,
+                escalation_id=req.escalation_id,
+                actor=_actor(ctx),
+            )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    # -- freelancer registry CRUD (doc 17) ---------------------------------
+    @app.post("/platform/freelancers")
+    async def register_freelancer(
+        request: Request,
+        req: RegisterFreelancerRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).register_freelancer(
+                owner_subject=req.owner_subject,
+                freelancer_id=req.freelancer_id,
                 fiat_destination=req.fiat_destination,
+                display_name=req.display_name,
+                kyc_status=req.kyc_status,
+                metadata=req.metadata,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.delete("/platform/freelancers/{owner_subject}/{freelancer_id}")
+    async def revoke_freelancer(
+        owner_subject: str,
+        freelancer_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).revoke_freelancer(
+                owner_subject=owner_subject,
+                freelancer_id=freelancer_id,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/platform/freelancers/{owner_subject}")
+    async def list_freelancers(
+        owner_subject: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> list[dict[str, Any]]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return _sup(request).list_freelancers(owner_subject=owner_subject)
+
+    @app.post("/darwins/{darwin_id}/fiat_payment/refund")
+    async def darwin_fiat_refund(
+        darwin_id: str,
+        request: Request,
+        req: DarwinFiatRefundRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Recovery for a failed fiat payout: refund the leg-1 USDC
+        from the omnibus address back to the Darwin's wallet."""
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).refund_fiat_payout(
+                darwin_id,
+                amount_usdc=req.amount_usdc,
+                reason=req.reason,
                 actor=_actor(ctx),
             )
         except UnknownDarwin as exc:

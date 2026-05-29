@@ -67,6 +67,10 @@ class FakeWallet:
         # engine; the engine's escalation layer treats a matching rule as
         # ALLOW with rationale rather than ESCALATE.
         self._preapprovals: dict[str, PreApprovalRule] = {}
+        # Optional persistence write-through. The supervisor installs a
+        # callback on spawn so consume_preapproval bumps survive a
+        # restart. Default None → in-memory only.
+        self._preapproval_persister = None
 
     def _day(self) -> str:
         import time
@@ -304,6 +308,36 @@ class FakeWallet:
         return tuple(
             self._preapprovals[k] for k in sorted(self._preapprovals)
         )
+
+    def consume_preapproval(self, rule_id: str) -> PreApprovalRule | None:
+        """Bump the used-counter on a rule and return the updated copy.
+        Called by the facilitator after a successful pay that the rule
+        cleared. The rule is frozen (Pydantic), so we replace it with a
+        new instance carrying ``used_count + 1``. Returns None when no
+        such rule exists (the facilitator treats that as a no-op — the
+        spend already succeeded, the counter just couldn't advance).
+
+        Calls the optional persistence write-through callback so the
+        consume survives a restart. The callback is set by the
+        supervisor at spawn time when persistence is configured."""
+        existing = self._preapprovals.get(rule_id)
+        if existing is None:
+            return None
+        bumped = existing.model_copy(
+            update={"used_count": existing.used_count + 1},
+        )
+        self._preapprovals[rule_id] = bumped
+        if self._preapproval_persister is not None:
+            try:
+                self._preapproval_persister(bumped)
+            except Exception:
+                pass
+        return bumped
+
+    def set_preapproval_persister(self, callback) -> None:
+        """The supervisor calls this on spawn to wire the wallet's
+        consume_preapproval bumps through to the persistent store."""
+        self._preapproval_persister = callback
 
     # -- harvest to owner (doc 05, doc 08 §"Billing model") ---------------
     def harvest_to_owner(

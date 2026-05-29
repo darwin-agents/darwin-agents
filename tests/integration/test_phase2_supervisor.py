@@ -207,33 +207,43 @@ async def test_supervisor_relay_failure_audited_not_raised(_omnibus_chain):
 @pytest.mark.asyncio
 async def test_supervisor_darwin_fiat_payout_runs_both_legs(_omnibus_chain):
     """End-to-end: Darwin wallet debits to omnibus address (leg 1), omnibus
-    submits fiat withdraw via ramp (leg 2), audit + ledger reflect both."""
+    submits fiat withdraw via ramp (leg 2), audit + ledger reflect both.
+    Uses a freelancer registry entry to gate the destination."""
     from darwin_platform.adapters.fiat import StubFiatRamp
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
 
     ramp = StubFiatRamp()
+    registry = InMemoryFreelancerRegistry()
     sup = Supervisor(
         heartbeat_seconds=0.001,
         omnibus_wallet=OmnibusWallet(_omnibus_chain),
         fiat_ramp=ramp,
+        freelancer_registry=registry,
     )
     try:
         status = await sup.spawn(opening_usdc=200.0, actor="alice")
         wallet = sup._darwins[status.darwin_id].stack.wallet
         balance_before = wallet.balance_usdc()
-        omnibus_balance_before = _omnibus_chain.balance
-
+        # Owner registers the freelancer before the payout.
+        sup.register_freelancer(
+            owner_subject="alice",
+            freelancer_id="upwork:writer-42",
+            fiat_destination="acct_freelancer_bank_1",
+            display_name="Jane Writer",
+            kyc_status="verified",
+            actor="alice",
+        )
         result = await sup.darwin_fiat_payout(
             status.darwin_id,
             amount_usdc=30.0,
-            fiat_destination="acct_freelancer_bank_1",
+            freelancer_id="upwork:writer-42",
             actor="alice",
         )
         # Leg 1: Darwin wallet debited by 30.
         assert wallet.balance_usdc() == pytest.approx(balance_before - 30.0)
-        # Leg 1 on-chain: omnibus address received 30 (FakeWallet doesn't
-        # touch the real omnibus chain, but the omnibus's ledger now has
-        # an entry from leg 2 — that's what tests the second leg).
-        # Leg 2: omnibus ledger has a relay_fiat_payout entry.
+        # Leg 2: omnibus ledger has a darwin_fiat_payout entry.
         entries = sup.omnibus_wallet.ledger()
         relays = [
             e for e in entries
@@ -242,29 +252,136 @@ async def test_supervisor_darwin_fiat_payout_runs_both_legs(_omnibus_chain):
         assert len(relays) == 1
         assert relays[0].counterparty == status.darwin_id
         assert relays[0].metadata["fiat_destination"] == "acct_freelancer_bank_1"
-        # Return shape carries the entry as JSON.
         assert result["kind"] == "darwin_fiat_payout"
-        # Audit trail.
+        # Audit trail captures both the freelancer_id and resolved
+        # destination + kyc_status — operator can reconstruct everything.
         audits = sup.audit_log.entries(action="darwin_fiat_payout")
         assert len(audits) == 1
-        # Unused variable kept to make the omnibus chain check explicit.
-        _ = omnibus_balance_before
+        assert audits[0].metadata["freelancer_id"] == "upwork:writer-42"
+        assert audits[0].metadata["kyc_status"] == "verified"
     finally:
         await sup.shutdown(kill_running=True)
 
 
 @pytest.mark.asyncio
 async def test_supervisor_darwin_fiat_payout_requires_omnibus_and_ramp():
-    sup = Supervisor(heartbeat_seconds=0.001)
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
     try:
         status = await sup.spawn(opening_usdc=100.0, actor="alice")
         with pytest.raises(Exception, match="omnibus|fiat ramp"):
             await sup.darwin_fiat_payout(
                 status.darwin_id,
                 amount_usdc=10.0,
-                fiat_destination="acct_x",
+                freelancer_id="x",
                 actor="alice",
             )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_darwin_fiat_payout_refuses_unregistered_freelancer(
+    _omnibus_chain,
+):
+    """Even with omnibus + ramp wired, a freelancer not in the registry
+    for the owning user must be rejected before any chain transfer."""
+    from darwin_platform.adapters.fiat import StubFiatRamp
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+        fiat_ramp=StubFiatRamp(),
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        with pytest.raises(Exception, match="not registered"):
+            await sup.darwin_fiat_payout(
+                status.darwin_id,
+                amount_usdc=10.0,
+                freelancer_id="ghost",
+                actor="alice",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_darwin_fiat_payout_isolates_owner_scope(_omnibus_chain):
+    """Alice's registered freelancer must not be reachable from Bob's
+    Darwin — registry is owner-scoped."""
+    from darwin_platform.adapters.fiat import StubFiatRamp
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+        fiat_ramp=StubFiatRamp(),
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
+    try:
+        bob_status = await sup.spawn(opening_usdc=200.0, actor="bob")
+        sup.register_freelancer(
+            owner_subject="alice",
+            freelancer_id="freelancer-1",
+            fiat_destination="acct_alice_friend",
+            actor="alice",
+        )
+        with pytest.raises(Exception, match="not registered"):
+            await sup.darwin_fiat_payout(
+                bob_status.darwin_id,
+                amount_usdc=10.0,
+                freelancer_id="freelancer-1",
+                actor="bob",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_register_revoke_list_freelancer_round_trip():
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
+    try:
+        sup.register_freelancer(
+            owner_subject="alice",
+            freelancer_id="f1",
+            fiat_destination="acct_1",
+            display_name="One",
+            kyc_status="verified",
+        )
+        sup.register_freelancer(
+            owner_subject="alice",
+            freelancer_id="f2",
+            fiat_destination="acct_2",
+            display_name="Two",
+        )
+        listed = sup.list_freelancers(owner_subject="alice")
+        assert [d["freelancer_id"] for d in listed] == ["f1", "f2"]
+        result = sup.revoke_freelancer(
+            owner_subject="alice", freelancer_id="f1",
+        )
+        assert result == {"revoked": True, "freelancer_id": "f1"}
+        listed_after = sup.list_freelancers(owner_subject="alice")
+        assert [d["freelancer_id"] for d in listed_after] == ["f2"]
     finally:
         await sup.shutdown(kill_running=True)
 
@@ -443,5 +560,352 @@ async def test_observe_drift_with_detector_feeds_through():
             total_dispatches=200, total_spend_usdc=0.0,
         ))
         assert len(alerts) > 0
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+# ---------------------------------------------------------------------------
+# Owner attribution + omnibus fund_child / sweep_child wiring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_captures_owner_subject_from_spawn_actor(_omnibus_chain):
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        handle = sup._darwins[status.darwin_id]
+        assert handle.owner_subject == "alice"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_child_inherits_owner_subject_from_parent():
+    """Reproduction preserves owner attribution — a parent owned by
+    alice can only spawn a child owned by alice."""
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        parent_status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        # Use the second spawn as a synthetic child for the attribution
+        # check (the genome's reproduction loop creates one too, but its
+        # boot path involves DNA verification that isn't relevant here).
+        child_status = await sup.spawn(
+            opening_usdc=25.0, actor="alice",
+            parent_id=parent_status.darwin_id,
+        )
+        child_handle = sup._darwins[child_status.darwin_id]
+        # Direct spawns with parent_id carry the actor through; the
+        # _boot_child path inherits from the parent.owner_subject so both
+        # paths converge on the parent's owner.
+        assert child_handle.owner_subject == "alice"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_root_spawn_funds_via_omnibus_when_user_credit_available(
+    _omnibus_chain,
+):
+    """Owner has deposited; spawning a root Darwin debits user_credits
+    and records a FUND_CHILD entry on the omnibus ledger."""
+    omnibus = OmnibusWallet(_omnibus_chain)
+    omnibus.record_deposit(
+        user_subject="alice", amount_usdc=200.0, source_ref="stripe_x",
+    )
+    sup = Supervisor(heartbeat_seconds=0.001, omnibus_wallet=omnibus)
+    try:
+        await sup.spawn(opening_usdc=100.0, actor="alice")
+        # user_credits decremented; FUND_CHILD on ledger.
+        assert omnibus.user_credit("alice") == pytest.approx(100.0)
+        funds = [
+            e for e in omnibus.ledger()
+            if e.kind.value == "fund_child"
+        ]
+        assert len(funds) == 1
+        assert funds[0].metadata["user_subject"] == "alice"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_root_spawn_skips_omnibus_fund_when_anonymous(_omnibus_chain):
+    """Anonymous actor has no user_credit attribution; the funding
+    helper must not raise."""
+    omnibus = OmnibusWallet(_omnibus_chain)
+    sup = Supervisor(heartbeat_seconds=0.001, omnibus_wallet=omnibus)
+    try:
+        await sup.spawn(opening_usdc=100.0)  # actor defaults to anonymous
+        funds = [e for e in omnibus.ledger() if e.kind.value == "fund_child"]
+        assert funds == []
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_insufficient_user_credit_audit_logged_not_raised(
+    _omnibus_chain,
+):
+    """Owner has no credit; the spawn proceeds (FakeWallet has its
+    in-memory balance) and the skip is audit-logged."""
+    omnibus = OmnibusWallet(_omnibus_chain)
+    sup = Supervisor(heartbeat_seconds=0.001, omnibus_wallet=omnibus)
+    try:
+        await sup.spawn(opening_usdc=100.0, actor="bob")
+        skipped = sup.audit_log.entries(action="omnibus_fund_skipped")
+        assert len(skipped) == 1
+        assert "insufficient" in skipped[0].metadata.get("reason", "").lower()
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_kill_credits_residual_back_to_user(_omnibus_chain):
+    """A Darwin with leftover USDC at kill time credits the owning user
+    via omnibus.sweep_child (recording-only — on-chain reconciliation is
+    operator-driven)."""
+    omnibus = OmnibusWallet(_omnibus_chain)
+    omnibus.record_deposit(
+        user_subject="alice", amount_usdc=200.0, source_ref="x",
+    )
+    sup = Supervisor(heartbeat_seconds=0.001, omnibus_wallet=omnibus)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        # After fund_child: alice has 100 credit, Darwin has 100 wallet.
+        before_kill = omnibus.user_credit("alice")
+        await sup.kill(status.darwin_id, reason="test", actor="alice")
+        # Residual balance (100) swept back to alice.
+        after_kill = omnibus.user_credit("alice")
+        assert after_kill == pytest.approx(before_kill + 100.0)
+        sweeps = [e for e in omnibus.ledger() if e.kind.value == "sweep_child"]
+        assert len(sweeps) == 1
+    finally:
+        await sup.shutdown(kill_running=False)
+
+
+# ---------------------------------------------------------------------------
+# Fiat-payout failure recovery (refund_fiat_payout)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refund_fiat_payout_returns_funds_and_audits(_omnibus_chain):
+    """Operator-driven recovery from a failed Darwin → fiat payout:
+    omnibus → Darwin wallet chain transfer + audit entry. The Darwin's
+    local balance reflects the inbound via wallet.credit."""
+    from darwin_platform.adapters.fiat import StubFiatRamp
+
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+        fiat_ramp=StubFiatRamp(),
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        sup.register_freelancer(
+            owner_subject="alice",
+            freelancer_id="upwork:writer-42",
+            fiat_destination="acct_x",
+            actor="alice",
+        )
+        # Run the payout, then refund.
+        await sup.darwin_fiat_payout(
+            status.darwin_id,
+            amount_usdc=30.0,
+            freelancer_id="upwork:writer-42",
+            actor="alice",
+        )
+        wallet = sup._darwins[status.darwin_id].stack.wallet
+        balance_after_payout = wallet.balance_usdc()
+
+        refund = await sup.refund_fiat_payout(
+            status.darwin_id,
+            amount_usdc=30.0,
+            reason="ramp_outage",
+            actor="alice",
+        )
+        assert refund["kind"] == "refund_to_darwin"
+        # Local balance is restored (FakeWallet's credit() bumps it).
+        assert wallet.balance_usdc() == pytest.approx(
+            balance_after_payout + 30.0,
+        )
+        # Omnibus ledger has the refund entry.
+        refunds = [
+            e for e in sup.omnibus_wallet.ledger()
+            if e.kind.value == "refund_to_darwin"
+        ]
+        assert len(refunds) == 1
+        # Audit trail.
+        audits = sup.audit_log.entries(action="refund_fiat_payout")
+        assert len(audits) == 1
+        assert audits[0].metadata["reason"] == "ramp_outage"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_refund_fiat_payout_requires_omnibus():
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        with pytest.raises(Exception, match="omnibus"):
+            await sup.refund_fiat_payout(
+                status.darwin_id, amount_usdc=10.0, actor="alice",
+            )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+# ---------------------------------------------------------------------------
+# Pre-approval inheritance on reproduction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_child_inherits_parent_preapprovals_via_helper():
+    """Reproduction copies owner pre-approval rules onto the child's
+    wallet. Exercises the _inherit_preapprovals helper with a synthetic
+    child wallet so the test doesn't depend on the genome's DNA-verify
+    path; the helper is what _boot_child actually calls."""
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        parent_status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        await sup.set_preapproval(
+            parent_status.darwin_id,
+            rule_id="upwork-under-50",
+            max_amount_usdc=50.0,
+            counterparty_category="freelancer",
+            counterparty_substring="upwork",
+            actor="alice",
+        )
+        child_status = await sup.spawn(
+            opening_usdc=25.0, actor="alice",
+            parent_id=parent_status.darwin_id,
+        )
+        parent = sup._darwins[parent_status.darwin_id]
+        child_wallet = sup._darwins[child_status.darwin_id].stack.wallet
+        # The helper is what _boot_child invokes; exercise it directly.
+        sup._inherit_preapprovals(
+            parent, child_wallet, child_status.darwin_id,
+        )
+        child_rules = child_wallet.owner_preapprovals()
+        assert len(child_rules) == 1
+        assert child_rules[0].rule_id == "upwork-under-50"
+        # Audit captured the inheritance event.
+        audits = sup.audit_log.entries(action="preapprovals_inherited")
+        assert len(audits) == 1
+        assert audits[0].metadata["rule_ids"] == ["upwork-under-50"]
+        assert audits[0].metadata["parent_id"] == parent.darwin_id
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_inherit_preapprovals_with_no_rules_is_noop():
+    sup = Supervisor(heartbeat_seconds=0.001)
+    try:
+        parent_status = await sup.spawn(opening_usdc=100.0, actor="alice")
+        child_status = await sup.spawn(
+            opening_usdc=25.0, actor="alice",
+            parent_id=parent_status.darwin_id,
+        )
+        parent = sup._darwins[parent_status.darwin_id]
+        child_wallet = sup._darwins[child_status.darwin_id].stack.wallet
+        sup._inherit_preapprovals(
+            parent, child_wallet, child_status.darwin_id,
+        )
+        assert child_wallet.owner_preapprovals() == ()
+        # No audit entry when there's nothing to inherit.
+        assert sup.audit_log.entries(action="preapprovals_inherited") == []
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+# ---------------------------------------------------------------------------
+# Escalation → fiat payout linkage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_darwin_fiat_payout_records_escalation_id(_omnibus_chain):
+    """The operator passes the originating escalation_id; the supervisor
+    threads it into both the audit entry and the omnibus ledger entry
+    so a forensic timeline ties the approval to the settlement."""
+    from darwin_platform.adapters.fiat import StubFiatRamp
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+        fiat_ramp=StubFiatRamp(),
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        sup.register_freelancer(
+            owner_subject="alice",
+            freelancer_id="upwork:x",
+            fiat_destination="acct_x",
+            actor="alice",
+        )
+        await sup.darwin_fiat_payout(
+            status.darwin_id,
+            amount_usdc=10.0,
+            freelancer_id="upwork:x",
+            escalation_id="esc-12345",
+            actor="alice",
+        )
+        # Audit metadata carries the link.
+        audits = sup.audit_log.entries(action="darwin_fiat_payout")
+        assert len(audits) == 1
+        assert audits[0].metadata["escalation_id"] == "esc-12345"
+        # Omnibus ledger metadata carries it too.
+        entries = [
+            e for e in sup.omnibus_wallet.ledger()
+            if e.kind.value == "darwin_fiat_payout"
+        ]
+        assert len(entries) == 1
+        assert entries[0].metadata["escalation_id"] == "esc-12345"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_darwin_fiat_payout_escalation_id_optional(_omnibus_chain):
+    """Calling without escalation_id is allowed but records None so the
+    operator can later flag 'unattributed payouts' for review."""
+    from darwin_platform.adapters.fiat import StubFiatRamp
+    from darwin_platform.payments.freelancer_registry import (
+        InMemoryFreelancerRegistry,
+    )
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        omnibus_wallet=OmnibusWallet(_omnibus_chain),
+        fiat_ramp=StubFiatRamp(),
+        freelancer_registry=InMemoryFreelancerRegistry(),
+    )
+    try:
+        status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        sup.register_freelancer(
+            owner_subject="alice", freelancer_id="upwork:x",
+            fiat_destination="acct_x", actor="alice",
+        )
+        await sup.darwin_fiat_payout(
+            status.darwin_id,
+            amount_usdc=10.0, freelancer_id="upwork:x", actor="alice",
+        )
+        entries = [
+            e for e in sup.omnibus_wallet.ledger()
+            if e.kind.value == "darwin_fiat_payout"
+        ]
+        assert entries[0].metadata["escalation_id"] is None
     finally:
         await sup.shutdown(kill_running=True)

@@ -151,6 +151,7 @@ class RealWallet:
         # into the policy engine so a matching low-friction freelancer /
         # legal_financial / over-threshold spend skips escalation.
         self._preapprovals: dict[str, PreApprovalRule] = {}
+        self._preapproval_persister = None
 
     def _day(self) -> str:
         import time as _t
@@ -454,6 +455,26 @@ class RealWallet:
         return tuple(
             self._preapprovals[k] for k in sorted(self._preapprovals)
         )
+
+    def consume_preapproval(self, rule_id: str) -> PreApprovalRule | None:
+        """See :meth:`FakeWallet.consume_preapproval`. Used-count is
+        platform-side accounting; the chain doesn't track it."""
+        existing = self._preapprovals.get(rule_id)
+        if existing is None:
+            return None
+        bumped = existing.model_copy(
+            update={"used_count": existing.used_count + 1},
+        )
+        self._preapprovals[rule_id] = bumped
+        if self._preapproval_persister is not None:
+            try:
+                self._preapproval_persister(bumped)
+            except Exception:
+                pass
+        return bumped
+
+    def set_preapproval_persister(self, callback) -> None:
+        self._preapproval_persister = callback
 
     # -- reproduction transfer --------------------------------------------
     def set_sanctions_screener(self, screener) -> None:
