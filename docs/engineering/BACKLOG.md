@@ -171,18 +171,23 @@ so cloud billing matches the ledger debit. Optional BU custom model.
 - [~] **Next.js web dashboard** — Substantially shipped. `web/` (Next 15 / React 19 /
 Tailwind v4 / shadcn). Routes live: fleet overview (`/`), spawn wizard
 (`/darwins/new`), per-Darwin shell (`/darwins/[id]`) with sub-nav for
-Anatomy / Lineage / Billing / Vault / Resources / Settings, fleet
-Escalations inbox (`/escalations`), Token paste (`/tokens`). WS stream
+Anatomy / Lineage / Billing / Pre-approvals / Payments / Vault / Resources / Settings,
+fleet Escalations inbox (`/escalations`), owner self-serve Freelancers
+registry (`/freelancers`), Token paste (`/tokens`). WS stream
 (`DarwinStream`) layered on top of REST snapshots: anatomy canvas updates
 live, event timeline tails with `?since=`. Owner controls (spend-lock,
 disable-neuron, force-reproduce, kill), respond drawer, vault put/get,
-deprovision, fiat deposit/withdraw, harvest dialog all wired. Codegen
+deprovision, fiat deposit/withdraw, harvest dialog, Darwin fiat-payment
+console (send / refund / retry omnibus fund), pre-approval rule manager
+(install / revoke / consume-counter view) all wired. Codegen
 from FastAPI OpenAPI typed against `web/lib/api.generated.ts`. CI gate
 in `.github/workflows/web.yml` (lint/typecheck/test/build).
 Remaining gaps: full Timeline route with URL-encoded filters (today's
 EventTable on the Darwin shell handles most needs), linked Anatomy↔Timeline
 canvas (M3-D), data browser (M3-E), Clerk swap-in (auth seam in place but
-still on `--auth-tokens`). Docs 01, 08, 19, 20, 22. *(Stage 1 done 2026-05-27)*
+still on `--auth-tokens`), Playwright E2E (no `playwright/` directory yet).
+Docs 01, 08, 17, 19, 20, 22. *(Stage 1 done 2026-05-27; payments routes
+added 2026-05-29)*
 - **Mobile escalation app** — Expo/RN; no `mobile/` directory. Docs 19, 22.
 - **Terraform / EKS IaC** — `infra/`: EKS, Aurora platform + organism clusters,
 Vault, observability, dev/staging/prod envs. Docs 20, 22.
@@ -237,6 +242,186 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
 
 ---
+
+## Shipped since 2026-05-28 — payments completion arc
+
+End-to-end pass on the payments story: per-Darwin wallet isolation, the
+omnibus mediation pattern wired through every multi-party flow, an
+escalation-exception system the owner can actually steer, and a full
+client surface (UI + Python SDK + runbook) over the new endpoints.
+
+**Per-Darwin wallet refactor**
+- `wallet_factory` signature now `(darwin_id, clock, vault)`; vault
+built before wallet so a local-vault provider seals into the real
+per-Darwin namespace. CDP factory uses `account_name=f"darwin-{id}"`
+so each spawn gets its own TEE-held wallet via the idempotent
+`get_or_create_account`.
+- New `--wallet-provider local-vault` provider: per-Darwin keypair
+minted at spawn via SDK-gated `WalletKeypairMinter` impls
+(Solana/Stellar/EVM), sealed at `sensitive/wallet/<chain>/secret` in
+the Darwin's vault namespace. New module
+`adapters/wallet_keypair.py` with the pure `ensure_keypair` helper.
+- `--wallet-provider` CLI default flipped to `cdp`; the legacy `web3`
+(shared-key) path now refuses to start when any RPC URL contains
+"mainnet" or is `horizon.stellar.org`. `.env.example` rewritten with
+CDP as the documented default. Orchestrator argparse forwards the
+choice; K8s `DarwinPodConfig.wallet_provider` + `build_deployment`
+thread `--wallet-provider` into every per-Darwin pod (4 integration
+tests verify forwarding for each provider). Docs 05, 17, 27.
+→ supervisor / orchestrator / `__main__.py` / `k8s/manifests.py`,
+new `adapters/wallet_keypair.py` *(done 2026-05-28)*
+
+**Omnibus mediation — reproduction, fiat, refund, sweep**
+- `OmnibusEntryKind` gained `RELAY_REPRODUCTION`, `DARWIN_FIAT_PAYOUT`,
+`REFUND_TO_DARWIN`. New methods `omnibus.relay_reproduction`,
+`omnibus.relay_fiat_payout` (with optional `escalation_id`),
+`omnibus.refund_to_darwin` — all explicitly do NOT touch
+`user_credits` because the source is a Darwin wallet, not a user
+deposit. Daily reconciliation identity updated accordingly.
+- `Wallet.transfer_out_for_child(destination)` now takes a destination
+kwarg (omnibus address when wired; symbolic for sim). New
+`Wallet.transfer_out_for_fiat_payout` mirrors the same pattern.
+New `Wallet.sweep_to(destination, amount)` bypasses per-action caps
+for platform sweeps; on kill the supervisor's
+`_sweep_dead_darwin_to_omnibus` actually moves bytes on-chain AND
+records the omnibus.sweep_child credit (recording-only previously).
+`FakeWallet.address()` added for sim parity.
+- Reproduction relay second leg: supervisor's `_observe_children` calls
+`omnibus.relay_reproduction(parent_id, child_id, child_address,
+amount)` after `_boot_child`; chain failures audit-logged as
+`reproduction_relay_failed`. Docs 05, 17.
+→ `payments/omnibus_wallet.py`, `darwin_fakes/fake_wallet.py`,
+`adapters/wallet.py`, `runtime/supervisor.py` *(done 2026-05-28)*
+
+**Owner attribution + omnibus user_credits wiring**
+- `_Handle.owner_subject` captured from `actor` at spawn; inherited
+parent → child on `_boot_child`. New helpers
+`_fund_darwin_from_omnibus` (root spawn → `omnibus.fund_child` when
+user has credit) and `_sweep_dead_darwin_to_omnibus` (kill →
+`omnibus.sweep_child`). Both best-effort; failures audit-logged as
+`omnibus_fund_skipped` / `omnibus_sweep_skipped`. Operator can
+recover a skipped fund via `supervisor.retry_omnibus_fund` +
+`POST /darwins/{id}/omnibus/fund`. Doc 05.
+→ `runtime/supervisor.py` *(done 2026-05-28)*
+
+**Owner pre-approvals (typed escalation exceptions)**
+- New `darwin_dna.constitution.PreApprovalRule` with conjunctive match
+(`counterparty_category`, `counterparty_substring`, `max_amount_usdc`,
+`expires_at`, `max_uses`, `used_count`). `treasury_policy.evaluate`
+consults the rule set before escalating; a match returns ALLOW with
+`layer="pre_approval:<rule_id>"`. Hard caps / sanctions / solvency /
+strategy envelope still hold — pre-approvals only suppress layer-4
+escalation.
+- Wallet surface: `set_preapproval` / `revoke_preapproval` /
+`owner_preapprovals` / `consume_preapproval` (facilitator hooks the
+last one after a successful pre-approved pay; the wallet's
+write-through persister callback writes the bumped `used_count`
+through to the SQL store so the counter survives a restart).
+- Supervisor methods + HTTP routes:
+`PUT/DELETE/GET /platform/wallets/{id}/preapprovals[/{rule_id}]`.
+Parent rules inherited on reproduction via `_inherit_preapprovals`
+(copies onto child wallet + persists under child's id; audit-logged
+as `preapprovals_inherited`). Docs 05, 17.
+→ new `constitution/pre_approval.py`, `machinery/treasury_policy.py`,
+`neurons/payments_facilitator.py`, both wallets, supervisor, API
+*(done 2026-05-28)*
+
+**Freelancer registry (KYC gate at the fiat edge)**
+- New module `payments/freelancer_registry.py` with `FreelancerDestination`,
+`InMemoryFreelancerRegistry`, and the persistent `PersistentFreelancerRegistry`
+backed by the `freelancer_registry` SQL table (schema v5). Per-owner
+scoping prevents cross-owner reach.
+- Supervisor methods + HTTP routes: operator-scoped
+`POST/GET/DELETE /platform/freelancers/...` plus owner self-serve
+`POST/GET/DELETE /me/freelancers...` where `owner_subject` is the
+authenticated `ctx.subject` (body value ignored).
+`supervisor.darwin_fiat_payout` now takes `freelancer_id` instead of
+a raw destination and refuses with 409 when the id isn't registered
+for the Darwin's `owner_subject`. Doc 17.
+→ new `payments/freelancer_registry.py`, supervisor, API
+*(done 2026-05-28)*
+
+**Fiat payout, refund, and `escalation_id` linkage**
+- `supervisor.darwin_fiat_payout` orchestrates two legs (Darwin →
+omnibus address chain transfer, then `omnibus.relay_fiat_payout`
+through the `FiatRamp`). `escalation_id` kwarg threaded into the
+omnibus entry + audit metadata so a forensic timeline ties the
+owner-approved escalation to the fiat settlement.
+- `supervisor.refund_fiat_payout` + `POST /darwins/{id}/fiat_payment/refund`
+recovers from leg-2 failure: chain transfer omnibus → Darwin wallet
+plus a `wallet.credit` so the local ledger reflects the inbound.
+Operator-driven (no automatic retries) so a real ramp outage doesn't
+mask itself. Docs 17, 25 (FM-6, FM-7).
+→ supervisor, `payments/omnibus_wallet.py`, API *(done 2026-05-28)*
+
+**NamespaceProvisioner wallet step + persistence schema bumps**
+- `NamespaceProvisioner.provision()` gained an optional step 4 that
+mints per-chain keypairs via `wallet_keypair_minters` and seals them
+in the per-Darwin vault namespace under `kv/wallet/<chain>`;
+`TenantNamespace.wallet_addresses` surfaces the addresses for
+downstream use. Atomic rollback of the prior K8s/Vault/DB steps if
+the mint fails; audit records addresses, never secrets.
+- Persistence schema bumped 3 → 6: `darwin_preapprovals` (v4),
+`freelancer_registry` (v5), `max_uses`+`used_count` columns on
+preapprovals via the v6 ALTER-TABLE migration. New
+`PersistentPreApprovalStore` + `PersistentFreelancerRegistry`. The
+supervisor's `_preapproval_store` rehydrates rules onto the wallet
+at spawn and purges them on kill so a future re-spawn of the same id
+can't resurrect stale grants. End-to-end pre-v4 upgrade test seeds a
+real v3 DB with `darwin_lifecycle` rows and verifies migration +
+usability through v6. Docs 17, 22.
+→ `tenancy/namespace_provisioner.py`, `runtime/persistence.py`,
+supervisor *(done 2026-05-28)*
+
+**Operator UI (`web/`)**
+- 3 new pages: `/freelancers` (owner self-serve via `/me`),
+`/darwins/[id]/preapprovals` (rules manager with `used_count / max_uses`
+progress badges + expiry countdown), `/darwins/[id]/payments` (send
+fiat payment / refund failed payout / retry skipped omnibus fund as
+three stacked cards). Sidebar gained "Freelancers"; Darwin detail
+gained "Pre-approvals" + "Payments" sub-nav entries.
+- `lib/api.ts` extended with 11 typed methods + matching DTOs in
+`lib/types.ts` + new query keys in `lib/queryKeys.ts`. All mutating
+calls send `Idempotency-Key`. 9 new vitest tests round-trip the new
+methods through a mocked fetch. `pnpm typecheck` + `pnpm lint` clean.
+→ `web/app/(dashboard)/freelancers/`,
+`web/app/(dashboard)/darwins/[id]/{preapprovals,payments}/`,
+`web/lib/{api,types,queryKeys}.ts`,
+`web/components/layout/sidebar.tsx` *(done 2026-05-29)*
+
+**Python SDK (`darwin_platform.client`)**
+- New `DarwinClient` (httpx-based) mirroring the typed surface in
+`web/lib/api.ts` for programmatic consumers (CI scripts, integration
+tests, operator automation). Typed dataclass request bodies
+(`PreApprovalSpec`, `FreelancerRegistration`, `FiatPaymentRequest`,
+`FiatRefundRequest`), `PlatformApiError` carries the HTTP status for
+branchable error handling, fresh `Idempotency-Key` per mutation,
+context-manager close. 18 unit tests via `httpx.MockTransport`. Doc 25.
+→ new `src/darwin_platform/client/` *(done 2026-05-29)*
+
+**Docs and runbook**
+- `05-treasury-and-payments.md` rewrote the policy engine layers,
+added the omnibus mediation pattern, fixed the reconciliation
+identity, added the real-chain sweep + retry-fund paragraphs.
+- `17-payments-providers.md` replaced single CDP section with the
+three-provider explanation + `NamespaceProvisioner` integration;
+new "Owner pre-approvals" section with rule shape + `max_uses` +
+inheritance + persistence; rewrote "Darwin paying a human" to cover
+the implemented two-leg fiat path + refund + escalation_id
+linkage; new "Reproduction transfers" section.
+- `25-operational-runbook.md` gained FM-6 (fiat-payout leg-2 failure)
+and FM-7 (skipped spawn-time fund_child) failure-mode entries with
+curl + SDK + dashboard recovery paths, plus a new "Common operator
+workflows (payments)" section.
+- `27-configuration-reference.md` split the single wallet flag table
+into the three-provider model; new "Payment HTTP endpoints" section
+enumerating every new route + body shape.
+
+**Test totals delta**
+- Python: +103 tests (1217 → 1338 passing, 32 skipped — optional SDK
+gates unchanged), 0 regressions. New schema migration covered
+end-to-end from a real pre-v4 SQLite DB.
+- Web: +9 vitest tests (12 → 21 passing). `pnpm typecheck` clean.
 
 ## Shipped since 2026-05-27 — first-real-darwin pass
 
