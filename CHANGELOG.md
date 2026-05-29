@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-05-29
+
 
 ### Added
+- test(platform): harden factory-empty assertion against dotenv side effects
 - feat(platform): forward wallet provider selection into orchestrator pods
 - feat(platform): relay reproduction transfers from omnibus to child wallets
 - feat(web): improve timeline categorization and live-tail pause controls
