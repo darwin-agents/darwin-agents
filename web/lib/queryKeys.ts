@@ -16,6 +16,11 @@ export const queryKeys = {
   alerts: (id: string) => ["darwin", id, "alerts"] as const,
   escalations: (id: string) => ["darwin", id, "escalations"] as const,
   lineage: (id: string) => ["darwin", id, "lineage"] as const,
+  // Payments — doc 17
+  preapprovals: (id: string) => ["darwin", id, "preapprovals"] as const,
+  freelancers: (ownerSubject: string) =>
+    ["freelancers", ownerSubject] as const,
+  myFreelancers: () => ["freelancers", "me"] as const,
 };
 
 export type QueryKey = ReturnType<(typeof queryKeys)[keyof typeof queryKeys]>;

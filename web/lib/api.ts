@@ -13,6 +13,8 @@ import type {
   AlertsResponse,
   BillingResponse,
   DarwinEvent,
+  DarwinFiatPayoutRequest,
+  DarwinFiatRefundRequest,
   DarwinListResponse,
   DarwinStatus,
   EscalationResponseRequest,
@@ -21,11 +23,17 @@ import type {
   FiatConfirmDepositRequest,
   FiatDepositQuoteRequest,
   FiatWithdrawRequest,
+  FreelancerDestination,
   HarvestRequest,
   HarvestRuleRequest,
   LedgerResponse,
   LineageTreeResponse,
+  OmnibusEntryDTO,
   OwnerControls,
+  PreApprovalRequest,
+  PreApprovalRule,
+  RegisterFreelancerRequest,
+  RetryOmnibusFundRequest,
   SpawnRequest,
   VaultPutRequest,
 } from "./types";
@@ -385,6 +393,74 @@ export const api = {
     }),
   fiatWithdraw: (req: FiatWithdrawRequest) =>
     apiFetch<Record<string, unknown>>(`/platform/fiat/withdraw`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+
+  /* -------------------------------------------------------------------------
+   * Payments — doc 17 (preapprovals, freelancers, fiat payouts, omnibus retry)
+   * --------------------------------------------------------------------- */
+
+  // Pre-approvals
+  listPreapprovals: (id: string) =>
+    apiFetch<PreApprovalRule[]>(`/platform/wallets/${id}/preapprovals`),
+  setPreapproval: (id: string, ruleId: string, req: PreApprovalRequest) =>
+    apiFetch<PreApprovalRule>(
+      `/platform/wallets/${id}/preapprovals/${ruleId}`,
+      { method: "PUT", body: req, mutating: true },
+    ),
+  revokePreapproval: (id: string, ruleId: string) =>
+    apiFetch<{ revoked: boolean; rule_id: string }>(
+      `/platform/wallets/${id}/preapprovals/${ruleId}`,
+      { method: "DELETE", mutating: true },
+    ),
+
+  // Freelancer registry — operator scoped routes.
+  listFreelancers: (ownerSubject: string) =>
+    apiFetch<FreelancerDestination[]>(`/platform/freelancers/${ownerSubject}`),
+  registerFreelancer: (req: RegisterFreelancerRequest) =>
+    apiFetch<FreelancerDestination>("/platform/freelancers", {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  revokeFreelancer: (ownerSubject: string, freelancerId: string) =>
+    apiFetch<{ revoked: boolean; freelancer_id: string }>(
+      `/platform/freelancers/${ownerSubject}/${freelancerId}`,
+      { method: "DELETE", mutating: true },
+    ),
+
+  // Freelancer registry — owner self-serve (uses ctx.subject implicitly).
+  listMyFreelancers: () =>
+    apiFetch<FreelancerDestination[]>("/me/freelancers"),
+  registerMyFreelancer: (req: RegisterFreelancerRequest) =>
+    apiFetch<FreelancerDestination>("/me/freelancers", {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  revokeMyFreelancer: (freelancerId: string) =>
+    apiFetch<{ revoked: boolean; freelancer_id: string }>(
+      `/me/freelancers/${freelancerId}`,
+      { method: "DELETE", mutating: true },
+    ),
+
+  // Darwin → fiat payout (and refund / omnibus fund retry)
+  darwinFiatPayment: (id: string, req: DarwinFiatPayoutRequest) =>
+    apiFetch<OmnibusEntryDTO>(`/darwins/${id}/fiat_payment`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  darwinFiatRefund: (id: string, req: DarwinFiatRefundRequest) =>
+    apiFetch<OmnibusEntryDTO>(`/darwins/${id}/fiat_payment/refund`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  retryOmnibusFund: (id: string, req: RetryOmnibusFundRequest) =>
+    apiFetch<OmnibusEntryDTO>(`/darwins/${id}/omnibus/fund`, {
       method: "POST",
       body: req,
       mutating: true,

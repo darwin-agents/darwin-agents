@@ -184,3 +184,71 @@ export interface AlertsResponse {
   darwin_id: string;
   alerts: AlertEntry[];
 }
+
+/* ---------------------------------------------------------------------------
+ * Payments — doc 17 (preapprovals, freelancer registry, fiat payouts)
+ * ------------------------------------------------------------------------- */
+
+export interface PreApprovalRule {
+  rule_id: string;
+  max_amount_usdc: number;
+  counterparty_category?: string | null;
+  counterparty_substring?: string | null;
+  expires_at?: number | null;
+  max_uses?: number | null;
+  used_count: number;
+}
+
+export interface PreApprovalRequest {
+  max_amount_usdc: number;
+  counterparty_category?: string | null;
+  counterparty_substring?: string | null;
+  expires_at?: number | null;
+  max_uses?: number | null;
+}
+
+export interface FreelancerDestination {
+  owner_subject: string;
+  freelancer_id: string;
+  fiat_destination: string;
+  display_name?: string;
+  kyc_status?: "unverified" | "pending" | "verified" | string;
+  registered_at?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RegisterFreelancerRequest {
+  owner_subject: string;
+  freelancer_id: string;
+  fiat_destination: string;
+  display_name?: string;
+  kyc_status?: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface DarwinFiatPayoutRequest {
+  amount_usdc: number;
+  freelancer_id: string;
+  escalation_id?: string | null;
+}
+
+export interface DarwinFiatRefundRequest {
+  amount_usdc: number;
+  reason?: string;
+}
+
+export interface RetryOmnibusFundRequest {
+  amount_usdc: number;
+}
+
+/** OmnibusEntry as returned by routes that surface ledger rows. */
+export interface OmnibusEntryDTO {
+  kind: string;
+  amount_usdc: number;
+  counterparty: string;
+  actor: string;
+  ts: number;
+  memo?: string;
+  tx_hash?: string;
+  metadata?: Record<string, unknown>;
+}
