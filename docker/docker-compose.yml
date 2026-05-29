@@ -27,10 +27,10 @@ services:
       - "8000:8000"
     volumes:
       - supervisor-data:/data
-      # Bearer-token auth (off by default — the API trusts every caller).
-      # To enable: `cp tokens.example.json tokens.json`, uncomment this
-      # mount AND the --auth-tokens lines in `command:` below.
-      # - ./tokens.json:/run/secrets/tokens.json:ro
+      # Bearer-token auth. tokens.json (owner-dev-token + ops-dev-token) is
+      # mounted read-only and activated by the --auth-tokens flag below.
+      # Comment both out to fall back to permissive (trust-every-caller) mode.
+      - ./tokens.json:/run/secrets/tokens.json:ro
     command:
       - python
       - -m
@@ -40,23 +40,39 @@ services:
       - "0.0.0.0"
       - --port
       - "8000"
-      # Persistence — SQLite by default (restart-survivable via the
-      # supervisor-data volume). To use the bundled Postgres instead,
-      # comment the two SQLite lines below and uncomment the two
-      # Postgres lines.
+      # Persistence — Postgres (restart-survivable; the service is
+      # healthy-gated via depends_on below). Swap back to the SQLite line
+      # (--db /data/state.db) for a dependency-free dev run.
       - --db
-      - /data/state.db
-      # - --db
-      # - postgresql://${POSTGRES_USER:-darwin}:${POSTGRES_PASSWORD:-dev_only_password}@postgres:5432/${POSTGRES_DB:-darwin}
-      # Auth — uncomment together with the tokens.json mount above.
-      # - --auth-tokens
-      # - /run/secrets/tokens.json
+      - postgresql://${POSTGRES_USER:-darwin}:${POSTGRES_PASSWORD:-dev_only_password}@postgres:5432/${POSTGRES_DB:-darwin}
+      # real LLM through the bundled LiteLLM proxy (doc 13). Without this
+      # the supervisor falls back to the deterministic FakeLLM.
+      - --litellm-url
+      - http://litellm:4000
+      - --litellm-master-key
+      - dev_only_master_key
+      # real code-running sandbox neuron (doc 14). Empty E2B_API_KEY ->
+      # silently degrades back to FakeSandbox.
+      - --e2b-api-key
+      - ${E2B_API_KEY}
+      # real browser neuron (doc 15). Empty Browserbase creds -> FakeBrowser.
+      - --browser-provider
+      - browserbase
+      - --browserbase-url
+      - ${BROWSERBASE_URL}
+      - --browserbase-api-key
+      - ${BROWSERBASE_API_KEY}
+      # Auth — bearer tokens from the tokens.json mount above. Without this
+      # (and the mount) the API trusts every caller.
+      - --auth-tokens
+      - /run/secrets/tokens.json
     depends_on:
-      # Ordering only — the default SQLite mode does not need Postgres,
-      # but waiting for it to be healthy means switching --db to the
-      # postgresql:// line above "just works" with no further changes.
+      # Postgres must be healthy before the supervisor opens its pool;
+      # litellm before the genome's first real LLM call.
       postgres:
         condition: service_healthy
+      litellm:
+        condition: service_started
     restart: unless-stopped
     # The image already declares a /healthz HEALTHCHECK; Compose inherits it.
 
