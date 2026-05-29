@@ -19,8 +19,8 @@ body = """
 """
 trim = true
 render_always = true
-# Workflow: make changelog-sync  →  make release VERSION=0.0.2
-# Release uses git-cliff --current -t (delta since previous tag). Do not use -t alone or --prepend.
+# Workflow: make changelog-sync  →  make release (or make release VERSION=0.0.2)
+# Release uses git-cliff -t (delta since previous tag through HEAD). Do not use --prepend.
 
 [git]
 conventional_commits = true

@@ -9,7 +9,8 @@ Usage:
     python scripts/changelog.py release 0.0.2 [--no-tag] [--no-bump] [--no-commit] [--no-push]
 
 Release order (default): update CHANGELOG + pyproject → commit → annotated tag → push + --tags.
-Uses ``git-cliff --current -t`` so only commits since the previous tag are promoted (not full history).
+Uses ``git-cliff -t`` so only commits since the previous tag are promoted (not full history).
+Omit ``version`` to bump the latest release patch (e.g. 0.0.2 → 0.0.3). Explicit versions must be greater.
 Commit message: ``chore(release): prepare v{version}``. Only stages CHANGELOG.md and pyproject.toml.
 """
 
@@ -26,6 +27,8 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 PYPROJECT = ROOT / "pyproject.toml"
 UNRELEASED = "## [Unreleased]"
 VERSION_HEADING = re.compile(r"^## \[(?!Unreleased\])")
+VERSION_IN_HEADING = re.compile(r"^## \[(\d+\.\d+\.\d+)\]")
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def _run_git_cliff(*args: str) -> str:
@@ -93,12 +96,89 @@ def _empty_unreleased() -> str:
     return f"{UNRELEASED}\n"
 
 
+def _semver_key(ver: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in ver.split("."))
+
+
+def _parse_semver(raw: str) -> str:
+    ver = raw.strip().removeprefix("v")
+    if not SEMVER_RE.fullmatch(ver):
+        sys.exit(f"invalid version {raw!r} — expected semver like 0.0.2")
+    return ver
+
+
 def _normalize_version(raw: str) -> tuple[str, str]:
     """Return (semver, git tag) e.g. ('0.0.2', 'v0.0.2')."""
-    ver = raw.strip().removeprefix("v")
-    if not re.fullmatch(r"\d+\.\d+\.\d+", ver):
-        sys.exit(f"invalid version {raw!r} — expected semver like 0.0.2")
+    ver = _parse_semver(raw)
     return ver, f"v{ver}"
+
+
+def _read_pyproject_version() -> str | None:
+    text = PYPROJECT.read_text(encoding="utf-8")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+    if not match:
+        return None
+    ver = match.group(1)
+    return ver if SEMVER_RE.fullmatch(ver) else None
+
+
+def _read_changelog_latest_version() -> str | None:
+    for line in _read().splitlines():
+        match = VERSION_IN_HEADING.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _read_latest_git_tag_version() -> str | None:
+    proc = subprocess.run(
+        ["git", "tag", "-l", "v*", "--sort=-v:refname"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    for line in proc.stdout.splitlines():
+        ver = line.strip().removeprefix("v")
+        if SEMVER_RE.fullmatch(ver):
+            return ver
+    return None
+
+
+def _latest_release_version() -> str | None:
+    """Highest semver among git tags, pyproject.toml, and CHANGELOG release headings."""
+    candidates: list[str] = []
+    for reader in (_read_latest_git_tag_version, _read_pyproject_version, _read_changelog_latest_version):
+        ver = reader()
+        if ver:
+            candidates.append(ver)
+    if not candidates:
+        return None
+    return max(candidates, key=_semver_key)
+
+
+def _next_patch_version(last: str) -> str:
+    major, minor, patch = _semver_key(last)
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _resolve_release_version(version: str | None) -> tuple[str, str]:
+    last = _latest_release_version()
+    if version is None:
+        ver = _next_patch_version(last) if last else "0.0.1"
+        if last:
+            print(f"No version given — releasing {ver} (latest was {last})")
+        else:
+            print(f"No version given — releasing {ver} (first release)")
+    else:
+        ver, _ = _normalize_version(version)
+
+    if last is not None and _semver_key(ver) <= _semver_key(last):
+        sys.exit(f"version {ver} must be greater than latest release {last}")
+
+    return _normalize_version(ver)
 
 
 def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -156,26 +236,31 @@ def cmd_sync() -> None:
 
 
 def cmd_release(
-    version: str,
+    version: str | None,
     *,
     tag: bool,
     bump: bool,
     commit: bool,
     push: bool,
 ) -> None:
-    ver, tag_name = _normalize_version(version)
+    ver, tag_name = _resolve_release_version(version)
 
     if tag and _tag_exists(tag_name):
         sys.exit(f"git tag {tag_name} already exists")
 
-    # --current: commits since the previous tag only (render_always + -t alone dumps full history).
-    release_section = _run_git_cliff("--current", "-t", tag_name)
+    last = _latest_release_version()
+    if last:
+        release_section = _run_git_cliff(f"v{last}..HEAD", "-t", tag_name)
+    else:
+        release_section = _run_git_cliff("-t", tag_name)
+
     if UNRELEASED in release_section:
         sys.exit("git-cliff returned an [Unreleased] block; check cliff.toml")
-    if re.search(r"[^\n]## \[", release_section):
+    version_headings = re.findall(r"^## \[", release_section, flags=re.MULTILINE)
+    if len(version_headings) != 1:
         sys.exit(
-            "git-cliff release section has an inline version heading; "
-            "use --current -t or check cliff.toml render_always"
+            f"git-cliff release section expected 1 version heading, got {len(version_headings)}; "
+            "check cliff.toml render_always"
         )
 
     text = _read()
@@ -210,7 +295,12 @@ def main() -> None:
     sub.add_parser("sync", help="rewrite [Unreleased] in CHANGELOG.md from commits since last tag")
 
     rel = sub.add_parser("release", help="promote unreleased commits to a versioned section")
-    rel.add_argument("version", help="semver (e.g. 0.0.2 or v0.0.2)")
+    rel.add_argument(
+        "version",
+        nargs="?",
+        default=None,
+        help="semver (e.g. 0.0.2 or v0.0.2); default: patch bump after latest release",
+    )
     rel.add_argument("--no-tag", action="store_true", help="do not create a git tag")
     rel.add_argument("--no-bump", action="store_true", help="do not bump pyproject.toml version")
     rel.add_argument("--no-commit", action="store_true", help="do not git commit CHANGELOG + pyproject")
