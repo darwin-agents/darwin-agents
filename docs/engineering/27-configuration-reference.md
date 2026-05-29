@@ -132,11 +132,21 @@ Rules persist in the `darwin_preapprovals` SQL table (schema v6). Inherited pare
 
 Verified fiat-payout destinations, owner-scoped. The KYC gate at the fiat edge.
 
+Operator routes (PLATFORM_OPERATOR scope):
+
 | Method | Path | Body / Notes |
 | ------ | ---- | ------------ |
 | `POST` | `/platform/freelancers` | `{owner_subject, freelancer_id, fiat_destination, display_name?, kyc_status?, metadata?}`. Create or replace. |
 | `DELETE` | `/platform/freelancers/{owner_subject}/{freelancer_id}` | Idempotent revoke. |
 | `GET` | `/platform/freelancers/{owner_subject}` | List entries for one owner. |
+
+Owner self-serve routes (OWNER scope). The owner's identity is the authenticated `ctx.subject`; any `owner_subject` in the body is overridden. An owner cannot reach another user's destinations.
+
+| Method | Path | Body / Notes |
+| ------ | ---- | ------------ |
+| `POST` | `/me/freelancers` | Same body as the operator route; `owner_subject` ignored / overridden. |
+| `DELETE` | `/me/freelancers/{freelancer_id}` | Idempotent revoke for the caller's own registration. |
+| `GET` | `/me/freelancers` | List the caller's own entries. |
 
 Entries persist in the `freelancer_registry` SQL table (schema v5).
 
@@ -146,6 +156,7 @@ Entries persist in the `freelancer_registry` SQL table (schema v5).
 | ------ | ---- | ------------ |
 | `POST` | `/darwins/{darwin_id}/fiat_payment` | `{amount_usdc, freelancer_id, escalation_id?}`. Two-leg: wallet → omnibus address (chain), omnibus → fiat ramp. Refuses if `freelancer_id` isn't registered for the Darwin's owner. |
 | `POST` | `/darwins/{darwin_id}/fiat_payment/refund` | `{amount_usdc, reason?}`. Recovery path: omnibus → Darwin wallet chain transfer, undoing a failed leg-2. |
+| `POST` | `/darwins/{darwin_id}/omnibus/fund` | `{amount_usdc}`. Operator retry of a spawn-time `fund_child` that the audit logged as `omnibus_fund_skipped` (chain hiccup). Debits user_credits + submits chain transfer when the user now has enough credit. |
 
 ## `serve` — notification sinks (doc 08)
 
