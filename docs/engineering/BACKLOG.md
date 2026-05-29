@@ -1,12 +1,13 @@
 # Darwin — Engineering Backlog
 
-Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-25**.
+Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-29**.
 
-**~487 specified features DONE · ~79 PARTIAL · ~38 MISSING.** The Python core is
+**~492 specified features DONE · ~76 PARTIAL · ~36 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
 `darwin_dna/` or `darwin_platform/`. Nearly every remaining gap is *outside* the
-Python monorepo: frontend, infra-as-code, third-party SaaS adapters, and process
-commitments.
+Python monorepo: infra-as-code, the mobile companion, and process commitments.
+The web dashboard is now substantially built (Stage-1 ship), and a real-money
+onboarding recipe (`make real` + preflight + checklist) is wired.
 
 Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
@@ -165,10 +166,23 @@ both pre-debited to the wallet AND passed to the SDK as `max_cost_usd`
 so cloud billing matches the ledger debit. Optional BU custom model.
 `[browser-use-cloud]` extra. +11 tests. Docs 15, 31. *(done 2026-05-25)*
 
-## P3 — Frontend & infrastructure (never started)
+## P3 — Frontend & infrastructure
 
-- **Next.js web dashboard** — Anatomy + Timeline canvases. REST/WS API is complete;
-no `web/` directory. Docs 01, 08, 19, 20, 22.
+- [~] **Next.js web dashboard** — Substantially shipped. `web/` (Next 15 / React 19 /
+Tailwind v4 / shadcn). Routes live: fleet overview (`/`), spawn wizard
+(`/darwins/new`), per-Darwin shell (`/darwins/[id]`) with sub-nav for
+Anatomy / Lineage / Billing / Vault / Resources / Settings, fleet
+Escalations inbox (`/escalations`), Token paste (`/tokens`). WS stream
+(`DarwinStream`) layered on top of REST snapshots: anatomy canvas updates
+live, event timeline tails with `?since=`. Owner controls (spend-lock,
+disable-neuron, force-reproduce, kill), respond drawer, vault put/get,
+deprovision, fiat deposit/withdraw, harvest dialog all wired. Codegen
+from FastAPI OpenAPI typed against `web/lib/api.generated.ts`. CI gate
+in `.github/workflows/web.yml` (lint/typecheck/test/build).
+Remaining gaps: full Timeline route with URL-encoded filters (today's
+EventTable on the Darwin shell handles most needs), linked Anatomy↔Timeline
+canvas (M3-D), data browser (M3-E), Clerk swap-in (auth seam in place but
+still on `--auth-tokens`). Docs 01, 08, 19, 20, 22. *(Stage 1 done 2026-05-27)*
 - **Mobile escalation app** — Expo/RN; no `mobile/` directory. Docs 19, 22.
 - **Terraform / EKS IaC** — `infra/`: EKS, Aurora platform + organism clusters,
 Vault, observability, dev/staging/prod envs. Docs 20, 22.
@@ -186,7 +200,12 @@ process commitment against a long-lived dev platform. Docs 20, 25.
 - **`docs/postmortems/` directory** — created with a README pointing to the
 doc-29 template. Intentionally empty until the first real incident.
 *(done 2026-05-25)*
-- **7-day testnet soak run** — Layer-0 exit criterion. Docs 18, 20.
+- [~] **7-day testnet soak run** — Layer-0 exit criterion. Tooling now in place
+to start the clock: `make real NETWORK=testnet` boots against real
+LLM/CDP-testnet/Browserbase/E2B; `make real-checklist` runs the three
+pre-soak behaviours (tick+spend, pause-respect, kill-cleanup) against a
+$1 spawn. The wall-clock 7-day soak itself remains an operator-run
+process commitment. Docs 18, 20.
 - **Outside reviewer of the planner system prompt**. Doc 18.
 - **Legal/compliance review of the constitution**. Doc 18.
 - [~] **Quarterly safety reviews · external security audit · red-team
@@ -200,7 +219,11 @@ process commitments. Docs 10, 22.
 + README. Kill-switch locally verified (PASS, 0.21s latency). DR + Vault
 drills code-reviewed but not locally exercised (need Postgres + Vault
 respectively) — first operator run is the test. Doc 09.
-- **Real economic activity** — Darwin earns ≥ $1 USDC live. Doc 21.
+- [~] **Real economic activity** — Darwin earns ≥ $1 USDC live. Onboarding
+recipe shipped (`make real`, `make real-spawn`, `make real-checklist`),
+preflight gates a misconfigured boot, mainnet preflight refuses if RPC
+URL still names a testnet. The earning itself is a process commitment
+against a live Darwin. Doc 21.
 
 ## Doc-drift cleanup (code is fine — fix the docs) — ✅ COMPLETE
 
@@ -214,6 +237,83 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
 
 ---
+
+## Shipped since 2026-05-27 — first-real-darwin pass
+
+Driven by a real Darwin launch against `state.db` that surfaced five live
+production bugs masked by the simulation tier. All five fixed + regression
+tests + fleet onboarding tooling, in one pass.
+
+- **Lifecycle row missing for spawned children** — `_boot_child` registered
+the child in `_darwins` and started its drive task but never called
+`_lifecycle.upsert_spawn`, never emitted a `spawn` audit, never persisted
+the child's manifest. A reproduced child existed in `lineage_edges` +
+`billing_ledgers` (with metering) but was a ghost to the dashboard +
+failover. Fixed: parity with the genesis spawn path; child inherits
+`escalation_auto` from parent. +1 regression test. Docs 06, 08.
+→ `src/darwin_platform/runtime/supervisor.py::_boot_child` *(done 2026-05-28)*
+
+- **`escalation_auto` did not auto-resolve router-side** — `MemoryEscalationInbox`
+auto-queued a response on every `post()`, but the supervisor's
+`_observe_escalations` only registered tickets with the router and never
+mirrored the inbox's auto-decision. Result: a sim Darwin under `auto=approve`
+showed 188 captcha tickets "open" forever even though the genome treated
+them as resolved. Fixed: new `_auto_decide_escalation` mirrors the policy
+into `_router.mark_responded` + audit record. +1 regression test (positive +
+manual-policy negative). Doc 09.
+→ `src/darwin_platform/runtime/supervisor.py::_auto_decide_escalation` *(done 2026-05-28)*
+
+- **`upsert_spawn` overwrote `opening_usdc` on resume** — the
+`ON CONFLICT DO UPDATE` clause re-set `opening_usdc` to the value passed
+on resume (which is `last_balance`, not the genesis treasury). Observed:
+a Darwin born at $100 read back as `opening=42.51` after one restart. Fixed:
+preserve `opening_usdc` + `spawned_at` + `last_balance` on conflict.
++1 regression test. Docs 05, 08.
+→ `src/darwin_platform/runtime/persistence.py::upsert_spawn` *(done 2026-05-28)*
+
+- **`detect_spread_spend` tripped on routine metered debits** — the detector
+counted every sub-$1 debit, including the cents-range LLM/sandbox/browser
+metered pass-throughs. Sim run produced 2770 small_debits/hour vs threshold
+80 → 61 critical alerts per Darwin. Fixed: skip `debit.kind == "metered"`;
+only payment-direction small debits count as evasion signal. Doc 10.
+→ `src/darwin_platform/observability/monitoring.py::detect_spread_spend` *(done 2026-05-28)*
+
+- **`serve` heartbeat default was test-grade (0.001 s)** — supervisor library
+default is correct for unit tests but pushes 5–10 events/s in production,
+making the dashboard unreadable and pinning spread-spend / escalation-rate
+alerts critical. Fixed: `--heartbeat-seconds` default in the CLI is now 5.0
+for `serve`; e2e tests pass `0.01` explicitly. Docs 09, 22.
+→ `src/darwin_platform/__main__.py` *(done 2026-05-28)*
+
+- **Web event renderer "every event is unknown"** — `event-row.tsx::categoryOf`
+read `ev.category`/`ev.type`, but the runtime emits canonical `kind`
+(`event:perceive`, `intent:neuron.*`, `outcome`); every row fell through to
+the AlertTriangle "unknown" branch. Fixed: read `kind` first, strip `event:`
+/ `intent:neuron.` prefixes for readable labels, extract cost from
+`payload.detail.cost_usdc` for outcomes. Doc 19.
+→ `web/components/timeline/event-row.tsx` *(done 2026-05-28)*
+
+- **Web timeline page shook every 3 s** — tail-poll prepended new rows on
+every tick, making the page unusable when the underlying Darwin emitted
+many events/s. Fixed: 5 s poll cadence, **auto-pause when any row is
+expanded**, manual Pause/Resume toggle, arrivals buffered + flushed in
+one setState on resume, window capped at 500 rows.
+→ `web/components/timeline/event-table.tsx` *(done 2026-05-28)*
+
+- **`make real` — Stage-1 fleet onboarding recipe** — preflight script
+(`scripts/real_preflight.sh`) validates `.env` has LLM keys + CDP wallet
++ Browserbase + E2B + auth-tokens, refuses mainnet if the RPC URL still
+contains "sepolia"/"testnet", classifies optional integrations (Slack,
+PagerDuty, FCM, Vault, Stripe, sanctions, KYC). `make real` chains
+preflight → boot with the right `--*-provider` flags. Behaviour checklist
+script (`scripts/real_checklist.py`) runs three pre-mainnet assertions
+against a live server: (1) tick advances + audit chain grows + balance
+honors metering, (2) pause halts the chain within heartbeats + resume
+re-enables, (3) kill flips `alive→false killed→true death_reason` within
+doc-09's SLA. Always idempotent-teardown so a checklist run never leaves
+real money burning.
+→ `Makefile` (`real`, `real-preflight`, `real-serve`, `real-spawn`,
+`real-checklist`), `scripts/real_*` *(done 2026-05-28)*
 
 ## Shipped since 2026-05-22
 
@@ -253,12 +353,12 @@ operator-facing README.
 | 02 dna-core                          | 19   | 1       | 0       |
 | 03 soma-and-orchestrator             | 19   | 2       | 0       |
 | 04 neurons                           | 22   | 2       | 0       |
-| 05 treasury-and-payments             | 23   | 3       | 0       |
-| 06 evolution-and-reproduction        | 20   | 2       | 0       |
+| 05 treasury-and-payments             | 24   | 2       | 0       |
+| 06 evolution-and-reproduction        | 21   | 1       | 0       |
 | 07 isolation-and-multi-tenancy       | 22   | 3       | 0       |
-| 08 platform-control-plane            | 22   | 2       | 3       |
-| 09 kill-switches-and-owner-controls  | 25   | 1       | 4       |
-| 10 alignment-and-anti-wireheading    | 19   | 3       | 2       |
+| 08 platform-control-plane            | 23   | 2       | 2       |
+| 09 kill-switches-and-owner-controls  | 26   | 1       | 3       |
+| 10 alignment-and-anti-wireheading    | 20   | 2       | 2       |
 | 11 tech-stack-at-a-glance            | 15   | 5       | 5       |
 | 12 orchestration-langgraph           | 7    | 3       | 3       |
 | 13 llm-routing-litellm               | 9    | 4       | 2       |

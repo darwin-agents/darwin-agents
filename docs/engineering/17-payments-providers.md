@@ -37,17 +37,32 @@ This complements [`05-treasury-and-payments.md`](05-treasury-and-payments.md) wi
 - **Base** has near-zero gas, fast finality, native Coinbase support, and is the most-deployed x402 settlement chain (85% of x402 volume by April 2026).
 - Fallback chain: Solana for higher TPS bursts; Stellar for ultra-cheap micropayments. We don't enable these in v1 but x402 V2 supports multi-chain, so adding them is a config change.
 
-## Coinbase Agentic Wallets
+## Per-Darwin wallet provisioning — three backends
 
-Each Darwin gets its own non-custodial Coinbase Agentic Wallet. Properties:
+A Darwin's wallet is selected fleet-wide at `--wallet-provider {cdp,local-vault,web3}`. The supervisor forwards the choice into each per-Darwin orchestrator pod so every Darwin in the fleet uses the same backend.
 
-- **Per-wallet spending limits** enforced at the wallet level (in addition to our policy engine — defense in depth).
-- **Gasless transactions** on Base; no need to keep a gas reserve.
-- **Skills library** (`Authenticate`, `Fund`, `Send`, `Trade`, `Earn`) accessible via SDK.
-- **TEE-secured key material;** Coinbase itself cannot drain a Darwin's wallet, and neither can we.
-- **CDP Portal integration** for telemetry and operator-side monitoring.
+**`cdp` — Coinbase CDP / Agentic Wallet (production default).** Each Darwin gets its own non-custodial CDP account, named `darwin-<id>`. `get_or_create_account` is idempotent on the name, so resume after a process restart re-binds to the same on-chain address. Properties:
 
-The platform's role is to provision a wallet at Darwin spawn, configure its spend policy, and broker user funding/withdrawal at the omnibus edge.
+- **TEE-secured key material** — Coinbase holds the private key inside its TEE; this process only carries API credentials. Neither the platform nor Coinbase can drain the wallet without the per-Darwin signing flow.
+- **Per-wallet spending limits** enforced at the wallet level *in addition* to the genome's policy engine — defense in depth.
+- **Gasless transactions** on Base; no gas reserve to manage.
+- **CDP Portal integration** for operator-side telemetry.
+
+Activate with `--wallet-provider cdp` plus `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` / `CDP_WALLET_SECRET`. Default network is base-sepolia; `--cdp-mainnet` opts into base-mainnet. Requires the `[cdp]` extra.
+
+**`local-vault` — self-custodial per-Darwin keypair sealed in the vault.** For chains CDP doesn't cover (Solana, Stellar) or operators who don't want a CDP dependency. On first spawn the platform mints a fresh keypair per Darwin via the configured `WalletKeypairMinter`, seals the secret in the Darwin's vault namespace at `sensitive/wallet/<chain>/secret`, and constructs the per-chain `ChainClient` against it. Subsequent spawns (resume) read the sealed secret. Properties:
+
+- **No platform-level private key in `.env`** — only RPC URLs. Each Darwin's address is distinct.
+- **Sensitive-tier vault retention** — the secret falls under the 90-day-after-last-use sweep (doc 16), but the wallet reads it every heartbeat so the TTL effectively never elapses while the Darwin is alive.
+- **Custody trade-off** — a vault you hold keys in is itself a custody system. Leak the vault and you've leaked every Darwin's funds. Acceptable for testnet and Solana/Stellar where CDP isn't an option; for EVM mainnet, prefer `cdp`.
+
+Activate with `--wallet-provider local-vault` plus `--chain-networks` (e.g. `base,solana,stellar`) and the matching RPC URLs (`DARWIN_RPC_URL` / `DARWIN_SOLANA_RPC_URL` / `DARWIN_STELLAR_HORIZON_URL`). Each chain needs its corresponding extra installed (`[web3]`, `[solana]`, `[stellar]`).
+
+**`web3` — single shared private key (testnet dev shortcut).** One key from `DARWIN_WALLET_KEY` / `DARWIN_SOLANA_WALLET_KEY` / `DARWIN_STELLAR_SECRET` signs for every Darwin on the platform. Every Darwin shares the same address; useful for a single-tenant dev loop or CI fixtures. **Refuses to start when any configured RPC URL contains `mainnet` or points at `horizon.stellar.org`** — a single shared key on mainnet would let any spawned Darwin drain the fleet treasury, so the platform rejects the config before launching. Use only for testnet.
+
+### NamespaceProvisioner integration
+
+When a `NamespaceProvisioner` is wired (doc 22), per-Darwin K8s namespace + Vault namespace + organism Postgres database are provisioned atomically on spawn. The optional `wallet_keypair_minters: dict[str, WalletKeypairMinter]` constructor argument adds a fourth step: mint a fresh keypair per chain, write the secret + address into the per-Darwin vault namespace, surface the address on `TenantNamespace.wallet_addresses` so the supervisor can use it (omnibus settlement destinations, fiat-payout audit). The wallet step rolls back the previous three steps atomically on failure; the audit recorder receives the addresses (never the secrets).
 
 ## x402 in production
 
@@ -106,13 +121,56 @@ Revisit only if a meaningful merchant ecosystem standardises on AgentCore-first 
 - **Tax reporting.** We provide year-end statements (US 1099, UK SA, EU equivalents) summarizing revenue, costs, and harvest events per Darwin and aggregated per user. Tax-residency-aware.
 - **Audit trail.** Every payment links back to the originating event log entry; the chain is hash-anchored daily.
 
+## Owner pre-approvals — typed exceptions to escalation
+
+The constitution escalates every freelancer, legal/financial, owner-withdrawal, and over-review-threshold spend by default. That's the right floor for high-friction payment classes, but it makes recurring small-ticket flows onerous (every Upwork escrow payment wakes the owner). A **pre-approval rule** is the owner's pre-committed answer: *for the next 7 days, spends matching these criteria don't need to wake me up — allow them automatically and log the rule that cleared them*.
+
+Rule shape (`PreApprovalRule` in the constitution package):
+
+```python
+PreApprovalRule(
+    rule_id="upwork-under-50",         # owner-chosen, opaque to the engine
+    counterparty_category="freelancer",  # optional; conjunctive match
+    counterparty_substring="upwork",     # optional; case-insensitive
+    max_amount_usdc=50.0,                # required; per-spend ceiling
+    expires_at=1_717_200_000.0,          # optional; epoch seconds
+)
+```
+
+Match is conjunctive: every non-`None` field must hold against the `SpendIntent`. A matching rule converts what would have been an `ESCALATE` into an `ALLOW` whose `layer` is `pre_approval:<rule_id>`, audit-logged with the rationale.
+
+Pre-approvals **never** loosen the constitution's hard rules: the forbidden screen (layer 1), DNA hard caps (layer 2), strategy envelope (layer 3), solvency, sanctions screening, and anomaly detection still apply unchanged. A rule with `max_amount_usdc=1_000_000` against a `per_action_usdc=50` hard cap still refuses anything over $50.
+
+The platform manages the rule set via the operator API:
+
+- `PUT  /platform/wallets/{darwin_id}/preapprovals/{rule_id}` — create or replace
+- `DELETE /platform/wallets/{darwin_id}/preapprovals/{rule_id}` — revoke (idempotent)
+- `GET  /platform/wallets/{darwin_id}/preapprovals` — list active rules
+
+Rules live on the wallet (`set_preapproval` / `revoke_preapproval` / `owner_preapprovals`); the genome's `payments.facilitator` reads them every time it builds the `TreasuryState` so a revoke takes effect on the next policy check. An expired rule is inert without a revoke.
+
 ## What about a Darwin paying a human?
 
-Some strategies involve hiring humans — pay a freelance writer, pay a translator, tip a community moderator. The platform supports this via:
+Some strategies involve hiring humans — pay a freelance writer, pay a translator, tip a community moderator. Three settlement paths, each gated on owner approval (or a matching pre-approval) since the constitution always escalates `counterparty_category="freelancer"`:
 
-- **Direct USDC** to a verified wallet (low friction, low compliance overhead).
-- **Stripe Connect** to a verified bank for fiat (higher friction, higher compliance overhead).
+**1. Direct USDC to a verified wallet** (low friction, low compliance overhead). The standard `wallet.pay(to, amount_usdc, memo)` path. The Darwin's `payments.facilitator` calls it after the escalation is approved (or after a matching pre-approval clears it directly). On-chain settlement; the recipient sees USDC in their wallet seconds later.
 
-Both classes escalate to the owner by default — paying a human is a category our DNA constitution flags. The owner can pre-approve "Upwork escrow payments under $50" if they want lower-friction operations.
+**2. Fiat via Stripe Connect / MoonPay** (higher friction, higher compliance overhead). For freelancers who only take a bank transfer. The platform exposes `POST /darwins/{id}/fiat_payment` (operator-only). Two legs:
+
+   - **Leg 1** — `wallet.transfer_out_for_fiat_payout(amount, destination=omnibus.address())` debits the Darwin's USDC wallet to the omnibus address on-chain.
+   - **Leg 2** — `omnibus.relay_fiat_payout(darwin_id, amount, fiat_destination, fiat_ramp)` calls `fiat_ramp.withdraw(amount_usdc, destination)` which executes the Stripe Connect Transfer (or MoonPay payout) to the freelancer's verified bank account. The omnibus records a `DARWIN_FIAT_PAYOUT` ledger entry with the provider transaction id. `user_credits` is untouched — the source is the Darwin's wallet, not a user deposit.
+
+   This is an *operator-initiated* call: the genome can't reach fiat directly. Typical flow: Darwin escalates → owner approves through the escalation API → operator invokes `darwin_fiat_payout` to settle via fiat. The intermediate omnibus hop insulates the Darwin's wallet from the ramp's settlement timing and gives the operator a clean reversal point if the fiat leg fails.
+
+**3. x402 / web service that handles fiat conversion downstream.** The Darwin pays USDC via the standard `x402` client; the upstream merchant (a content network, an AI API, an ad platform) settles in fiat downstream on their own books. The Darwin never sees fiat. This is the dominant path the system is designed for — most agent-economy services accept USDC at the merchant edge today.
 
 We do **not** support Darwins paying each other directly (cross-Darwin payments). Information and money should not flow between Darwins; that's a deliberate isolation property. If a future business model requires it, we'd build it as an explicit, platform-mediated, owner-consented feature.
+
+## Reproduction transfers — parent → omnibus → child
+
+When a Darwin reproduces, the parent's surplus needs to land in the new child's wallet. Doing this as a direct parent → child chain transfer requires the parent's wallet to know the child's address at the moment of reproduction; the child wallet might not exist yet. The platform mediates instead, identical to the fiat payout pattern:
+
+   - **Leg 1** — the genome's `Spawner.spawn` calls `parent.wallet.transfer_out_for_child(budget, destination=omnibus.address())`. The parent's USDC ends up at the omnibus address on-chain.
+   - **Leg 2** — the supervisor's `_observe_children` loop boots the child (giving it its own wallet and address), then calls `omnibus.relay_reproduction(parent_id, child_id, child_address, amount)`. The omnibus submits the chain transfer from itself to the child's per-Darwin address and records a `RELAY_REPRODUCTION` ledger entry. `user_credits` is untouched — the parent's wallet, not a user deposit, is the source.
+
+A chain hiccup on leg 2 is audit-logged via `reproduction_relay_failed` and surfaced for operator reconciliation, but never crashes the spawn-observation loop: the child is alive even if the omnibus-side settlement needs a retry.

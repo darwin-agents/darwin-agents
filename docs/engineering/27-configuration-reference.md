@@ -23,23 +23,56 @@ darwin-platform signing-key  # Print the platform's signing public key (PEM)
 
 ## `serve` — real wallet (doc 17)
 
-When these flags are set, `RealWallet` replaces `FakeWallet`. Requires the `[web3]` extra.
+`RealWallet` replaces `FakeWallet` whenever a non-fake wallet provider is selected. Pick one of three backends with `--wallet-provider`:
+
+### Provider selection
 
 | Flag | Env var | Default | Description |
 | ---- | ------- | ------- | ----------- |
-| `--rpc-url` | `DARWIN_RPC_URL` | — | EVM HTTP RPC (e.g. `https://sepolia.base.org`). |
-| `--wallet-key` | `DARWIN_WALLET_KEY` | — | Hex private key for on-chain USDC. **Never log.** |
-| `--usdc-contract` | — | Base constants | USDC ERC-20 contract address override. |
-| `--chain-networks` | — | `base` | Comma-separated: `base,solana,stellar`. Preferred order for MultiChainRouter. |
-| `--solana-rpc-url` | `DARWIN_SOLANA_RPC_URL` | — | Solana HTTP RPC endpoint. |
-| `--solana-wallet-key` | `DARWIN_SOLANA_WALLET_KEY` | — | Solana private key (hex). |
-| `--stellar-horizon-url` | `DARWIN_STELLAR_HORIZON_URL` | — | Stellar Horizon endpoint. |
-| `--stellar-secret` | `DARWIN_STELLAR_SECRET` | — | Stellar account secret. |
+| `--wallet-provider` | — | `cdp` | One of `cdp`, `local-vault`, `web3`. See sections below. |
 
-**Interactions:**
-- At least one chain (base, solana, or stellar) must have both its RPC + key set.
+### `--wallet-provider cdp` (production default)
+
+Per-Darwin Coinbase CDP account; private key TEE-held by Coinbase. Requires the `[cdp]` extra.
+
+| Flag | Env var | Default | Description |
+| ---- | ------- | ------- | ----------- |
+| `--cdp-api-key-id` | `CDP_API_KEY_ID` | — | CDP API key id. Required. |
+| `--cdp-api-key-secret` | `CDP_API_KEY_SECRET` | — | CDP API key secret. **Never log.** Required. |
+| `--cdp-wallet-secret` | `CDP_WALLET_SECRET` | — | CDP wallet secret for signing. |
+| `--cdp-mainnet` | — | off | Opt into `base-mainnet`; default is `base-sepolia`. |
+
+### `--wallet-provider local-vault` (self-custodial)
+
+Per-Darwin keypair minted at spawn and sealed in the Darwin's vault namespace at `sensitive/wallet/<chain>/secret`. No platform-level private key needed; only RPC URLs.
+
+| Flag | Env var | Default | Description |
+| ---- | ------- | ------- | ----------- |
+| `--chain-networks` | — | `base` | Comma-separated: `base,solana,stellar`. Each enabled chain needs its RPC URL below and the matching extra (`[web3]`, `[solana]`, `[stellar]`). |
+| `--rpc-url` | `DARWIN_RPC_URL` | — | EVM HTTP RPC (Base). Required when `base` is enabled. |
+| `--solana-rpc-url` | `DARWIN_SOLANA_RPC_URL` | — | Solana HTTP RPC. Required when `solana` is enabled. |
+| `--stellar-horizon-url` | `DARWIN_STELLAR_HORIZON_URL` | — | Stellar Horizon endpoint. Required when `stellar` is enabled. |
+| `--usdc-contract` | — | Base constants | USDC ERC-20 contract address override. |
+
+### `--wallet-provider web3` (testnet-only escape hatch)
+
+Single shared private key signs for every Darwin on the platform. Refuses to start when any RPC URL contains `mainnet` or is `horizon.stellar.org`.
+
+| Flag | Env var | Default | Description |
+| ---- | ------- | ------- | ----------- |
+| `--rpc-url` | `DARWIN_RPC_URL` | — | EVM HTTP RPC. Required for `base`. |
+| `--wallet-key` | `DARWIN_WALLET_KEY` | — | Hex private key for on-chain USDC. **Never log.** Required for `base`. |
+| `--solana-rpc-url` | `DARWIN_SOLANA_RPC_URL` | — | Solana RPC. Required for `solana`. |
+| `--solana-wallet-key` | `DARWIN_SOLANA_WALLET_KEY` | — | Solana private key. Required for `solana`. |
+| `--stellar-horizon-url` | `DARWIN_STELLAR_HORIZON_URL` | — | Stellar Horizon. Required for `stellar`. |
+| `--stellar-secret` | `DARWIN_STELLAR_SECRET` | — | Stellar account secret. Required for `stellar`. |
+| `--chain-networks` | — | `base` | Comma-separated chains to enable. |
+| `--usdc-contract` | — | Base constants | USDC ERC-20 contract address override. |
+
+**Interactions across providers:**
 - When multiple chains are enabled, the wallet uses `MultiChainRouter` with the preferred order from `--chain-networks`.
-- x402 (`X402PaymentClient`) is automatically wired when any real wallet is active.
+- x402 (`X402PaymentClient`) is automatically wired whenever a real wallet is active, regardless of provider.
+- The supervisor forwards `--wallet-provider` to every per-Darwin orchestrator pod via the K8s manifest so the whole fleet uses the same backend.
 
 ## `serve` — real vault (doc 16)
 

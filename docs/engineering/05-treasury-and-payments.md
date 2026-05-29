@@ -67,15 +67,38 @@ For an external comparison of these protocols see [`../overview/03-prior-art.md`
 
 ## The spend policy engine
 
-Every outbound payment passes through a policy engine before the wallet signs the transaction. The policy is composed of layers:
+Every outbound payment passes through a policy engine before the wallet signs the transaction. The policy is composed of layers, applied in order; the first that fires decides:
 
-1. **DNA-defined hard ceilings** (per-action $X, per-day $Y, total-burn $Z). These cannot be overridden, ever. Hitting one halts the spend and either escalates or kills the Darwin.
-2. **Owner-configurable soft ceilings.** The user can tighten the DNA's hard ceilings via their dashboard. They can never loosen them beyond the DNA's hard cap.
-3. **Strategy-budget allocations.** The soma can declare "I want to spend up to $20 on this affiliate experiment". The policy engine enforces that envelope; the strategy cannot quietly spend more.
-4. **Escalation rules.** Some recipient categories always escalate regardless of amount: human freelancers (Upwork, Fiverr), legal/financial services, anything in a jurisdiction on the platform's watchlist.
-5. **Anomaly detection.** Sudden spend pattern changes ("you've never paid more than $2 and now you're trying to pay $200") trigger a pause and escalation.
+1. **Forbidden screen** — sanctioned jurisdiction, OFAC-listed counterparty, or any of the constitution's `ForbiddenAction` categories. Refuses outright; no escalation path can override.
+2. **DNA-defined hard ceilings** (per-action $X, per-day $Y, total-burn $Z). These cannot be overridden, ever. The worst-case p95 cost is checked too, so a plan whose tail could blow the cap is refused now, not after it has half-spent.
+3. **Owner-configurable soft ceilings.** The user can tighten the DNA's hard ceilings via their dashboard. They can never loosen them beyond the DNA's hard cap. The wallet's `owner_soft_caps` flows from the platform into the genome's policy engine so a refused spend is logged with policy rationale, not as a generic `wallet_error`.
+4. **Strategy-budget allocations.** The soma can declare "I want to spend up to $20 on this affiliate experiment". The policy engine enforces that envelope; the strategy cannot quietly spend more.
+5. **Escalation rules** with **owner pre-approvals.** Some recipient categories always escalate regardless of amount: human freelancers (Upwork, Fiverr), legal/financial services, owner withdrawals, anything above the per-action review threshold. The owner can pre-commit a typed exception — a `PreApprovalRule` like "auto-approve any Upwork freelancer payment ≤ $50 for the next 7 days" — and a matching spend skips escalation while still being audit-logged with the rule_id that cleared it. Pre-approvals only override layer 5; they never relax the constitution's hard caps, forbidden screen, or solvency check. See [`17-payments-providers.md`](17-payments-providers.md) for the rule shape and the platform API for managing rules.
+6. **Anomaly detection.** Sudden spend pattern changes ("you've never paid more than $2 and now you're trying to pay $200") trigger a pause and escalation.
 
-Policy decisions are logged with their rationale. A user can replay any spend and see why it was allowed or refused.
+Policy decisions are logged with their rationale *before* the wallet is asked to sign (write-before-act). A user can replay any spend and see why it was allowed or refused, and which rule (if any) pre-cleared it.
+
+## The omnibus mediates the multi-party flows
+
+A single Darwin paying a USDC counterparty is a direct wallet → on-chain transfer. The flows where the *platform* sits in the middle of the move — reproduction (parent → child), fiat payouts (Darwin → human freelancer), user deposits (fiat → omnibus → Darwin wallet) — are all two-leg transfers mediated by a platform-owned **omnibus wallet** that has its own on-chain address.
+
+Reproduction: the parent's `transfer_out_for_child` sends the budget to the omnibus address on-chain; the supervisor's spawn observer then calls `omnibus.relay_reproduction(parent_id, child_id, child_address, amount)`, which submits the second leg from the omnibus to the new child's per-Darwin wallet. The omnibus's ledger records the relay; `user_credits` is untouched because the funds came from the parent's wallet, not a user deposit.
+
+Fiat payouts (a Darwin paying a freelancer who only takes a bank wire): the Darwin's `transfer_out_for_fiat_payout` sends the USDC to the omnibus address; `omnibus.relay_fiat_payout(darwin_id, amount, fiat_destination, fiat_ramp)` performs the second leg through the configured `FiatRamp` (Stripe Connect or MoonPay), recording the payout with the provider transaction id. Same property: `user_credits` is untouched because the source is the Darwin's wallet, not a user deposit.
+
+User deposits and withdrawals are the legacy flow: `omnibus.record_deposit` adjusts `user_credits[user_subject]` on a Stripe webhook; `omnibus.fund_child` debits `user_credits` and credits a Darwin wallet on first launch; `omnibus.withdraw_to_user` is the reverse. These three are the only operations that touch `user_credits`. The daily reconciliation identity is:
+
+```
+on_chain_omnibus  ≈  lifetime_deposits
+                   − lifetime_withdrawals
+                   − lifetime_platform_revenue
+                   − sum(per_Darwin_wallet_balances)
+                   − sum(user_credits_outstanding)
+```
+
+(Starts from an omnibus that began life at zero. Any pre-platform funding shows up as a constant offset the operator nets out.)
+
+A discrepancy above the configured tolerance triggers a CRITICAL alert.
 
 ## The ledger
 
