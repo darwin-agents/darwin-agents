@@ -68,6 +68,18 @@ class PreApprovalRule(BaseModel):
     standing pre-approval is closer to a category-wide change of policy
     than a convenience grant."""
 
+    max_uses: int | None = Field(default=None, ge=1)
+    """Maximum number of successful pre-approved spends this rule may
+    clear before becoming inert. ``None`` means unlimited. The
+    facilitator calls ``wallet.consume_preapproval(rule_id)`` after a
+    successful matching pay so the counter advances; the wallet writes
+    through to persistence."""
+
+    used_count: int = Field(default=0, ge=0)
+    """How many spends this rule has cleared so far. Bumped by
+    ``consume_preapproval``. The match predicate refuses once
+    ``used_count >= max_uses``."""
+
     def matches(
         self,
         *,
@@ -82,6 +94,8 @@ class PreApprovalRule(BaseModel):
         callers can use the rule without importing the constitution's
         intent type — useful for the platform-side rule store admin UI."""
         if self.expires_at is not None and now_ts >= self.expires_at:
+            return False
+        if self.max_uses is not None and self.used_count >= self.max_uses:
             return False
         if intent_amount_usdc > self.max_amount_usdc:
             return False

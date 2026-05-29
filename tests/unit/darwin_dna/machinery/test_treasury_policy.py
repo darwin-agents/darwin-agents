@@ -287,3 +287,56 @@ def test_over_review_threshold_preapproval_clears_to_allow():
     )
     assert d.verdict is Verdict.ALLOW
     assert d.layer.startswith("pre_approval:")
+
+
+# ---------------------------------------------------------------------------
+# Pre-approval max_uses enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_preapproval_matches_until_max_uses_reached():
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=20.0,
+        max_uses=3,
+        used_count=0,
+    )
+    intent_kw = dict(
+        intent_counterparty="upwork:x",
+        intent_counterparty_category="freelancer",
+        intent_amount_usdc=10.0,
+        now_ts=0.0,
+    )
+    assert rule.matches(**intent_kw) is True
+
+
+def test_preapproval_does_not_match_when_used_count_at_max():
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=20.0,
+        max_uses=3,
+        used_count=3,
+    )
+    assert rule.matches(
+        intent_counterparty="upwork:x",
+        intent_counterparty_category="freelancer",
+        intent_amount_usdc=10.0,
+        now_ts=0.0,
+    ) is False
+
+
+def test_preapproval_with_no_max_uses_unbounded():
+    rule = PreApprovalRule(
+        rule_id="r1",
+        counterparty_category="freelancer",
+        max_amount_usdc=20.0,
+        used_count=10_000,  # huge but max_uses is None
+    )
+    assert rule.matches(
+        intent_counterparty="upwork:x",
+        intent_counterparty_category="freelancer",
+        intent_amount_usdc=10.0,
+        now_ts=0.0,
+    ) is True

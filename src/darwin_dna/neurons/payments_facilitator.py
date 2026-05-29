@@ -199,6 +199,20 @@ class PaymentsFacilitator(BaseNeuron):
             context.audit.log_outcome(audit_id, "fail", {"error": str(exc)})
             return NeuronResult(ok=False, error_code="wallet_error")
 
+        # If a pre-approval rule cleared this spend, advance its use
+        # counter so a max_uses limit can be enforced. The policy
+        # decision's ``layer`` is the source of truth — it's
+        # "pre_approval:<rule_id>" exactly when a rule fired. Best-effort:
+        # a wallet without ``consume_preapproval`` (older / minimal
+        # adapters) skips silently; the spend already succeeded.
+        if decision.layer.startswith("pre_approval:"):
+            rule_id = decision.layer.split(":", 1)[1]
+            consumer = getattr(self._wallet, "consume_preapproval", None)
+            if callable(consumer):
+                try:
+                    consumer(rule_id)
+                except Exception:
+                    pass
         context.audit.log_outcome(
             audit_id, "ok", {"tx": tx, "amount_usdc": intent.amount_usdc}
         )
