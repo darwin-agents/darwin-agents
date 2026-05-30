@@ -1,13 +1,15 @@
 # Darwin — Engineering Backlog
 
-Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-29**.
+Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-30**.
 
-**~492 specified features DONE · ~76 PARTIAL · ~36 MISSING.** The Python core is
+**~497 specified features DONE · ~71 PARTIAL · ~36 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
-`darwin_dna/` or `darwin_platform/`. Nearly every remaining gap is *outside* the
-Python monorepo: infra-as-code, the mobile companion, and process commitments.
-The web dashboard is now substantially built (Stage-1 ship), and a real-money
-onboarding recipe (`make real` + preflight + checklist) is wired.
+`darwin_dna/` or `darwin_platform/`. The web dashboard is now complete
+(Clerk swap, Timeline route + URL filters, Anatomy↔Timeline link, Data browser,
+Playwright E2E all shipped 2026-05-30). Every remaining gap is *outside* the
+Python monorepo + dashboard: infra-as-code, the mobile companion, and process
+commitments. A real-money onboarding recipe (`make real` + preflight +
+checklist) is wired.
 
 Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
@@ -168,26 +170,50 @@ so cloud billing matches the ledger debit. Optional BU custom model.
 
 ## P3 — Frontend & infrastructure
 
-- [~] **Next.js web dashboard** — Substantially shipped. `web/` (Next 15 / React 19 /
+- **Next.js web dashboard** — Done. `web/` (Next 15.5 / React 19.2 /
 Tailwind v4 / shadcn). Routes live: fleet overview (`/`), spawn wizard
 (`/darwins/new`), per-Darwin shell (`/darwins/[id]`) with sub-nav for
-Anatomy / Lineage / Billing / Pre-approvals / Payments / Vault / Resources / Settings,
-fleet Escalations inbox (`/escalations`), owner self-serve Freelancers
-registry (`/freelancers`), Token paste (`/tokens`). WS stream
+Anatomy / Timeline / Lineage / Billing / Pre-approvals / Payments / Vault /
+Resources / Data / Settings, fleet Escalations inbox (`/escalations`),
+owner self-serve Freelancers registry (`/freelancers`), Token paste
+(`/tokens`), Clerk sign-in/sign-up (`/sign-in`, `/sign-up`). WS stream
 (`DarwinStream`) layered on top of REST snapshots: anatomy canvas updates
 live, event timeline tails with `?since=`. Owner controls (spend-lock,
 disable-neuron, force-reproduce, kill), respond drawer, vault put/get,
 deprovision, fiat deposit/withdraw, harvest dialog, Darwin fiat-payment
 console (send / refund / retry omnibus fund), pre-approval rule manager
 (install / revoke / consume-counter view) all wired. Codegen
-from FastAPI OpenAPI typed against `web/lib/api.generated.ts`. CI gate
-in `.github/workflows/web.yml` (lint/typecheck/test/build).
-Remaining gaps: full Timeline route with URL-encoded filters (today's
-EventTable on the Darwin shell handles most needs), linked Anatomy↔Timeline
-canvas (M3-D), data browser (M3-E), Clerk swap-in (auth seam in place but
-still on `--auth-tokens`), Playwright E2E (no `playwright/` directory yet).
-Docs 01, 08, 17, 19, 20, 22. *(Stage 1 done 2026-05-27; payments routes
-added 2026-05-29)*
+from FastAPI OpenAPI typed against `web/lib/api.generated.ts`.
+The four remaining M3 items shipped 2026-05-30:
+  - **Clerk swap-in** — `@clerk/nextjs` wired with feature-detect on
+  `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`. When set, `clerkMiddleware` gates
+  every route and redirects to local `/sign-in`; `getAuthToken()` reads
+  `window.Clerk.session.getToken()`. When unset, the dev token-paste flow
+  stays active (Playwright + `--auth-tokens` boot). Sidebar shows
+  `<UserButton>` + email in Clerk mode. Backend already accepts Clerk
+  RS256 JWTs (`security/clerk.py`).
+  - **Timeline route + URL filters** (M3) — `/darwins/[id]/timeline` with
+  debounced filter bar (`?kind=`, `?neuron=`, `?tier=`) routed straight
+  to the existing backend `kind` / `neuron_id` / `tier` query params.
+  Any view is shareable as a link.
+  - **Anatomy ↔ Timeline link** (M3-D) — Anatomy side-panel "View
+  timeline for `<neuron>`" navigates to filtered timeline; reverse,
+  expanded timeline rows with `neuron_id` show a "Show in anatomy"
+  link to `/anatomy?selected=<neuron>` which pre-selects the node.
+  - **Data browser** (M3-E) — `/darwins/[id]/data` with tabs over
+  existing read-endpoints (lifecycle / lineage / ledger / audit). Tab
+  + pagination persist in URL. Audit rows are click-to-expand JSON.
+- **Playwright E2E** — Done 2026-05-30. `web/playwright/` with 4 dev-token
+specs (fleet renders, timeline filter URL round-trip, anatomy→timeline
+deep-link, data browser tab switch) + 1 Clerk-gate spec (middleware
+redirect). Mocked backend via `page.route()` so no `darwin-platform serve`
+boot needed. Local: 5/5 PASS in 1.1 min. CI gate: new `e2e` job in
+`.github/workflows/web.yml`, depends on `build`, caches Chromium binary,
+uploads HTML report always + traces on failure.
+CI gate in `.github/workflows/web.yml` covers
+lint/typecheck/test/build/e2e. Docs 01, 08, 17, 19, 20, 22. *(Stage 1
+done 2026-05-27; payments routes added 2026-05-29; M3 completion +
+Playwright E2E 2026-05-30)*
 - **Mobile escalation app** — Expo/RN; no `mobile/` directory. Docs 19, 22.
 - **Terraform / EKS IaC** — `infra/`: EKS, Aurora platform + organism clusters,
 Vault, observability, dev/staging/prod envs. Docs 20, 22.
@@ -240,6 +266,98 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 - **Doc 30** — calibration example uses `apply_calibration(sim_world=, revenue_model=, dataset=)` and `runtime.archive`. *(done 2026-05-22)*
 - **Doc 05** — MoonPay confirmed implemented (`MoonPayFiatRamp`,
 `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
+
+---
+
+## Shipped since 2026-05-30 — web dashboard M3 completion
+
+The four remaining web dashboard items from the M3 milestone landed in
+one pass, closing the last `[~]` row in P3. The Python core, the
+dashboard, and the CI gates around them are now all green.
+
+**Clerk swap-in**
+- New `lib/auth-mode.ts` build-time flag `CLERK_ENABLED` from
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`. `lib/auth.ts::getAuthToken()`
+prefers `window.Clerk.session.getToken()` (with ~2s wait for the SDK to
+load) and falls back to the dev token-paste flow when Clerk is
+unconfigured — Playwright + `--auth-tokens` boot keep working unchanged.
+- New `middleware.ts`: `clerkMiddleware` + `redirectToSignIn()` on
+unauthenticated requests (chosen over `auth.protect()` because the
+latter returns a 404 to "hide existence" — wrong UX for a dashboard).
+No-op when `CLERK_ENABLED=false`.
+- New local routes `/sign-in/[[...rest]]` and `/sign-up/[[...rest]]`
+rendering Clerk's `<SignIn>` / `<SignUp>` (dark theme via `@clerk/themes`).
+- New `providers/auth-provider.tsx` dispatches between `<ClerkProvider>`
+and the existing `<DevAuthProvider>`. Root layout wraps once.
+- Sidebar gained an `<AuthChip>` (`<UserButton>` + signed-in email) when
+Clerk is on.
+- `.env.example` documents the four `NEXT_PUBLIC_CLERK_*_URL` /
+`*_FALLBACK_REDIRECT_URL` hints so Clerk uses local routes instead of
+its hosted `accounts.dev` portal.
+- Bumped `next` 15.1 → 15.5 and `react` / `react-dom` 19.0.0 → 19.2 to
+satisfy `@clerk/nextjs ^7.4` peer ranges.
+
+**Timeline route + URL filters (M3)**
+- New `/darwins/[id]/timeline` page reads `?kind=`, `?neuron=`, `?tier=`
+from the URL and hands them to `EventTable`.
+- New `components/timeline/filter-bar.tsx`: debounced (350ms) text
+inputs + tier dropdown that push back via `router.replace()`. Exports
+`parseFilters(URLSearchParams)` so the route and bar share one source
+of truth. +3 vitest tests.
+- `components/timeline/event-table.tsx` extended with optional `filters`
+prop (`{kind, neuron_id, tier}`) forwarded to all three `api.events()`
+callsites (head, tail-poll, loadOlder). Filter changes reset the
+window + cursors. Default = no filter, so the inline shell render is
+unchanged.
+- Darwin sub-nav gained Timeline entry (Clock icon).
+
+**Anatomy ↔ Timeline link (M3-D)**
+- Anatomy side-panel: "View timeline for `<neuron>`" link →
+`/darwins/[id]/timeline?neuron=<id>`.
+- Anatomy reads `?selected=<neuron>` from URL to pre-populate the
+selected node — round-trips with the timeline reverse direction.
+- Timeline event rows with a `neuron_id`: expanded row shows a
+"Show in anatomy" link → `/darwins/[id]/anatomy?selected=<neuron>`.
+
+**Data browser (M3-E)**
+- New `/darwins/[id]/data` page with four tabs over existing platform
+read-endpoints: lifecycle (`GET /darwins/{id}`), lineage
+(`GET /darwins/{id}/lineage/tree`), ledger (`GET /darwins/{id}/ledger`),
+audit chain (`GET /darwins/{id}/events`). Active tab persists in
+`?tab=`, pagination persists in `?ledger_offset=` / `?audit_offset=`.
+Audit rows are click-to-expand JSON.
+- Darwin sub-nav gained Data entry (Database icon).
+
+**Playwright E2E**
+- New `web/playwright/` directory + `playwright.config.ts` with two
+projects: `dev-token` (always runs, full coverage) and `clerk-gate`
+(runs only when `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is set; asserts
+the auth gate redirects). webServer commands inline env so `next dev`
+sees the right `CLERK_ENABLED` value at request time.
+- Fixtures (`fixtures.ts`): `signIn(page)` seeds the dev token in
+localStorage and waits for "Loading…" placeholder to disappear (Next
+hydration done). `mockBackend(page, handlers)` intercepts
+`${API_BASE}/**` with longest-prefix matching.
+- 4 dev-token specs (fleet, timeline filters, anatomy→timeline,
+data-browser tabs) + 1 Clerk-gate spec + 1 warmup spec that pre-compiles
+hot routes on the cold dev server so the first real test doesn't pay
+the 30-60s compile-and-hydrate hit.
+- Local: 5/5 passed in 1.1 min. Warmup eats 20s; each real test runs
+in 4-9s.
+- New CI job `e2e` in `.github/workflows/web.yml` depending on `build`,
+caches Playwright browsers by lockfile hash, installs Chromium, runs
+the `dev-token` project, uploads `playwright-report` always +
+`test-results/` traces/videos on failure for 7 days. Retries=2 in CI
+absorbs the rare first-compile flake; `workers: 1` keeps the shared
+dev-server warmup honest.
+- `package.json` scripts: `test:e2e`, `test:e2e:ui`.
+
+**Test totals delta**
+- Web vitest: +3 tests (24 → 27 passing). `pnpm typecheck` + `pnpm lint`
++ `pnpm build` clean. Build adds 4 routes (`/sign-in/[[...rest]]`,
+`/sign-up/[[...rest]]`, `/darwins/[id]/timeline`, `/darwins/[id]/data`)
+and an 88 kB middleware bundle.
+- Web Playwright: +5 specs (new), 5/5 local PASS.
 
 ---
 
