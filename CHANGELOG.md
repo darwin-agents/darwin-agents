@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): add Web Push escalation notifications and subscription API
+- feat(platform): add AppRole and Kubernetes auth to HVAC Vault client
 - test(web): add Playwright E2E suite, data browser route, and CI job
 - feat(platform): add Stripe webhook deposits and gated manual omnibus credit
 - feat(platform): persist harvest rules and resource throttles across restarts
@@ -41,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- build(web): add multi-stage Docker image with Next.js standalone output
 - docs(engineering): align mainnet cutover doc with --network flag and webhooks
 - docs(engineering): update backlog for M3 dashboard and Playwright E2E
 - docs: sync unreleased changelog with recent platform and web work

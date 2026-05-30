@@ -1,15 +1,17 @@
 # Darwin — Engineering Backlog
 
-Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-30**.
+Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-31**.
 
-**~497 specified features DONE · ~71 PARTIAL · ~36 MISSING.** The Python core is
+**~501 specified features DONE · ~70 PARTIAL · ~35 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
-`darwin_dna/` or `darwin_platform/`. The web dashboard is now complete
-(Clerk swap, Timeline route + URL filters, Anatomy↔Timeline link, Data browser,
-Playwright E2E all shipped 2026-05-30). Every remaining gap is *outside* the
-Python monorepo + dashboard: infra-as-code, the mobile companion, and process
-commitments. A real-money onboarding recipe (`make real` + preflight +
-checklist) is wired.
+`darwin_dna/` or `darwin_platform/`. The web dashboard is complete (Clerk
+swap, Timeline route + URL filters, Anatomy↔Timeline link, Data browser,
+Playwright E2E shipped 2026-05-30). The mobile escalation companion shipped
+2026-05-31 via the PWA path (Web Push + VAPID + installable manifest) —
+native Expo/RN remains a future iteration but is not blocking. The remaining
+build gap is **infra-as-code** (Terraform/EKS); everything else outstanding
+is process / operator commitments. A real-money onboarding recipe
+(`make real` + preflight + checklist) is wired.
 
 Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
@@ -214,7 +216,20 @@ CI gate in `.github/workflows/web.yml` covers
 lint/typecheck/test/build/e2e. Docs 01, 08, 17, 19, 20, 22. *(Stage 1
 done 2026-05-27; payments routes added 2026-05-29; M3 completion +
 Playwright E2E 2026-05-30)*
-- **Mobile escalation app** — Expo/RN; no `mobile/` directory. Docs 19, 22.
+- **Mobile escalation app — done via PWA** *(2026-05-31)*. Doc 22 names
+"Expo / React Native (or progressive web app)"; the PWA path closes the
+mobile gap without a parallel codebase. Folded into `web/`:
+manifest + service worker + push handler + `/notifications` opt-in
+page; backend `WebPushNotificationSink` (VAPID, pywebpush) +
+persistent `push_subscriptions` table (schema v11) + owner-scoped
+`/me/push-vapid-public-key` + `/me/push-subscriptions` GET/POST/DELETE
+endpoints; CLI flags `--push-provider webpush` /
+`--vapid-public-key` / `--vapid-private-key` / `--vapid-subject`. The
+sink is hydrated from the persistent store on Supervisor boot and a
+410-purge deletes the row, so subscriptions survive restart. +22 backend
+tests (sink + persistence + HTTP) + 3 web vitest tests for the
+base64url helper. Native Expo/RN remains open as a future iteration —
+see `memory/project_mobile_pwa.md` for the rationale. Docs 19, 22.
 - **Terraform / EKS IaC** — `infra/`: EKS, Aurora platform + organism clusters,
 Vault, observability, dev/staging/prod envs. Docs 20, 22.
 
@@ -266,6 +281,96 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 - **Doc 30** — calibration example uses `apply_calibration(sim_world=, revenue_model=, dataset=)` and `runtime.archive`. *(done 2026-05-22)*
 - **Doc 05** — MoonPay confirmed implemented (`MoonPayFiatRamp`,
 `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
+
+---
+
+## Shipped since 2026-05-31 — mobile escalation companion (PWA path)
+
+Doc 22 names the mobile companion as "Expo / React Native (or progressive
+web app)". The PWA branch ships everything the headline feature needs —
+notify-on-escalation + respond inline — without spinning up a parallel
+mobile codebase. Native Expo/RN deferred (see
+`memory/project_mobile_pwa.md`).
+
+**Backend — `WebPushNotificationSink` + persistence**
+- New `src/darwin_platform/escalations/notification_webpush.py`:
+`WebPushNotificationSink` implements the same `NotificationSink`
+Protocol as the FCM sink, but over W3C Push API + VAPID (RFC 8030 +
+RFC 8292). One `notify(ticket)` call fans out a VAPID-signed,
+ECE-encrypted POST per registered subscription. 404/410 responses
+auto-purge the dead subscription from both the in-memory index and
+(via callback) the persistent store. Production transport
+`PyWebPushTransport` wraps `pywebpush` (added as `[webpush]` extra in
+pyproject); tests use a stub transport that records calls.
+- New `push_subscriptions` table (schema v11 bump) with
+`PersistentPushSubscriptionStore` next to the freelancer + preapproval
+stores. `register` upserts on `(owner_subject, endpoint)` so a browser
+re-subscribing with new keys replaces the row. `load_into_sink(sink)`
+hydrates the live sink on supervisor boot.
+- 12 new sink tests + 5 new persistence tests cover construction,
+register/revoke, owner-without-subs failure, 4xx vs 410, transport
+exceptions, bulk-load, stats. Restart survival end-to-end.
+
+**Backend — endpoints + CLI wiring**
+- Supervisor gained `register_push_subscription`,
+`revoke_push_subscription`, `list_push_subscriptions`,
+`push_vapid_public_key`. Write-through to the persistent store +
+mirror to the live sink so a fresh registration lights up before the
+next ticket without a restart. Sensitive endpoint URL is redacted to
+`scheme://host` on list responses + audit-log entries — full URL
+never leaves the persistent store.
+- Four new owner-scoped routes in `api.py`:
+`GET /me/push-vapid-public-key` (503 when push isn't configured),
+`POST /me/push-subscriptions` (201), `GET /me/push-subscriptions`,
+`DELETE /me/push-subscriptions?endpoint=…` (query param chosen over
+DELETE-with-body since many proxies strip the body).
+- CLI flags `--push-provider {none,webpush}`, `--vapid-public-key`,
+`--vapid-private-key` (PEM string or file path), `--vapid-subject`,
+plus matching env vars `DARWIN_VAPID_*`. `_build_notification_sink`
+fans the WebPush sink in alongside Slack / webhook sinks. Half-
+configured VAPID material refuses to start.
+- `Supervisor.__init__` auto-wires the persistent store ↔ sink: hydrates
+the sink from disk + installs the 410-purge callback. Duck-typed so
+the [webpush] extra is optional. New integration test exercises the
+full register → list → revoke → restart-rehydrate path through
+ASGI Transport.
+
+**PWA — manifest + service worker + subscription UI**
+- New `web/public/manifest.webmanifest` (Darwin / standalone /
+`#04080F` theme, 192 + 512 SVG icons) + manifest link wired through
+the root layout `Metadata`. iOS / Android "Add to home screen" installs
+the dashboard as a standalone app.
+- New `web/public/sw.js`: `push` listener decodes the JSON payload the
+backend sink posted and calls `showNotification`; `notificationclick`
+focuses an existing tab or opens a fresh one at the escalation deep
+link; `pushsubscriptionchange` (Mozilla autopush rotation) posts a
+message back to the page so it can re-publish.
+- New `web/components/pwa/service-worker-registrar.tsx`: a tiny
+client-only component the root layout mounts to register `/sw.js` on
+load (idempotent — browser dedupes by scope).
+- New `web/lib/push.ts` helpers: `isPushSupported`,
+`getPushPermissionState`, `urlBase64ToUint8Array` (the VAPID
+public-key decoder, +3 vitest tests), `ensurePushSubscription`,
+`getCurrentSubscription`, `unsubscribePush`. Reuses any existing
+subscription instead of bouncing the user through permission UX.
+- New `/notifications` page: "Enable notifications" CTA → permission
+prompt → `pushManager.subscribe(applicationServerKey)` →
+`POST /me/push-subscriptions`; "Registered devices" list shows
+`endpoint_origin` + user agent + date for every signed-in device;
+"Disable on this device" path unsubscribes locally + DELETEs the row.
+Sidebar gained a "Notifications" entry (Bell icon).
+- `web/lib/api.ts` extended with four typed methods +
+`web/lib/types.ts` DTOs + `web/lib/queryKeys.ts` keys. The DELETE
+uses `?endpoint=…` because the existing fetch wrapper drops DELETE
+bodies (proxy-friendly).
+
+**Test totals delta**
+- Backend: +22 tests (12 sink + 5 persistence + 5 HTTP integration).
+72 platform/escalation/persistence tests pass via
+`uv run --all-extras pytest`. 0 regressions in adjacent suites.
+- Web: +3 vitest tests (24 → 27 passing). `pnpm typecheck` +
+`pnpm lint` + `pnpm build` clean. Build adds `/notifications`
+(12.3 kB) + sign-in/up routes already shipped.
 
 ---
 
