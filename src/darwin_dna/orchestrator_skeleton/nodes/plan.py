@@ -17,11 +17,11 @@ naive-but-alive Darwin is the Layer 0 bar.
 
 from __future__ import annotations
 
-from ...machinery.llm_router import LLMError, Tier
+from ...machinery.llm_router import LLMError, Tier, acomplete
 from ...strategies import StrategyObservation
 
 
-def run(state, ctx):
+async def run(state, ctx):
     # Earn-before-mutate: even when the gate is open, mutation is only chosen
     # when reflect has flagged a real recurring failure pattern. This biases
     # a young Darwin hard toward earning (docs/engineering/18).
@@ -114,7 +114,8 @@ def run(state, ctx):
                 )
             ]
         try:
-            ctx.llm.complete(
+            await acomplete(
+                ctx.llm,
                 Tier.REASONING,
                 {
                     "task": "plan",

@@ -19,11 +19,11 @@ audit chain records a concrete artifact even when the model was terse.
 
 from __future__ import annotations
 
-from ...machinery.llm_router import LLMError, Tier
+from ...machinery.llm_router import LLMError, Tier, acomplete
 from ...machinery.patch_validator import FileChange, Patch, validate_patch
 
 
-def run(state, ctx):
+async def run(state, ctx):
     failure_class = state.plan.get("failure_class", "")
 
     # Don't spend coding-tier budget re-deriving a known dead end (doc 06:
@@ -43,7 +43,8 @@ def run(state, ctx):
     )
 
     try:
-        resp = ctx.llm.complete(
+        resp = await acomplete(
+            ctx.llm,
             Tier.CODING,
             {
                 "task": "propose_patch",
