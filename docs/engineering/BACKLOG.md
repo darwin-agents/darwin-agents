@@ -2,16 +2,19 @@
 
 Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-31**.
 
-**~501 specified features DONE · ~70 PARTIAL · ~35 MISSING.** The Python core is
+**~503 specified features DONE · ~69 PARTIAL · ~35 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
 `darwin_dna/` or `darwin_platform/`. The web dashboard is complete (Clerk
 swap, Timeline route + URL filters, Anatomy↔Timeline link, Data browser,
 Playwright E2E shipped 2026-05-30). The mobile escalation companion shipped
-2026-05-31 via the PWA path (Web Push + VAPID + installable manifest) —
-native Expo/RN remains a future iteration but is not blocking. The remaining
-build gap is **infra-as-code** (Terraform/EKS); everything else outstanding
-is process / operator commitments. A real-money onboarding recipe
-(`make real` + preflight + checklist) is wired.
+2026-05-31 via the PWA path (Web Push + VAPID + installable manifest);
+native Expo/RN remains open but not blocking. Cloud-agnostic Terraform IaC
+shipped 2026-05-31 — `infra/` brings the full stack online on any
+kubectl-reachable cluster, with a turnkey kind-based local env.
+**Everything outstanding is now process / operator commitments** (24h
+soak run, 7-day testnet, drills, legal + planner-prompt reviews, etc.).
+A real-money onboarding recipe (`make real` + preflight + checklist) is
+wired.
 
 Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
@@ -230,8 +233,43 @@ sink is hydrated from the persistent store on Supervisor boot and a
 tests (sink + persistence + HTTP) + 3 web vitest tests for the
 base64url helper. Native Expo/RN remains open as a future iteration —
 see `memory/project_mobile_pwa.md` for the rationale. Docs 19, 22.
-- **Terraform / EKS IaC** — `infra/`: EKS, Aurora platform + organism clusters,
-Vault, observability, dev/staging/prod envs. Docs 20, 22.
+- **Terraform IaC — done cloud-agnostic** *(2026-05-31)*. Doc 22 names
+EKS / Aurora / AWS-Vault explicitly; we replaced each with a
+self-hostable equivalent so the same modules run on a laptop (kind),
+self-hosted k3s, DOKS, GKE, AKS — anything `kubectl` reaches. Layout:
+  - `infra/envs/local/` — turnkey local stack via `make -C infra up`.
+  - `infra/modules/kind-cluster/` — 1 control + 2 worker kind nodes
+  with `extraPortMappings` 80→8000, 443→8443 + the `ingress-ready`
+  label so ingress-nginx lands on the host-mapped node.
+  - `infra/modules/cnpg/` — CloudNativePG operator + a Postgres
+  `Cluster` CR; outputs the connection-string Secret name.
+  - `infra/modules/vault/` — HashiCorp Vault Helm release in dev mode
+  (in-memory, auto-unsealed) with a generated root token; the
+  variable surface is preserved so a future `modules/vault-prod/`
+  with raft + KMS auto-unseal is a drop-in replacement.
+  - `infra/modules/litellm/` — proxy Deployment + Service +
+  ConfigMap (mounts the existing `docker/litellm.config.yaml`) +
+  Secret for provider keys.
+  - `infra/modules/darwin-platform/` — supervisor Deployment +
+  Service + Ingress + Recreate strategy + a `ClusterRole` granting
+  the K8s driver the per-Darwin RBAC it needs (namespaces +
+  configmaps / secrets / PVCs / services / deployments /
+  networkpolicies, scoped cluster-wide because per-Darwin namespaces
+  don't exist at plan time).
+  - `infra/Makefile` — `up`, `down`, `kubeconfig`, `logs`, `pods`,
+  `port-forward`. `make up` is `terraform apply -auto-approve`.
+  - `infra/README.md` — design rationale + quickstart.
+  
+  AWS / GCP / Azure cluster modules deliberately omitted; the platform
+  layer is provider-neutral, so adding a managed-K8s wrapper later is
+  one new sibling under `modules/` that outputs the same
+  `endpoint` / `cluster_ca_certificate` / `client_*` shape kind does.
+  Provider config uses inline credentials from the kind module's
+  outputs (not file-based kubeconfig) to dodge the plan-time
+  bootstrap chicken-and-egg; `alekc/kubectl` has `lazy_load = true`
+  so the provider defers connection until apply. Terraform 1.6+,
+  validates clean, full `plan` is 21 resources, no orphan
+  references. Docs 20, 22.
 
 ## P4 — Process / non-code commitments
 
