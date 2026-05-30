@@ -476,8 +476,13 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                     "LiteLLM transport requires the [llm] extra: "
                     "pip install 'darwin-dna[llm]'"
                 ) from exc
-            completion = functools.partial(
-                litellm.completion, api_base=_url.rstrip("/"), api_key=_key,
+            # Bind the proxy onto the NATIVE-ASYNC client. The transport
+            # drives this on an isolated worker-loop and never the
+            # supervisor's running loop — the synchronous litellm.completion
+            # re-enters the running loop (nest_asyncio) and on uvloop freezes
+            # the drive loop after one heartbeat (BUG-drive-loop-tick1-freeze).
+            acompletion = functools.partial(
+                litellm.acompletion, api_base=_url.rstrip("/"), api_key=_key,
             )
             # image_gen maps onto the fast tier — the bundled proxy config
             # has no image model; the genome's image path is rare and
@@ -492,7 +497,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             return LiteLLMTransport(
                 wallet=wallet,
                 tier_mappings=tier_mappings,
-                litellm_completion=completion,
+                litellm_acompletion=acompletion,
                 litellm_completion_cost=litellm.completion_cost,
             )
 
