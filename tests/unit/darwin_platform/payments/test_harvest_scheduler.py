@@ -241,3 +241,35 @@ async def test_http_422_on_bad_trigger():
         )
         assert r.status_code == 422
     await sup.shutdown(kill_running=True)
+
+
+# -- persistence (doc 05 §HA): rules survive a restart ---------------------
+
+def test_harvest_rules_survive_restart(tmp_path):
+    from darwin_platform.runtime.persistence import PersistenceStore
+
+    db = str(tmp_path / "h.db")
+    s1 = HarvestScheduler()
+    s1.attach_store(PersistenceStore(db).harvest_store())
+    rule = s1.add(
+        darwin_id="d1", destination="0xext",
+        trigger_balance_usdc=10.0, amount_usdc=5.0, interval_seconds=3600,
+    )
+    s1.mark_run(rule.id, amount=5.0, at=999.0)
+    s1.set_enabled(rule.id, False)
+
+    # Fresh scheduler on the same DB → rules + run-marker + enabled rehydrate.
+    s2 = HarvestScheduler()
+    s2.attach_store(PersistenceStore(db).harvest_store())
+    rules = s2.list("d1")
+    assert len(rules) == 1
+    assert rules[0].id == rule.id
+    assert rules[0].last_amount_usdc == 5.0
+    assert rules[0].last_run_at == 999.0
+    assert rules[0].enabled is False
+
+    # Removal persists too.
+    s2.remove(rule.id)
+    s3 = HarvestScheduler()
+    s3.attach_store(PersistenceStore(db).harvest_store())
+    assert s3.list("d1") == []

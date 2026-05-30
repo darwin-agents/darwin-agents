@@ -52,6 +52,15 @@ class ResourceThrottle:
     def to_json(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_json(cls, d: dict) -> "ResourceThrottle":
+        return cls(
+            darwin_id=str(d["darwin_id"]),
+            kind=str(d["kind"]),
+            max_daily_calls=int(d["max_daily_calls"]),
+            installed_at=float(d["installed_at"]),
+        )
+
 
 class ThrottleService:
     """Holds the per-Darwin throttles + per-day counters.
@@ -65,6 +74,20 @@ class ThrottleService:
         self._throttles: dict[tuple[str, str], ResourceThrottle] = {}
         # (darwin_id, kind, day_str) -> count
         self._counts: dict[tuple[str, str, str], int] = {}
+        # Optional write-through persistence (set via attach_store); only
+        # the installed caps are persisted, not the per-day counters.
+        self._store: object | None = None
+
+    def attach_store(self, store: object) -> None:
+        """Bind a persistence store and rehydrate installed throttles. The
+        per-day usage counters are intentionally not restored — they reset
+        at midnight regardless, so a restart resetting today's count is
+        acceptable; the operator-set CAP is what must survive."""
+        self._store = store
+        self._throttles = {
+            (t["darwin_id"], t["kind"]): ResourceThrottle.from_json(t)
+            for t in store.load_all()  # type: ignore[attr-defined]
+        }
 
     @staticmethod
     def _validate_kind(kind: str) -> None:
@@ -94,6 +117,8 @@ class ThrottleService:
             installed_at=self._clock(),
         )
         self._throttles[(darwin_id, kind)] = t
+        if self._store is not None:
+            self._store.save(t.to_json())  # type: ignore[attr-defined]
         return t
 
     def clear(
@@ -110,10 +135,14 @@ class ThrottleService:
             t = self._throttles.pop((darwin_id, kind), None)
             if t is not None:
                 removed.append(t)
+                if self._store is not None:
+                    self._store.delete(darwin_id=darwin_id, kind=kind)  # type: ignore[attr-defined]
         else:
             for k in list(self._throttles.keys()):
                 if k[0] == darwin_id:
                     removed.append(self._throttles.pop(k))
+            if self._store is not None and removed:
+                self._store.delete_all(darwin_id=darwin_id)  # type: ignore[attr-defined]
         return removed
 
     def list_for(self, darwin_id: str) -> list[ResourceThrottle]:

@@ -55,6 +55,30 @@ class HarvestRule:
     def to_json(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_json(cls, d: dict) -> "HarvestRule":
+        return cls(
+            id=str(d["id"]),
+            darwin_id=str(d["darwin_id"]),
+            destination=str(d["destination"]),
+            trigger_balance_usdc=float(d["trigger_balance_usdc"]),
+            amount_usdc=(
+                None if d.get("amount_usdc") is None
+                else float(d["amount_usdc"])
+            ),
+            interval_seconds=float(d["interval_seconds"]),
+            enabled=bool(d.get("enabled", True)),
+            created_at=float(d["created_at"]),
+            last_run_at=(
+                None if d.get("last_run_at") is None
+                else float(d["last_run_at"])
+            ),
+            last_amount_usdc=(
+                None if d.get("last_amount_usdc") is None
+                else float(d["last_amount_usdc"])
+            ),
+        )
+
     def with_run(self, *, at: float, amount: float) -> "HarvestRule":
         return HarvestRule(
             id=self.id, darwin_id=self.darwin_id, destination=self.destination,
@@ -91,6 +115,23 @@ class HarvestScheduler:
     def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
         self._rules: dict[str, HarvestRule] = {}
+        # Optional write-through persistence (set via attach_store); None
+        # keeps the scheduler in-memory only (sim / dev / tests).
+        self._store: object | None = None
+
+    def attach_store(self, store: object) -> None:
+        """Bind a persistence store and rehydrate rules from it. Loads all
+        persisted rules, then write-throughs every CRUD mutation so a
+        restart preserves the owner's scheduled harvests. Call once at boot
+        before the drive loops start."""
+        self._store = store
+        self._rules = {
+            r["id"]: HarvestRule.from_json(r) for r in store.load_all()  # type: ignore[attr-defined]
+        }
+
+    def _persist(self, rule: HarvestRule) -> None:
+        if self._store is not None:
+            self._store.save(rule.to_json())  # type: ignore[attr-defined]
 
     # -- rule CRUD -------------------------------------------------------
     def add(
@@ -125,12 +166,15 @@ class HarvestScheduler:
             last_amount_usdc=None,
         )
         self._rules[rule.id] = rule
+        self._persist(rule)
         return rule
 
     def remove(self, rule_id: str) -> HarvestRule:
         rule = self._rules.pop(rule_id, None)
         if rule is None:
             raise HarvestRuleError(f"unknown rule {rule_id!r}")
+        if self._store is not None:
+            self._store.delete(rule_id)  # type: ignore[attr-defined]
         return rule
 
     def list(self, darwin_id: str | None = None) -> list[HarvestRule]:
@@ -144,6 +188,7 @@ class HarvestScheduler:
             raise HarvestRuleError(f"unknown rule {rule_id!r}")
         updated = rule.with_enabled(enabled)
         self._rules[rule_id] = updated
+        self._persist(updated)
         return updated
 
     # -- evaluation ------------------------------------------------------
@@ -192,4 +237,5 @@ class HarvestScheduler:
         updated = rule.with_run(at=at if at is not None else self._clock(),
                                 amount=amount)
         self._rules[rule_id] = updated
+        self._persist(updated)
         return updated

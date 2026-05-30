@@ -259,13 +259,71 @@ CREATE TABLE IF NOT EXISTS omnibus_entries (
     metadata      TEXT     NOT NULL DEFAULT '{{}}'
 );
 CREATE INDEX IF NOT EXISTS omnibus_entries_ts_idx ON omnibus_entries(ts);
+
+-- Recurring profit-harvest rules (doc 05). Owner-registered automation
+-- that the supervisor evaluates every drive cycle; persisted so a restart
+-- doesn't silently drop the owner's "sweep above $X daily" intent.
+CREATE TABLE IF NOT EXISTS harvest_rules (
+    id                    TEXT PRIMARY KEY,
+    darwin_id             TEXT    NOT NULL,
+    destination           TEXT    NOT NULL,
+    trigger_balance_usdc  {real}  NOT NULL,
+    amount_usdc           {real},
+    interval_seconds      {real}  NOT NULL,
+    enabled               INTEGER NOT NULL DEFAULT 1,
+    created_at            {real}  NOT NULL,
+    last_run_at           {real},
+    last_amount_usdc      {real}
+);
+CREATE INDEX IF NOT EXISTS harvest_rules_darwin_idx ON harvest_rules(darwin_id);
+
+-- Per-Darwin resource throttles (doc 09 level 2). Operator-installed daily
+-- caps on sandbox / browser / egress calls. Persisted so a restart can't
+-- silently lift a cap an operator set in response to abuse. The per-day
+-- usage counters are intentionally NOT persisted — they reset at midnight
+-- anyway, so a restart resetting today's count is acceptable.
+CREATE TABLE IF NOT EXISTS resource_throttles (
+    darwin_id        TEXT    NOT NULL,
+    kind             TEXT    NOT NULL,
+    max_daily_calls  INTEGER NOT NULL,
+    installed_at     {real}  NOT NULL,
+    PRIMARY KEY (darwin_id, kind)
+);
+
+-- Open fiat-deposit quotes (doc 17). A quote is created off-session and
+-- confirmed later by the Stripe webhook; persisting it means a confirm
+-- that lands after a restart still finds its quote (instead of the
+-- deposit being silently lost), and a consumed/deleted quote makes a
+-- webhook replay a safe no-op across restarts. Rows are deleted on
+-- confirm — this table holds only OUTSTANDING quotes.
+CREATE TABLE IF NOT EXISTS fiat_quotes (
+    quote_id      TEXT PRIMARY KEY,
+    provider      TEXT   NOT NULL,
+    amount_usd    {real} NOT NULL,
+    amount_usdc   {real} NOT NULL,
+    fee_usd       {real} NOT NULL,
+    rate          {real} NOT NULL,
+    ttl_seconds   {real} NOT NULL,
+    quoted_at     {real} NOT NULL
+);
+
+-- Processed payment-provider webhook events (doc 17). Keyed by the
+-- provider's event id so a re-delivered webhook short-circuits before any
+-- money effect — the Stripe-recommended idempotency pattern, layered on top
+-- of quote-consumption. Durable so dedup survives a restart.
+CREATE TABLE IF NOT EXISTS processed_webhook_events (
+    event_id      TEXT PRIMARY KEY,
+    provider      TEXT   NOT NULL,
+    status        TEXT   NOT NULL,
+    processed_at  {real} NOT NULL
+);
 """
 
 
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 7
+CURRENT_SCHEMA_VERSION: int = 10
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -634,6 +692,28 @@ class PersistenceStore:
         totals and to write through every subsequent movement, so credit
         no longer evaporates on restart."""
         return PersistentOmnibusStore(self._backend)
+
+    def harvest_store(self) -> "PersistentHarvestStore":
+        """Persistence for recurring harvest rules. The HarvestScheduler
+        attaches this so owner-registered sweeps survive a restart."""
+        return PersistentHarvestStore(self._backend)
+
+    def throttle_store(self) -> "PersistentThrottleStore":
+        """Persistence for per-Darwin resource throttles. The ThrottleService
+        attaches this so operator-installed caps survive a restart."""
+        return PersistentThrottleStore(self._backend)
+
+    def fiat_quote_store(self) -> "PersistentFiatQuoteStore":
+        """Persistence for outstanding fiat deposit quotes. A fiat ramp
+        attaches this so a deposit confirmed by webhook after a restart
+        still resolves its quote (and a replay stays idempotent)."""
+        return PersistentFiatQuoteStore(self._backend)
+
+    def webhook_event_store(self) -> "PersistentWebhookEventStore":
+        """Durable dedup ledger for payment-provider webhook events. The
+        supervisor checks it before processing a webhook so a re-delivery
+        short-circuits even across restarts."""
+        return PersistentWebhookEventStore(self._backend)
 
     def audit_sink_for(self, darwin_id: str) -> "PersistentDarwinAuditSink":
         """Per-Darwin audit sink. The genome's AuditLogger rebuilds its
@@ -1530,6 +1610,261 @@ class PersistentOmnibusStore:
                 self._get(row, "lifetime_platform_revenue", 3)
             ),
         }
+
+
+class PersistentHarvestStore:
+    """SQL-backed persistence for recurring harvest rules (doc 05).
+
+    The HarvestScheduler keeps rules in memory and write-throughs every
+    add / remove / enable-toggle / run-marker here, then reloads on boot so
+    a restart doesn't drop the owner's scheduled sweeps. Deals in plain
+    dicts (HarvestRule.to_json shape); the dataclass mapping lives in the
+    scheduler."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    @staticmethod
+    def _get(row: Any, key: str, idx: int) -> Any:
+        return row[key] if isinstance(row, dict) else row[idx]
+
+    def save(self, rule: dict) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO harvest_rules"
+                "(id, darwin_id, destination, trigger_balance_usdc, "
+                "amount_usdc, interval_seconds, enabled, created_at, "
+                "last_run_at, last_amount_usdc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "darwin_id = excluded.darwin_id, "
+                "destination = excluded.destination, "
+                "trigger_balance_usdc = excluded.trigger_balance_usdc, "
+                "amount_usdc = excluded.amount_usdc, "
+                "interval_seconds = excluded.interval_seconds, "
+                "enabled = excluded.enabled, "
+                "created_at = excluded.created_at, "
+                "last_run_at = excluded.last_run_at, "
+                "last_amount_usdc = excluded.last_amount_usdc",
+                (
+                    str(rule["id"]),
+                    str(rule["darwin_id"]),
+                    str(rule["destination"]),
+                    float(rule["trigger_balance_usdc"]),
+                    None if rule.get("amount_usdc") is None
+                    else float(rule["amount_usdc"]),
+                    float(rule["interval_seconds"]),
+                    1 if rule.get("enabled", True) else 0,
+                    float(rule["created_at"]),
+                    None if rule.get("last_run_at") is None
+                    else float(rule["last_run_at"]),
+                    None if rule.get("last_amount_usdc") is None
+                    else float(rule["last_amount_usdc"]),
+                ),
+            )
+
+    def delete(self, rule_id: str) -> None:
+        with self._backend:
+            self._backend.execute(
+                "DELETE FROM harvest_rules WHERE id = ?", (rule_id,)
+            )
+
+    def load_all(self) -> list[dict]:
+        rows = self._backend.execute(
+            "SELECT id, darwin_id, destination, trigger_balance_usdc, "
+            "amount_usdc, interval_seconds, enabled, created_at, "
+            "last_run_at, last_amount_usdc FROM harvest_rules"
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            out.append({
+                "id": self._get(r, "id", 0),
+                "darwin_id": self._get(r, "darwin_id", 1),
+                "destination": self._get(r, "destination", 2),
+                "trigger_balance_usdc": float(self._get(r, "trigger_balance_usdc", 3)),
+                "amount_usdc": (
+                    None if self._get(r, "amount_usdc", 4) is None
+                    else float(self._get(r, "amount_usdc", 4))
+                ),
+                "interval_seconds": float(self._get(r, "interval_seconds", 5)),
+                "enabled": bool(self._get(r, "enabled", 6)),
+                "created_at": float(self._get(r, "created_at", 7)),
+                "last_run_at": (
+                    None if self._get(r, "last_run_at", 8) is None
+                    else float(self._get(r, "last_run_at", 8))
+                ),
+                "last_amount_usdc": (
+                    None if self._get(r, "last_amount_usdc", 9) is None
+                    else float(self._get(r, "last_amount_usdc", 9))
+                ),
+            })
+        return out
+
+
+class PersistentThrottleStore:
+    """SQL-backed persistence for per-Darwin resource throttles (doc 09).
+
+    Stores only the installed caps (keyed by darwin_id+kind); the per-day
+    usage counters stay in memory (they reset at midnight regardless). The
+    ThrottleService write-throughs on set / clear and reloads on boot."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    @staticmethod
+    def _get(row: Any, key: str, idx: int) -> Any:
+        return row[key] if isinstance(row, dict) else row[idx]
+
+    def save(self, throttle: dict) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO resource_throttles"
+                "(darwin_id, kind, max_daily_calls, installed_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(darwin_id, kind) DO UPDATE SET "
+                "max_daily_calls = excluded.max_daily_calls, "
+                "installed_at = excluded.installed_at",
+                (
+                    str(throttle["darwin_id"]),
+                    str(throttle["kind"]),
+                    int(throttle["max_daily_calls"]),
+                    float(throttle["installed_at"]),
+                ),
+            )
+
+    def delete(self, *, darwin_id: str, kind: str) -> None:
+        with self._backend:
+            self._backend.execute(
+                "DELETE FROM resource_throttles "
+                "WHERE darwin_id = ? AND kind = ?",
+                (darwin_id, kind),
+            )
+
+    def delete_all(self, *, darwin_id: str) -> None:
+        with self._backend:
+            self._backend.execute(
+                "DELETE FROM resource_throttles WHERE darwin_id = ?",
+                (darwin_id,),
+            )
+
+    def load_all(self) -> list[dict]:
+        rows = self._backend.execute(
+            "SELECT darwin_id, kind, max_daily_calls, installed_at "
+            "FROM resource_throttles"
+        ).fetchall()
+        return [
+            {
+                "darwin_id": self._get(r, "darwin_id", 0),
+                "kind": self._get(r, "kind", 1),
+                "max_daily_calls": int(self._get(r, "max_daily_calls", 2)),
+                "installed_at": float(self._get(r, "installed_at", 3)),
+            }
+            for r in rows
+        ]
+
+
+class PersistentFiatQuoteStore:
+    """SQL-backed persistence for outstanding fiat deposit quotes (doc 17).
+
+    A fiat ramp write-throughs every quote here and deletes it on confirm,
+    reloading the outstanding set on boot. This closes the
+    quoted-then-restart-before-webhook gap (deposit otherwise lost) while
+    keeping webhook replays idempotent (a confirmed quote is gone, so a
+    replay finds nothing). Deals in FiatQuote.to_json dicts."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    @staticmethod
+    def _get(row: Any, key: str, idx: int) -> Any:
+        return row[key] if isinstance(row, dict) else row[idx]
+
+    def save(self, quote: dict) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO fiat_quotes"
+                "(quote_id, provider, amount_usd, amount_usdc, fee_usd, "
+                "rate, ttl_seconds, quoted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(quote_id) DO UPDATE SET "
+                "provider = excluded.provider, "
+                "amount_usd = excluded.amount_usd, "
+                "amount_usdc = excluded.amount_usdc, "
+                "fee_usd = excluded.fee_usd, "
+                "rate = excluded.rate, "
+                "ttl_seconds = excluded.ttl_seconds, "
+                "quoted_at = excluded.quoted_at",
+                (
+                    str(quote["quote_id"]),
+                    str(quote["provider"]),
+                    float(quote["amount_usd"]),
+                    float(quote["amount_usdc"]),
+                    float(quote["fee_usd"]),
+                    float(quote["rate"]),
+                    float(quote["ttl_seconds"]),
+                    float(quote["quoted_at"]),
+                ),
+            )
+
+    def delete(self, quote_id: str) -> None:
+        with self._backend:
+            self._backend.execute(
+                "DELETE FROM fiat_quotes WHERE quote_id = ?", (quote_id,)
+            )
+
+    def load_all(self) -> list[dict]:
+        rows = self._backend.execute(
+            "SELECT quote_id, provider, amount_usd, amount_usdc, fee_usd, "
+            "rate, ttl_seconds, quoted_at FROM fiat_quotes"
+        ).fetchall()
+        return [
+            {
+                "quote_id": self._get(r, "quote_id", 0),
+                "provider": self._get(r, "provider", 1),
+                "amount_usd": float(self._get(r, "amount_usd", 2)),
+                "amount_usdc": float(self._get(r, "amount_usdc", 3)),
+                "fee_usd": float(self._get(r, "fee_usd", 4)),
+                "rate": float(self._get(r, "rate", 5)),
+                "ttl_seconds": float(self._get(r, "ttl_seconds", 6)),
+                "quoted_at": float(self._get(r, "quoted_at", 7)),
+            }
+            for r in rows
+        ]
+
+
+class PersistentWebhookEventStore:
+    """Durable idempotency ledger for payment-provider webhook events.
+
+    ``seen`` is checked before any money effect; ``mark`` records the event
+    id after processing. Keyed by the provider's event id (Stripe reuses it
+    across retries), so a re-delivery is a cheap no-op — surviving restarts,
+    unlike relying on quote-consumption alone."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    def seen(self, event_id: str) -> bool:
+        if not event_id:
+            return False
+        row = self._backend.execute(
+            "SELECT 1 FROM processed_webhook_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        return row is not None
+
+    def mark(
+        self, *, event_id: str, provider: str, status: str, ts: float,
+    ) -> None:
+        if not event_id:
+            return
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO processed_webhook_events"
+                "(event_id, provider, status, processed_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(event_id) DO NOTHING",
+                (str(event_id), str(provider), str(status), float(ts)),
+            )
 
 
 class PersistentLifecycleStore:

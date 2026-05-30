@@ -260,3 +260,30 @@ async def test_http_422_on_bad_kind():
         )
         assert r.status_code == 422
     await sup.shutdown(kill_running=True)
+
+
+# -- persistence (doc 09 §HA): installed caps survive a restart ------------
+
+def test_throttles_survive_restart(tmp_path):
+    from darwin_platform.infra.throttle import (
+        THROTTLE_KIND_SANDBOX,
+        ThrottleService,
+    )
+    from darwin_platform.runtime.persistence import PersistenceStore
+
+    db = str(tmp_path / "t.db")
+    t1 = ThrottleService()
+    t1.attach_store(PersistenceStore(db).throttle_store())
+    t1.set(darwin_id="d1", kind=THROTTLE_KIND_SANDBOX, max_daily_calls=7)
+
+    # Fresh service on the same DB → installed cap rehydrates.
+    t2 = ThrottleService()
+    t2.attach_store(PersistenceStore(db).throttle_store())
+    got = t2.get(darwin_id="d1", kind=THROTTLE_KIND_SANDBOX)
+    assert got is not None and got.max_daily_calls == 7
+
+    # Clearing persists too.
+    t2.clear(darwin_id="d1", kind=THROTTLE_KIND_SANDBOX)
+    t3 = ThrottleService()
+    t3.attach_store(PersistenceStore(db).throttle_store())
+    assert t3.get(darwin_id="d1", kind=THROTTLE_KIND_SANDBOX) is None
