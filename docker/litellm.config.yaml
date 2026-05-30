@@ -21,20 +21,20 @@ model_list:
       model: gemini/gemini-2.0-flash
       api_key: os.environ/GEMINI_API_KEY
 
-  # tier=reasoning — the planner; the default thinking tier
+  # tier=reasoning — the planner; the default thinking tier.
+  # TEST-SPEED OVERRIDE: pointed at haiku (~5-10s/call) instead of
+  # claude-sonnet-4-6 (~45s/call) so a Darwin ticks every ~15-30s during
+  # local interaction testing. Restore sonnet for production-quality planning.
   - model_name: tier-reasoning
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
+      model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/CLAUDE_API_KEY
-  - model_name: tier-reasoning
-    litellm_params:
-      model: openai/gpt-5.5
-      api_key: os.environ/OPENAI_API_KEY
 
-  # tier=coding — self-modification; expensive, gated hard
+  # tier=coding — self-modification; expensive, gated hard.
+  # TEST-SPEED OVERRIDE: haiku instead of claude-opus-4-7 (restore for prod).
   - model_name: tier-coding
     litellm_params:
-      model: anthropic/claude-opus-4-7
+      model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/CLAUDE_API_KEY
 
   # tier=embedding — episodic memory + retrieval
