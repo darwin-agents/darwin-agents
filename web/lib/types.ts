@@ -252,3 +252,33 @@ export interface OmnibusEntryDTO {
   tx_hash?: string;
   metadata?: Record<string, unknown>;
 }
+
+/* -------------------------------------------------------------------------
+ * Push subscriptions (doc 22 — PWA escalation companion)
+ * --------------------------------------------------------------------- */
+
+export interface VapidPublicKeyResponse {
+  /** Base64url-encoded P-256 public key the PWA hands to
+   *  `pushManager.subscribe({ applicationServerKey })`. */
+  public_key: string;
+}
+
+export interface PushSubscriptionRequest {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent?: string;
+}
+
+export interface PushSubscriptionRow {
+  /** Endpoint is redacted to `scheme://host` on read — the full URL plus
+   *  the VAPID key is enough to push to that browser, so the server
+   *  never returns it. */
+  endpoint_origin: string;
+  user_agent: string;
+  registered_at: number;
+}
+
+export interface RevokePushSubscriptionRequest {
+  endpoint: string;
+}

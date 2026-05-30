@@ -21,6 +21,9 @@ export const queryKeys = {
   freelancers: (ownerSubject: string) =>
     ["freelancers", ownerSubject] as const,
   myFreelancers: () => ["freelancers", "me"] as const,
+  // Push subscriptions — doc 22 (PWA escalation companion)
+  pushSubscriptions: () => ["push", "subscriptions"] as const,
+  pushVapidKey: () => ["push", "vapid-key"] as const,
 };
 
 export type QueryKey = ReturnType<(typeof queryKeys)[keyof typeof queryKeys]>;

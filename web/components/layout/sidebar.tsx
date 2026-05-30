@@ -18,6 +18,7 @@ const NAV: Array<{ href: string; label: string; icon: React.ComponentType<{ clas
   { href: "/", label: "Fleet", icon: LayoutGrid },
   { href: "/escalations", label: "Escalations", icon: Inbox },
   { href: "/freelancers", label: "Freelancers", icon: Users },
+  { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/tokens", label: "Design tokens", icon: FlaskConical },
 ];
 

@@ -26,6 +26,10 @@ import type {
   FreelancerDestination,
   HarvestRequest,
   HarvestRuleRequest,
+  PushSubscriptionRequest,
+  PushSubscriptionRow,
+  RevokePushSubscriptionRequest,
+  VapidPublicKeyResponse,
   LedgerResponse,
   LineageTreeResponse,
   OmnibusEntryDTO,
@@ -469,6 +473,27 @@ export const api = {
   // Health
   healthz: () => apiFetch<unknown>("/healthz"),
   readyz: () => apiFetch<unknown>("/readyz"),
+
+  /* -------------------------------------------------------------------------
+   * Push subscriptions (doc 22 — PWA escalation companion)
+   * --------------------------------------------------------------------- */
+
+  getPushVapidPublicKey: () =>
+    apiFetch<VapidPublicKeyResponse>("/me/push-vapid-public-key"),
+  registerPushSubscription: (req: PushSubscriptionRequest) =>
+    apiFetch<{
+      owner_subject: string;
+      endpoint_origin: string;
+      registered: boolean;
+    }>("/me/push-subscriptions", { method: "POST", body: req, mutating: true }),
+  listPushSubscriptions: () =>
+    apiFetch<PushSubscriptionRow[]>("/me/push-subscriptions"),
+  revokePushSubscription: (req: RevokePushSubscriptionRequest) =>
+    apiFetch<{ revoked: boolean }>("/me/push-subscriptions", {
+      method: "DELETE",
+      query: { endpoint: req.endpoint },
+      mutating: true,
+    }),
 };
 
 export type Api = typeof api;
