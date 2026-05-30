@@ -55,6 +55,20 @@ from pathlib import Path
 from typing import Any
 
 
+def _is_mainnet(args: argparse.Namespace) -> bool:
+    """Single authoritative answer to 'are we on mainnet?'.
+
+    ``--network mainnet`` is the explicit switch; ``--cdp-mainnet`` is kept as
+    a back-compat alias. Everything that needs the network (CDP wallet, USDC
+    contract, omnibus, the money-safety gate) keys off THIS — never off an
+    ad-hoc RPC-substring guess, so the network can't silently diverge between
+    subsystems."""
+    return (
+        getattr(args, "network", "testnet") == "mainnet"
+        or bool(getattr(args, "cdp_mainnet", False))
+    )
+
+
 def _build_real_factories(args: argparse.Namespace) -> dict:
     """Build the optional real-provider factory kwargs for the Supervisor.
 
@@ -93,8 +107,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             )
             sys.exit(2)
         cdp_network = (
-            "base-mainnet" if getattr(args, "cdp_mainnet", False)
-            else "base-sepolia"
+            "base-mainnet" if _is_mainnet(args) else "base-sepolia"
         )
 
         def _cdp_wallet_factory(
@@ -637,12 +650,9 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
         from .adapters.web3_chain import Web3ChainClient
         from .payments.omnibus_wallet import OmnibusWallet
 
-        # Match the USDC contract + chain id to the RPC. Default to Base
-        # Sepolia (testnet); --cdp-mainnet or a mainnet RPC switches to Base
-        # mainnet. The omnibus address is derived from its signing key.
-        is_mainnet = getattr(args, "cdp_mainnet", False) or (
-            "mainnet" in rpc_url.lower()
-        )
+        # Match the USDC contract + chain id to the network (--network /
+        # --cdp-mainnet). The omnibus address is derived from its signing key.
+        is_mainnet = _is_mainnet(args)
         usdc_contract = args.usdc_contract or (
             "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" if is_mainnet
             else "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
@@ -920,6 +930,54 @@ def _build_k8s_driver(args: argparse.Namespace):
     )
 
 
+def _assert_mainnet_safe(args: argparse.Namespace) -> None:
+    """Refuse to boot against mainnet with demo-grade money-safety config.
+
+    Mirrors the web3 shared-key mainnet refusal: moving REAL funds demands a
+    live sanctions screener (an offline denylist can't catch a freshly-listed
+    address), and the credit-minting faucet endpoint must be off. Testnet is
+    unaffected. The network is the explicit --network / --cdp-mainnet flag
+    (see :func:`_is_mainnet`), and we also refuse a network/RPC mismatch so a
+    testnet-configured boot can't be pointed at a mainnet RPC by accident."""
+    rpc = (
+        getattr(args, "rpc_url", None)
+        or os.environ.get("DARWIN_RPC_URL")
+        or ""
+    )
+    is_mainnet = _is_mainnet(args)
+    # Coherence: an explicit testnet boot pointed at a mainnet RPC is almost
+    # certainly a mistake — fail loud rather than sign real-money txns with
+    # testnet-grade safety config.
+    if not is_mainnet and "mainnet" in rpc.lower():
+        print(
+            f"refusing to boot: --network testnet but DARWIN_RPC_URL={rpc} "
+            "looks like mainnet. Pass --network mainnet (with live compliance "
+            "config) or point at a testnet RPC.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if not is_mainnet:
+        return
+    sanctions = getattr(args, "sanctions_provider", None) or "local"
+    if sanctions not in ("chainalysis", "trm"):
+        print(
+            f"refusing to boot on mainnet with sanctions-provider={sanctions!r}: "
+            "real-money transfers require a live screener (--sanctions-provider "
+            "chainalysis|trm + --sanctions-api-key). An offline denylist is not "
+            "acceptable for mainnet.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if getattr(args, "allow_manual_credit", False):
+        print(
+            "refusing to boot on mainnet with --allow-manual-credit: minting "
+            "unbacked user credit against real funds is unsafe. In production, "
+            "credit only via verified Stripe/on-chain deposits.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def _serve(args: argparse.Namespace) -> int:
     """Run the FastAPI app via uvicorn. Optional persistence + auth wiring."""
     try:
@@ -936,6 +994,9 @@ def _serve(args: argparse.Namespace) -> int:
     from .runtime.leadership import PostgresAdvisoryLockElection
     from .runtime.supervisor import Supervisor
     from .security.auth import InMemoryTokenStore
+
+    # Mainnet money-safety gate (refuses demo-grade config against real funds).
+    _assert_mainnet_safe(args)
 
     # -- OpenTelemetry trace export (doc 08) -----------------------------
     # Wire a real OTLP exporter so the spans the supervisor emits leave
@@ -1048,6 +1109,11 @@ def _serve(args: argparse.Namespace) -> int:
         sup,
         token_store=token_store,
         cors_origins=list(getattr(args, "cors_origins", None) or []),
+        stripe_webhook_secret=(
+            getattr(args, "stripe_webhook_secret", None)
+            or os.environ.get("STRIPE_WEBHOOK_SECRET")
+        ),
+        allow_manual_credit=bool(getattr(args, "allow_manual_credit", False)),
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -1231,8 +1297,14 @@ def build_parser() -> argparse.ArgumentParser:
              "Env: CDP_WALLET_SECRET",
     )
     wallet_group.add_argument(
+        "--network", default="testnet", choices=["testnet", "mainnet"],
+        help="Authoritative chain network for the whole platform (CDP wallet, "
+             "USDC contract, omnibus, money-safety gate). Default: testnet. "
+             "--network mainnet is the single explicit switch to real money.",
+    )
+    wallet_group.add_argument(
         "--cdp-mainnet", action="store_true",
-        help="Use base-mainnet for the CDP wallet (default: base-sepolia).",
+        help="DEPRECATED alias for --network mainnet (kept for back-compat).",
     )
 
     vault_group = serve.add_argument_group(
@@ -1427,6 +1499,12 @@ def build_parser() -> argparse.ArgumentParser:
              "via --rpc-url + --wallet-key).",
     )
     phase2_group.add_argument(
+        "--allow-manual-credit", action="store_true",
+        help="Enable POST /platform/omnibus/credit, which mints user credit "
+             "not tied to a verified deposit. Off by default — a faucet / "
+             "testnet affordance. Leave disabled for real-money production.",
+    )
+    phase2_group.add_argument(
         "--kyc-provider", default="none",
         choices=["none", "stub", "persona", "onfido"],
         help="KYC provider for fund/withdraw gating (default: none).",
@@ -1485,6 +1563,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--stripe-api-key", default=None, metavar="KEY",
         help="Stripe secret key (when --fiat-provider stripe). "
              "Env: STRIPE_API_KEY",
+    )
+    phase2_group.add_argument(
+        "--stripe-webhook-secret", default=None, metavar="SECRET",
+        help="Stripe webhook signing secret; enables POST /webhooks/stripe "
+             "to verify + auto-confirm deposits. Env: STRIPE_WEBHOOK_SECRET",
     )
     phase2_group.add_argument(
         "--moonpay-api-key", default=None, metavar="KEY",

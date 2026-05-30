@@ -150,13 +150,42 @@ check_optional DARWIN_KYC_PERSONA_API_KEY     "Persona KYC adapter"
 echo
 
 if [[ "$NETWORK" == "mainnet" ]]; then
-  echo "-- Mainnet sanity checks --"
-  rpc="${DARWIN_RPC_URL:-}"
-  if [[ "$rpc" == *sepolia* || "$rpc" == *goerli* || "$rpc" == *testnet* ]]; then
-    printf "${C_R}MISMATCH${C_X} DARWIN_RPC_URL=%s but --network mainnet was requested\n" "$rpc"
+  echo "-- Mainnet sanity checks (real money — hard requirements) --"
+  # 1. No testnet RPC URL leaking into a mainnet boot.
+  for var in DARWIN_RPC_URL DARWIN_SOLANA_RPC_URL DARWIN_STELLAR_HORIZON_URL; do
+    url="${!var:-}"
+    if [[ "$url" == *sepolia* || "$url" == *goerli* || "$url" == *testnet* \
+          || "$url" == *devnet* || "$url" == *horizon-testnet* ]]; then
+      printf "${C_R}MISMATCH${C_X} %-22s %s looks like testnet under --network mainnet\n" "$var" "$url"
+      fail=$((fail+1))
+    elif [[ -n "$url" ]]; then
+      printf "${C_G}OK     ${C_X}  %-32s %s\n" "$var" "$url"
+    fi
+  done
+  # 2. Live sanctions screening is mandatory (the supervisor refuses to
+  #    boot on mainnet without it — keep preflight in lockstep).
+  if [[ -z "${DARWIN_SANCTIONS_API_KEY:-}" ]]; then
+    printf "${C_R}MISSING${C_X}  %-32s mainnet needs a live screener (Chainalysis/TRM)\n" "DARWIN_SANCTIONS_API_KEY"
     fail=$((fail+1))
   else
-    printf "${C_G}OK     ${C_X}  %-32s %s\n" "DARWIN_RPC_URL" "${rpc:-not set (CDP will pick base-mainnet via --cdp-mainnet)}"
+    printf "${C_G}OK     ${C_X}  %-32s set (pass --sanctions-provider chainalysis|trm)\n" "DARWIN_SANCTIONS_API_KEY"
+  fi
+  # 3. No test-grade Stripe key on mainnet.
+  if [[ "${STRIPE_API_KEY:-}" == sk_test_* ]]; then
+    printf "${C_R}TESTKEY ${C_X} %-32s sk_test_ key on mainnet — use a live sk_live_ key\n" "STRIPE_API_KEY"
+    fail=$((fail+1))
+  fi
+  # 4. KYC should be a real provider, not the placeholder (warn — only
+  #    strictly needed for fiat / withdrawals).
+  if [[ "${DARWIN_KYC_PERSONA_API_KEY:-}" == "persona_..." \
+        || -z "${DARWIN_KYC_PERSONA_API_KEY:-}${ONFIDO_API_TOKEN:-}" ]]; then
+    printf "${C_Y}warn   ${C_X}  %-32s no real KYC provider (needed for fiat/withdrawals)\n" "KYC"
+    warn=$((warn+1))
+  fi
+  # 5. Vault should use a real token (unset / root token is dev-grade).
+  if [[ -z "${DARWIN_VAULT_TOKEN:-}" ]]; then
+    printf "${C_Y}warn   ${C_X}  %-32s no Vault token — prod should use AppRole/k8s-auth\n" "DARWIN_VAULT_TOKEN"
+    warn=$((warn+1))
   fi
   echo
 fi

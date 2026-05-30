@@ -70,7 +70,7 @@ REAL_OPENING_USDC ?= 1.0
 REAL_FLAGS = \
   --wallet-provider cdp \
   --browser-provider browserbase \
-  $(if $(filter mainnet,$(REAL_NETWORK)),--cdp-mainnet,) \
+  --network $(REAL_NETWORK) \
   $(if $(DARWIN_VAULT_URL),--vault-url $(DARWIN_VAULT_URL),) \
   $(if $(DARWIN_VAULT_TOKEN),--vault-token $(DARWIN_VAULT_TOKEN),) \
   $(if $(DARWIN_SANCTIONS_API_KEY),--sanctions-provider chainalysis --sanctions-api-key $(DARWIN_SANCTIONS_API_KEY),) \
