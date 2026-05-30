@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-05-30
+
 ### Added
 
 - feat(infra): add local dev stack with make up/down targets
@@ -16,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(infra): add CloudNativePG Postgres Terraform module
 - feat(infra): add kind cluster Terraform module
 - feat(web): add PWA escalation companion with Web Push opt-in page
+- feat(platform): add Web Push escalation notifications and subscription API
 - feat(platform): add AppRole and Kubernetes auth to HVAC Vault client
 - test(web): add Playwright E2E suite, data browser route, and CI job
 - feat(platform): add Stripe webhook deposits and gated manual omnibus credit
@@ -49,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: sync unreleased changelog for Terraform infra modules
+- docs: update backlog and changelog for PWA mobile companion
 - build(web): add multi-stage Docker image with Next.js standalone output
 - docs(engineering): align mainnet cutover doc with --network flag and webhooks
 - docs(engineering): update backlog for M3 dashboard and Playwright E2E
@@ -66,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(infra): use inline kube credentials for cold-start terraform apply
+- fix(platform): revoke push subscriptions via DELETE query param
 - fix(web): redirect Clerk guests to sign-in and document URL env vars
 - fix(platform): require Persona template id for KYC via env or CLI
 - fix(platform): fund Darwin from omnibus before drive loop starts
