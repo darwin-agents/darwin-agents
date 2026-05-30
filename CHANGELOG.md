@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(web): link pre-approvals, payments, and freelancers in dashboard nav
+- feat(web): add owner freelancers registry page
+- feat(web): add Darwin fiat payments console page
+- feat(web): add Darwin pre-approvals management page
+- feat(web): extend API client for payments, pre-approvals, and freelancers
+- feat(platform): add typed Python DarwinClient for payments API
+- feat(platform): add /me/freelancers and omnibus fund retry HTTP routes
+- feat(platform): add wallet sweep_to for platform omnibus transfers
+- feat(platform): expose max_uses on pre-approval API and add payments HTTP tests
 - test(k8s): assert wallet-provider is forwarded to orchestrator pods
 - feat(platform): add freelancer registry, persistent pre-approvals, and fiat refund
 - feat(dna): enforce pre-approval max_uses and consume counters after pay
@@ -17,7 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs(engineering): update backlog for payments dashboard and completion arc
+- docs(engineering): note on-chain kill sweep in treasury omnibus flows
+- docs(engineering): document /me/freelancers and omnibus fund retry routes
+- docs(engineering): add runbook for fiat payout and omnibus failure modes
+- docs(engineering): document omnibus flows, payment HTTP routes, and CLAUDE_API_KEY
+- refactor(config): rename ANTHROPIC_API_KEY to CLAUDE_API_KEY in env templates
 - docs(engineering): document pre-approvals and Darwin fiat payout flows
+
+### Fixed
+
+- fix(platform): sweep dead Darwin USDC on-chain and add omnibus fund retry
 
 ## [0.0.3] - 2026-05-29
 

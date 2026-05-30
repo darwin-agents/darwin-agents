@@ -73,9 +73,17 @@ def _unreleased_bounds(lines: list[str]) -> tuple[int, int]:
 
 
 def _normalize_block(block: str) -> str:
-    """Trim git-cliff output and ensure a blank line before the next ## section."""
+    """Format git-cliff output to match Keep a Changelog spacing in CHANGELOG.md."""
     block = re.sub(r"\n{3,}", "\n\n", block.strip())
-    return block + "\n\n"
+    lines = block.split("\n")
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if line.startswith("### ") and out and out[-1].startswith("- "):
+            out.append("")
+        out.append(line)
+        if line.startswith("### ") and i + 1 < len(lines) and lines[i + 1].startswith("- "):
+            out.append("")
+    return "\n".join(out) + "\n\n"
 
 
 def _replace_unreleased(text: str, new_section: str) -> str:
