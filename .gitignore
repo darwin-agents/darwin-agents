@@ -69,10 +69,12 @@ dmypy.json
 *.pem
 *.key
 
+
 # --- Local dev artefacts (docker-compose state, real tokens) ---
 docker/.env
 docker/tokens.json
 !docker/tokens.example.json
+tokens.json
 data/
 *.db
 *.db-wal
