@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(dna): update orchestrator and untrusted tests for async LLM nodes
+- feat(dna): add LLMRouter.acomplete and shared acomplete helper
+- test(platform): cover async LiteLLM transport and running-loop safety
 - feat(web): link pre-approvals, payments, and freelancers in dashboard nav
 - feat(web): add owner freelancers registry page
 - feat(web): add Darwin fiat payments console page
@@ -26,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- refactor(dna): await async LLM calls in content and support neurons
+- refactor(dna): await async LLM calls in orchestrator plan and mutation nodes
 - docs(engineering): update backlog for payments dashboard and completion arc
 - docs(engineering): note on-chain kill sweep in treasury omnibus flows
 - docs(engineering): document /me/freelancers and omnibus fund retry routes
@@ -36,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): coerce per-Darwin CDP account names to valid length
+- fix(platform): log drive task crashes instead of silently stopping ticks
+- fix(platform): bind serve LiteLLM factory to litellm.acompletion
+- fix(platform): drive LiteLLM through acompletion on an isolated worker loop
 - fix(platform): sweep dead Darwin USDC on-chain and add omnibus fund retry
 
 ## [0.0.3] - 2026-05-29
