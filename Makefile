@@ -81,10 +81,14 @@ REAL_FLAGS = \
   $(if $(DARWIN_ESCALATION_WEBHOOK_URL),--escalation-webhook-url $(DARWIN_ESCALATION_WEBHOOK_URL),) \
   $(if $(DARWIN_ALERT_WEBHOOK_URL),--alert-webhook-url $(DARWIN_ALERT_WEBHOOK_URL),) \
   $(if $(DARWIN_SLACK_WEBHOOK_URL),--slack-webhook-url $(DARWIN_SLACK_WEBHOOK_URL),) \
-  $(if $(DARWIN_PAGERDUTY_ROUTING_KEY),--pagerduty-routing-key $(DARWIN_PAGERDUTY_ROUTING_KEY),)
+  $(if $(DARWIN_PAGERDUTY_ROUTING_KEY),--pagerduty-routing-key $(DARWIN_PAGERDUTY_ROUTING_KEY),) \
+  $(if $(DARWIN_WALLET_KEY),--enable-omnibus,)
 # Note: E2B is picked up via E2B_API_KEY in the environment (no CLI flag).
 # Browserbase reads BROWSERBASE_URL + BROWSERBASE_API_KEY from env when the
 # --browser-provider flag is set above.
+# Omnibus: --enable-omnibus turns on when DARWIN_WALLET_KEY is set; it reads
+# DARWIN_RPC_URL + DARWIN_WALLET_KEY for its own web3 wallet. Per-Darwin
+# wallets stay on CDP (the web3 shared-key path is gated off under cdp).
 
 .PHONY: real real-preflight real-serve real-checklist real-spawn
 real: real-preflight real-serve ## Preflight + boot platform against real LLM/wallet/browser/sandbox
