@@ -51,6 +51,7 @@ coverage.xml
 *.py.cover
 nosetests.xml
 cover/
+test-results/
 
 # --- Type checkers ---
 .mypy_cache/

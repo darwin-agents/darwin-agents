@@ -9,7 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- chore(web): add Playwright and Clerk testing dev dependencies
+- test(web): add Playwright E2E suite, data browser route, and CI job
+- feat(platform): add Stripe webhook deposits and gated manual omnibus credit
+- feat(platform): persist harvest rules and resource throttles across restarts
+- feat(platform): add --network flag and refuse unsafe mainnet boot config
 - feat(web): add timeline and data tabs to Darwin sub-navigation
 - feat(web): deep-link timeline rows to anatomy and neurons to timeline
 - feat(web): add timeline page with URL-encoded server-side filters
@@ -38,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs(engineering): align mainnet cutover doc with --network flag and webhooks
+- docs(engineering): update backlog for M3 dashboard and Playwright E2E
+- docs: sync unreleased changelog with recent platform and web work
 - docs(config): reorganize env example with required and optional sections
 - refactor(dna): await async LLM calls in content and support neurons
 - refactor(dna): await async LLM calls in orchestrator plan and mutation nodes
