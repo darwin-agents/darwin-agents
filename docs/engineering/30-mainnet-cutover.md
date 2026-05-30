@@ -28,8 +28,12 @@ These are not code; they gate whether you may legally run this at all.
 ## 1. Chains → mainnet
 
 - [ ] `DARWIN_RPC_URL` → Base mainnet RPC (no `sepolia`).
-- [ ] Boot with `--cdp-mainnet` (CDP wallets switch to `base-mainnet`; the
-      USDC contract + chain id flip to mainnet automatically).
+- [ ] Boot with **`--network mainnet`** — the single authoritative switch.
+      CDP wallets flip to `base-mainnet` and the USDC contract + chain id
+      follow automatically; the money-safety gate and preflight key off the
+      same flag, so no subsystem can silently disagree. (`--cdp-mainnet` is a
+      kept-for-back-compat alias.) A `--network testnet` boot pointed at a
+      mainnet RPC is refused as a mismatch.
 - [ ] If using Solana/Stellar: `DARWIN_SOLANA_RPC_URL` →
       `api.mainnet-beta.solana.com`, `DARWIN_STELLAR_HORIZON_URL` →
       `horizon.stellar.org`. Use `--wallet-provider cdp` or `local-vault` —
@@ -96,7 +100,7 @@ These are not code; they gate whether you may legally run this at all.
 
 ---
 
-**Residual known gaps** (track before scaling volume):
-- Stripe deposit *quotes* are persisted (survive restart), but high-volume
-  webhook idempotency beyond quote-consumption is not yet a dedicated ledger.
-- See `docs/engineering/BACKLOG.md` for explicitly out-of-scope items.
+**Webhook idempotency** is now two-layer + durable: a `processed_webhook_events`
+ledger short-circuits a re-delivered Stripe event id before any money effect,
+and quote-consumption catches a crash between credit and mark — both survive
+restarts. See `docs/engineering/BACKLOG.md` for explicitly out-of-scope items.
