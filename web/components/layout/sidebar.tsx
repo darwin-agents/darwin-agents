@@ -12,6 +12,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { AuthChip } from "./auth-chip";
 
 const NAV: Array<{ href: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { href: "/", label: "Fleet", icon: LayoutGrid },
@@ -49,14 +50,17 @@ export function Sidebar() {
           );
         })}
       </nav>
-      <div className="mt-auto px-2 text-[10px] text-[var(--color-muted-foreground)]">
-        <div className="flex items-center gap-1">
-          <Receipt className="size-3" />
-          <span>v0.1.0 · dev</span>
-        </div>
-        <div className="mt-1 flex items-center gap-1">
-          <Bell className="size-3" />
-          <span>WS poll fallback</span>
+      <div className="mt-auto flex flex-col gap-2 px-2">
+        <AuthChip />
+        <div className="text-[10px] text-[var(--color-muted-foreground)]">
+          <div className="flex items-center gap-1">
+            <Receipt className="size-3" />
+            <span>v0.1.0 · dev</span>
+          </div>
+          <div className="mt-1 flex items-center gap-1">
+            <Bell className="size-3" />
+            <span>WS poll fallback</span>
+          </div>
         </div>
       </div>
     </aside>
