@@ -6,7 +6,7 @@ starter content neuron the founding content+affiliate strategy leans on.
 
 from __future__ import annotations
 
-from ..machinery.llm_router import Tier
+from ..machinery.llm_router import Tier, acomplete
 from ._base import (
     BaseNeuron,
     CostEstimate,
@@ -56,7 +56,8 @@ class ContentWriter(BaseNeuron):
             "neuron.content.writer", {"plan": plan.steps, "topic": topic}
         )
         try:
-            resp = context.llm.complete(
+            resp = await acomplete(
+                context.llm,
                 Tier.REASONING,
                 {
                     "task": "write_long_form",

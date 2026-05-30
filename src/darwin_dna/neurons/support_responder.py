@@ -12,7 +12,7 @@ needs a human.
 from __future__ import annotations
 
 
-from ..machinery.llm_router import Tier
+from ..machinery.llm_router import Tier, acomplete
 from ._base import (
     BaseNeuron,
     Blocker,
@@ -121,7 +121,8 @@ class SupportResponder(BaseNeuron):
 
         # Compose reply via reasoning tier.
         try:
-            resp = context.llm.complete(
+            resp = await acomplete(
+                context.llm,
                 Tier.REASONING,
                 {
                     "task": "support_reply",

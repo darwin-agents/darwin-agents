@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from ..machinery.llm_router import Tier
+from ..machinery.llm_router import Tier, acomplete
 from ._base import (
     BaseNeuron,
     CostEstimate,
@@ -136,7 +136,8 @@ class AnalyticsMeasurer(BaseNeuron):
         # Synthesise the ROI dict via the fast tier. Cheap; reflect will
         # discard the synthesis when the raw numbers are missing.
         try:
-            resp = context.llm.complete(
+            resp = await acomplete(
+                context.llm,
                 Tier.FAST,
                 {
                     "task": "analytics_synthesis",

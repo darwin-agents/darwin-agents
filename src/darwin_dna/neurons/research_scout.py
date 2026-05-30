@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from ..machinery.llm_router import Tier
+from ..machinery.llm_router import Tier, acomplete
 from ._base import (
     BaseNeuron,
     CostEstimate,
@@ -135,7 +135,8 @@ class ResearchScout(BaseNeuron):
 
         # Synthesise via fast tier — the user gets a summary, not raw rows.
         try:
-            resp = context.llm.complete(
+            resp = await acomplete(
+                context.llm,
                 Tier.FAST,
                 {
                     "task": "research_synthesis",
