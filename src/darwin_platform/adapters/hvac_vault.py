@@ -59,6 +59,11 @@ class HvacVaultClient:
         token: str | None = None,
         mount_point: str = "secret",
         v2: bool = True,
+        auth_method: str = "token",
+        role_id: str | None = None,
+        secret_id: str | None = None,
+        k8s_role: str | None = None,
+        k8s_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token",
         client_factory=None,
     ) -> None:
         try:
@@ -68,65 +73,125 @@ class HvacVaultClient:
                 "HvacVaultClient requires the [hvac] extra: "
                 "`pip install darwin-dna[hvac]`"
             ) from exc
+        self._auth_method = auth_method
+        self._token = token
+        self._role_id = role_id
+        self._secret_id = secret_id
+        self._k8s_role = k8s_role
+        self._k8s_jwt_path = k8s_jwt_path
         if client_factory is None:
-            if not url or not token:
+            if not url:
+                raise ValueError("url is required when client_factory is None")
+            if auth_method == "token" and not token:
+                raise ValueError("token is required for auth_method='token'")
+            if auth_method == "approle" and not (role_id and secret_id):
                 raise ValueError(
-                    "url and token are required when client_factory is None"
+                    "role_id + secret_id are required for auth_method='approle'"
                 )
-            self._client = hvac.Client(url=url, token=token)
+            if auth_method == "kubernetes" and not k8s_role:
+                raise ValueError(
+                    "k8s_role is required for auth_method='kubernetes'"
+                )
+            self._client = hvac.Client(url=url)
+            self._authenticate()
         else:
             self._client = client_factory()
         self._mount = mount_point
         self._v2 = v2
 
+    # -- auth --------------------------------------------------------------
+    def _authenticate(self) -> None:
+        """(Re)establish the client token for the configured auth method.
+
+        A root/static ``token`` is the dev path. ``approle`` and
+        ``kubernetes`` are the production methods — their tokens are leased
+        and expire, so :meth:`_retry` re-invokes this on an auth failure to
+        transparently re-login (no background renewal thread needed)."""
+        m = self._auth_method
+        if m == "token":
+            self._client.token = self._token
+        elif m == "approle":
+            self._client.auth.approle.login(
+                role_id=self._role_id, secret_id=self._secret_id,
+            )
+        elif m == "kubernetes":
+            with open(self._k8s_jwt_path) as fh:
+                jwt = fh.read().strip()
+            self._client.auth.kubernetes.login(role=self._k8s_role, jwt=jwt)
+        else:
+            raise ValueError(f"unknown vault auth_method {m!r}")
+
+    @staticmethod
+    def _is_auth_error(exc: Exception) -> bool:
+        # hvac raises Forbidden (403) / Unauthorized (401) on an expired or
+        # insufficient token; missing keys raise InvalidPath (handled as
+        # "no such secret", NOT an auth failure → don't re-login on those).
+        name = type(exc).__name__
+        return name in ("Forbidden", "Unauthorized") or (
+            "permission denied" in str(exc).lower()
+        )
+
+    def _retry(self, fn):
+        """Run a KV op; on an AUTH failure (leased token expired),
+        re-authenticate once and retry. Token auth has nothing to refresh,
+        so it just propagates."""
+        try:
+            return fn()
+        except Exception as exc:
+            if self._auth_method != "token" and self._is_auth_error(exc):
+                self._authenticate()
+                return fn()
+            raise
+
     # -- VaultClient surface ----------------------------------------------
     def kv_put(self, key: str, value: str) -> None:
-        if self._v2:
-            self._client.secrets.kv.v2.create_or_update_secret(
-                mount_point=self._mount,
-                path=key,
-                secret={"value": value},
-            )
-        else:
-            self._client.secrets.kv.v1.create_or_update_secret(
-                mount_point=self._mount,
-                path=key,
-                secret={"value": value},
-            )
+        def _put():
+            if self._v2:
+                self._client.secrets.kv.v2.create_or_update_secret(
+                    mount_point=self._mount, path=key,
+                    secret={"value": value},
+                )
+            else:
+                self._client.secrets.kv.v1.create_or_update_secret(
+                    mount_point=self._mount, path=key,
+                    secret={"value": value},
+                )
+        self._retry(_put)
 
     def kv_get(self, key: str) -> str | None:
-        try:
+        def _read():
             if self._v2:
                 resp = self._client.secrets.kv.v2.read_secret_version(
                     mount_point=self._mount,
                     path=key,
                     raise_on_deleted_version=False,
                 )
-                data = ((resp or {}).get("data") or {}).get("data") or {}
-            else:
-                resp = self._client.secrets.kv.v1.read_secret(
-                    mount_point=self._mount,
-                    path=key,
-                )
-                data = (resp or {}).get("data") or {}
+                return ((resp or {}).get("data") or {}).get("data") or {}
+            resp = self._client.secrets.kv.v1.read_secret(
+                mount_point=self._mount, path=key,
+            )
+            return (resp or {}).get("data") or {}
+        try:
+            data = self._retry(_read)
         except Exception:
             # Fail-closed: Vault's tiered vault interprets None as "no
-            # such key" and refuses to surface anything sensitive.
+            # such key" and refuses to surface anything sensitive. (Auth
+            # errors are retried once inside _retry before reaching here.)
             return None
         v = data.get("value")
         return None if v is None else str(v)
 
     def kv_delete(self, key: str) -> None:
-        if self._v2:
-            # Hard delete all versions; matches the FakeVault's
-            # `MemoryOwnerGrantStore`-shaped semantics where a
-            # consume-once token is gone forever.
-            self._client.secrets.kv.v2.delete_metadata_and_all_versions(
-                mount_point=self._mount,
-                path=key,
-            )
-        else:
-            self._client.secrets.kv.v1.delete_secret(
-                mount_point=self._mount,
-                path=key,
-            )
+        def _delete():
+            if self._v2:
+                # Hard delete all versions; matches the FakeVault's
+                # `MemoryOwnerGrantStore`-shaped semantics where a
+                # consume-once token is gone forever.
+                self._client.secrets.kv.v2.delete_metadata_and_all_versions(
+                    mount_point=self._mount, path=key,
+                )
+            else:
+                self._client.secrets.kv.v1.delete_secret(
+                    mount_point=self._mount, path=key,
+                )
+        self._retry(_delete)
