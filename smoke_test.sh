@@ -46,19 +46,22 @@ since=0
 deadline=$(( $(date +%s) + WATCH_SECS ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   page=$(api "$BASE/darwins/$A/events?since=$since&limit=200")
+  # Real cognition shows up as perceive/plan/reflect/neuron/outcome events;
+  # the LLM calls are embedded inside the plan/reflect steps (not separate
+  # llm.* events), so match the drive-loop kinds directly.
   echo "$page" | jq -r '.events[]
-    | select(.kind | test("^(llm|neuron|event:payment)"))
-    | "  seq=\(.seq) \(.kind)  \(.payload.tier // .payload.neuron_id // "")"'
+    | select(.kind | test("perceive|plan|reflect|neuron|outcome|payment|reproduc|birth|harvest|escal"))
+    | "  seq=\(.seq) \(.kind)  \(.payload.tier // .payload.neuron_id // .payload.summary // "")"'
   since=$(echo "$page" | jq -r '(.events | map(.seq) | max) // '"$since")
   sleep 5
 done
 
 echo; echo "== 3. status + did the real LLM actually run? =="
 api "$BASE/darwins/$A" | jq '{darwin_id, alive, tick, balance_usdc, days_elapsed}'
-echo "-- llm.* events seen so far:"
-api "$BASE/darwins/$A/events?kind=llm&limit=1000" | jq '.total'
-echo "-- billing (real per-tier LLM cost attributed to A):"
-api "$BASE/darwins/$A/billing" | jq .
+echo "-- cognitive event histogram (proves the drive loop ran):"
+api "$BASE/darwins/$A/events?limit=1000" | jq '[.events[].kind] | group_by(.) | map({(.[0]): length}) | add'
+echo "-- billing.infrastructure.events = metered LLM/compute calls:"
+api "$BASE/darwins/$A/billing" | jq '.infrastructure'
 
 echo; echo "== 4. force A to reproduce -> child B (parent funds child) =="
 api -X POST "$BASE/darwins/$A/reproduce/force" | jq .

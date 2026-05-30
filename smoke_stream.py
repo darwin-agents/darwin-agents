@@ -33,7 +33,10 @@ OPENING = float(os.environ.get("OPENING", "100"))
 WATCH_SECS = float(os.environ.get("WATCH_SECS", "45"))
 
 # Highlight the kinds that prove real cognition / cross-Darwin interaction.
-HOT = ("llm", "neuron", "event:payment", "reproduc", "lineage")
+# Real LLM work is embedded inside the perceive/plan/reflect drive-loop steps
+# (not emitted as separate llm.* events), so match those kinds directly.
+HOT = ("perceive", "plan", "reflect", "neuron", "outcome", "payment",
+       "reproduc", "lineage", "birth", "harvest", "escal", "llm")
 
 
 def _req(method: str, path: str, body: dict | None = None) -> dict:
