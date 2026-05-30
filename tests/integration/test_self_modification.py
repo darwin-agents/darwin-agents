@@ -54,7 +54,7 @@ def test_propose_valid_soma_patch_routes_to_evaluate():
                                   "diff": "+    pass\n"}]}))
     st = OrchestratorState()
     st.plan = {"failure_class": "flaky_io"}
-    propose_mutation.run(st, ctx)
+    asyncio.run(propose_mutation.run(st, ctx))
     assert st.route == "evaluate_mutation"
     assert st.plan["patch"]["rationale"]
 
@@ -65,7 +65,7 @@ def test_propose_dna_targeting_patch_is_archived_not_applied():
                                   "diff": "+CAP=1e9\n"}]}))
     st = OrchestratorState()
     st.plan = {"failure_class": "flaky_io"}
-    propose_mutation.run(st, ctx)
+    asyncio.run(propose_mutation.run(st, ctx))
     assert st.route == "check_reproduction"
     kinds = [r["kind"] for r in ctx.audit._sink.read_all()]
     assert "event:mutation.archived" in kinds
@@ -75,7 +75,7 @@ def test_propose_backs_off_when_coding_tier_unavailable():
     ctx = _ctx(_LLM(raises=LLMError("coding tier daily cap exhausted")))
     st = OrchestratorState()
     st.plan = {"failure_class": "flaky_io"}
-    propose_mutation.run(st, ctx)  # must not raise
+    asyncio.run(propose_mutation.run(st, ctx))  # must not raise
     assert st.route == "check_reproduction"
     assert st.plan["action"] == "sleep"
 

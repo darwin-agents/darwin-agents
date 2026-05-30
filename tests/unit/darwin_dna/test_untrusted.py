@@ -98,16 +98,17 @@ def test_dispatch_fences_world_text_bounded_and_flags_breakout(booted):
     )
     _force_web_text(rt, attack)
 
-    # Capture the exact reasoning request the planner builds.
+    # Capture the exact reasoning request the planner builds. The planner
+    # routes through the non-blocking async path (acomplete), so spy there.
     plan_requests: list[dict] = []
-    real_complete = rt.llm.complete
+    real_acomplete = rt.llm.acomplete
 
-    def spy(tier, request):
+    async def spy(tier, request):
         if request.get("task") == "plan":
             plan_requests.append(request)
-        return real_complete(tier, request)
+        return await real_acomplete(tier, request)
 
-    rt.llm.complete = spy
+    rt.llm.acomplete = spy
 
     asyncio.run(rt.run(max_heartbeats=8))
 
