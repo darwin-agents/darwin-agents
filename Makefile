@@ -75,7 +75,7 @@ REAL_FLAGS = \
   $(if $(DARWIN_VAULT_TOKEN),--vault-token $(DARWIN_VAULT_TOKEN),) \
   $(if $(DARWIN_SANCTIONS_API_KEY),--sanctions-provider chainalysis --sanctions-api-key $(DARWIN_SANCTIONS_API_KEY),) \
   $(if $(STRIPE_API_KEY),--fiat-provider stripe,) \
-  $(if $(DARWIN_KYC_PERSONA_API_KEY),--kyc-provider persona --kyc-persona-api-key $(DARWIN_KYC_PERSONA_API_KEY),) \
+  $(if $(and $(DARWIN_KYC_PERSONA_API_KEY),$(DARWIN_KYC_PERSONA_TEMPLATE_ID)),--kyc-provider persona --kyc-persona-api-key $(DARWIN_KYC_PERSONA_API_KEY) --kyc-persona-template-id $(DARWIN_KYC_PERSONA_TEMPLATE_ID),) \
   $(if $(DARWIN_LITELLM_URL),--litellm-url $(DARWIN_LITELLM_URL) --litellm-master-key $(DARWIN_LITELLM_MASTER_KEY),) \
   $(if $(OTEL_EXPORTER_OTLP_ENDPOINT),--otlp-endpoint $(OTEL_EXPORTER_OTLP_ENDPOINT),) \
   $(if $(DARWIN_ESCALATION_WEBHOOK_URL),--escalation-webhook-url $(DARWIN_ESCALATION_WEBHOOK_URL),) \

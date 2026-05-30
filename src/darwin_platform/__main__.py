@@ -669,7 +669,9 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
         api_key = getattr(args, "kyc_persona_api_key", None) or os.environ.get(
             "DARWIN_KYC_PERSONA_API_KEY"
         )
-        template_id = getattr(args, "kyc_persona_template_id", None)
+        template_id = getattr(
+            args, "kyc_persona_template_id", None
+        ) or os.environ.get("DARWIN_KYC_PERSONA_TEMPLATE_ID")
         if not (api_key and template_id):
             print(
                 "--kyc-provider persona requires --kyc-persona-api-key + "
@@ -1436,7 +1438,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phase2_group.add_argument(
         "--kyc-persona-template-id", default=None, metavar="ID",
-        help="Persona inquiry template id (when --kyc-provider persona).",
+        help="Persona inquiry template id (when --kyc-provider persona). "
+             "Env: DARWIN_KYC_PERSONA_TEMPLATE_ID",
     )
     phase2_group.add_argument(
         "--kyc-onfido-api-token", default=None, metavar="TOKEN",
