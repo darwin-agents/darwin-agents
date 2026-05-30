@@ -6,6 +6,11 @@ dist/
 coverage/
 .turbo/
 
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/
+
 # env
 .env
 .env.local
