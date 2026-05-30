@@ -1180,6 +1180,7 @@ class Supervisor:
             handle.task = asyncio.create_task(
                 self._drive(handle), name=f"darwin:{handle.darwin_id}"
             )
+            handle.task.add_done_callback(self._log_drive_done)
             # Best-effort: debit user_credits + chain-transfer from
             # omnibus to the new wallet for root spawns. Skipped silently
             # for anonymous/in-process flows where the FakeWallet's
@@ -3432,6 +3433,26 @@ class Supervisor:
                     metadata={"reason": str(exc)[:200]},
                 )
 
+    @staticmethod
+    def _log_drive_done(task: "asyncio.Task") -> None:
+        """Surface a silent drive-task crash. Without this, an exception in
+        ``_drive`` is stored on the task object (held by ``handle.task``) and
+        never retrieved — asyncio only logs it on GC, which never happens — so
+        the Darwin looks alive but silently stops ticking."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            import logging
+            import traceback
+            logging.getLogger("darwin.supervisor").error(
+                "drive task %s crashed: %r\n%s",
+                task.get_name(), exc,
+                "".join(traceback.format_exception(
+                    type(exc), exc, exc.__traceback__,
+                )),
+            )
+
     async def _drive(self, handle: _Handle) -> None:
         """Drive one Darwin: one heartbeat per loop iteration, with an
         ``asyncio.sleep`` between to yield to other Darwins on the same loop.
@@ -4883,6 +4904,7 @@ class Supervisor:
             child_handle.task = asyncio.create_task(
                 self._drive(child_handle), name=f"darwin:{child_id}"
             )
+            child_handle.task.add_done_callback(self._log_drive_done)
             opening_usdc = float(record.get("budget_usdc", 0.0))
             self._audit.record(
                 actor=f"platform.reproduction:{parent.darwin_id}",
