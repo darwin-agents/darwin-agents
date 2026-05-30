@@ -83,6 +83,7 @@ class _StripeStub:
             obj = {
                 "id": iid, "status": "requires_confirmation",
                 "amount": kwargs.get("amount"),
+                "metadata": kwargs.get("metadata", {}),
             }
             self.ramp.intents[iid] = obj
             return obj
@@ -210,3 +211,32 @@ def test_moonpay_withdraw_posts_sell_transaction():
     assert rec.provider_tx_id == "wd-1"
     assert rec.fee_usd == 4.0
     assert http.calls[0]["url"].endswith("/v3/sell_transactions")
+
+
+def test_stripe_quote_persists_and_confirms_after_restart(tmp_path):
+    """A quote survives a process restart so a webhook confirm that lands
+    later still resolves it; the confirmed quote is then gone (replay-safe)."""
+    from darwin_platform.runtime.persistence import PersistenceStore
+
+    db = str(tmp_path / "q.db")
+    sk = _StripeStub()
+    r1 = StripeFiatRamp(stripe_client=sk)
+    r1.attach_store(PersistenceStore(db).fiat_quote_store())
+    q = r1.deposit_quote(
+        amount_usd=100.0, payment_method="pm_card", destination_darwin_id="d1",
+    )
+    # Darwin id stamped into the PaymentIntent metadata for the webhook.
+    assert sk.intents[q.quote_id]["metadata"]["destination_darwin_id"] == "d1"
+    sk.intents[q.quote_id]["status"] = "succeeded"
+
+    # Fresh ramp on the same DB (simulated restart) confirms the old quote.
+    r2 = StripeFiatRamp(stripe_client=sk)
+    r2.attach_store(PersistenceStore(db).fiat_quote_store())
+    receipt = r2.confirm_deposit(quote_id=q.quote_id, destination_darwin_id="d1")
+    assert receipt.amount_usdc == q.amount_usdc
+
+    # Quote consumed → a replay (even on another fresh ramp) is rejected.
+    r3 = StripeFiatRamp(stripe_client=sk)
+    r3.attach_store(PersistenceStore(db).fiat_quote_store())
+    with pytest.raises(FiatRampError, match="no local quote"):
+        r3.confirm_deposit(quote_id=q.quote_id)

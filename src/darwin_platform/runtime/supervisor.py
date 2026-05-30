@@ -685,6 +685,12 @@ class Supervisor:
         # tests for immediate evaluation; in production, every ~60 cycles
         # is cheap and matches doc-05's "schedule Y".
         self._harvest_scheduler = HarvestScheduler(clock=clock)
+        # Persist harvest rules so owner-registered sweeps survive a
+        # restart (was in-memory only — silently dropped on failover).
+        if self._persistence is not None:
+            self._harvest_scheduler.attach_store(
+                self._persistence.harvest_store()
+            )
         self._harvest_eval_every_n = 10
         # Cross-pollination archive (doc 06 phase 3). When set, the
         # supervisor sweeps each Darwin's distilled lessons after a
@@ -703,6 +709,22 @@ class Supervisor:
         # via the same provider. Default None means the platform is
         # crypto-only — owners pre-fund Darwins manually.
         self._fiat_ramp: FiatRamp | None = fiat_ramp
+        # Persist outstanding deposit quotes so a webhook confirm that lands
+        # after a restart still resolves its quote (otherwise the deposit is
+        # silently lost), and a replay stays idempotent. Only ramps that
+        # opt in via attach_store are wired (StripeFiatRamp does).
+        if self._fiat_ramp is not None and self._persistence is not None:
+            _attach = getattr(self._fiat_ramp, "attach_store", None)
+            if callable(_attach):
+                _attach(self._persistence.fiat_quote_store())
+        # Durable webhook idempotency ledger (doc 17). Lets a re-delivered
+        # payment webhook short-circuit before any money effect, surviving
+        # restarts. None when persistence is off (in-memory dev/sim) — then
+        # idempotency falls back to quote-consumption alone.
+        self._webhook_events = (
+            self._persistence.webhook_event_store()
+            if self._persistence is not None else None
+        )
         # Owner-scoped registry of verified fiat-payout destinations
         # (doc 17). Defaults to the persistent variant when persistence
         # is wired; an explicit kwarg overrides. None means the platform
@@ -721,6 +743,12 @@ class Supervisor:
         # throttle lives on the genome's LLMRouter; sandbox / browser /
         # egress live here because their substrates are platform-side.
         self._throttle_service = ThrottleService(clock=clock)
+        # Persist installed throttles so operator-set resource caps survive
+        # a restart (was in-memory only — a restart silently lifted caps).
+        if self._persistence is not None:
+            self._throttle_service.attach_store(
+                self._persistence.throttle_store()
+            )
         # When disabled, the throttle wrappers are not installed at
         # spawn time — useful for tests that assert identity equality
         # against the raw substrate they injected.
@@ -3981,27 +4009,97 @@ class Supervisor:
         *,
         amount_usd: float,
         payment_method: str,
+        destination_darwin_id: str | None = None,
         actor: str = "anonymous",
     ) -> FiatQuote:
         if self._fiat_ramp is None:
             raise SupervisorError("fiat ramp is not configured")
+        if (
+            destination_darwin_id is not None
+            and destination_darwin_id not in self._darwins
+        ):
+            raise UnknownDarwin(destination_darwin_id)
         try:
             quote = self._fiat_ramp.deposit_quote(
                 amount_usd=amount_usd, payment_method=payment_method,
+                destination_darwin_id=destination_darwin_id,
             )
         except FiatRampError as exc:
             raise SupervisorError(str(exc)) from exc
         self._audit.record(
             actor=actor,
             action="fiat_deposit_quote",
-            darwin_id=None,
+            darwin_id=destination_darwin_id,
             metadata={
                 "amount_usd": float(amount_usd),
                 "provider": quote.provider,
                 "quote_id": quote.quote_id,
+                "destination_darwin_id": destination_darwin_id,
             },
         )
         return quote
+
+    def handle_stripe_webhook(
+        self, event: dict, *, actor: str = "platform.stripe_webhook",
+    ) -> dict:
+        """Drive deposit confirmation from a VERIFIED Stripe event. The API
+        route verifies the signature (``stripe.Webhook.construct_event``)
+        and passes the parsed envelope here.
+
+        Only ``payment_intent.succeeded`` does anything; the destination
+        Darwin is read from the intent metadata that ``deposit_quote``
+        stamped. Idempotent in TWO layers: (1) a durable webhook-event ledger
+        short-circuits a re-delivered event id before any money effect, and
+        (2) ``confirm_deposit`` consumes the one-shot quote, catching any
+        crash-between-credit-and-mark. The route returns 200 either way so
+        Stripe stops retrying."""
+        event_type = str(event.get("type", ""))
+        if event_type != "payment_intent.succeeded":
+            return {"status": "ignored", "event_type": event_type}
+        event_id = str(event.get("id") or "")
+        # Layer 1: durable dedup on the Stripe event id.
+        if self._webhook_events is not None and self._webhook_events.seen(
+            event_id
+        ):
+            return {"status": "duplicate", "event_id": event_id}
+        intent = (event.get("data", {}) or {}).get("object", {}) or {}
+        intent_id = str(intent.get("id") or "")
+        if not intent_id:
+            return {"status": "ignored", "reason": "no payment_intent id"}
+        meta = intent.get("metadata") or {}
+        dst = meta.get("destination_darwin_id") or None
+        try:
+            receipt = self.fiat_confirm_deposit(
+                quote_id=intent_id,
+                destination_darwin_id=dst,
+                actor=actor,
+            )
+        except (SupervisorError, UnknownDarwin) as exc:
+            # No live quote (already-confirmed replay, or quoted before a
+            # restart) / unknown darwin → skip without raising so Stripe
+            # stops retrying. Audited for the operator to reconcile.
+            self._audit.record(
+                actor=actor,
+                action="stripe_webhook_skipped",
+                darwin_id=dst,
+                metadata={"payment_intent": intent_id, "reason": str(exc)},
+            )
+            self._mark_webhook_event(event_id, "skipped")
+            return {"status": "skipped", "reason": str(exc)}
+        self._mark_webhook_event(event_id, "confirmed")
+        return {
+            "status": "confirmed",
+            "provider_tx_id": receipt.provider_tx_id,
+            "amount_usdc": receipt.amount_usdc,
+            "destination_darwin_id": dst,
+        }
+
+    def _mark_webhook_event(self, event_id: str, status: str) -> None:
+        if self._webhook_events is not None and event_id:
+            self._webhook_events.mark(
+                event_id=event_id, provider="stripe",
+                status=status, ts=float(self._clock()),
+            )
 
     def fiat_confirm_deposit(
         self,

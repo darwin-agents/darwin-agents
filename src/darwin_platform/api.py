@@ -17,6 +17,7 @@ service trusts every caller. Do not expose this surface publicly as-is.
 from __future__ import annotations
 
 import base64
+import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -110,6 +111,7 @@ class ResourceThrottleRequest(BaseModel):
 class FiatDepositQuoteRequest(BaseModel):
     amount_usd: float = Field(gt=0)
     payment_method: str = Field(min_length=1)
+    destination_darwin_id: str | None = None
 
 
 class FiatConfirmDepositRequest(BaseModel):
@@ -264,6 +266,8 @@ def build_app(
     *,
     token_store: TokenStore | None = None,
     cors_origins: list[str] | None = None,
+    stripe_webhook_secret: str | None = None,
+    allow_manual_credit: bool = False,
 ) -> FastAPI:
     """Build a FastAPI app bound to ``supervisor`` (or a fresh one).
 
@@ -306,6 +310,8 @@ def build_app(
     )
     app.state.supervisor = sup
     app.state.token_store = token_store
+    app.state.stripe_webhook_secret = stripe_webhook_secret
+    app.state.allow_manual_credit = bool(allow_manual_credit)
 
     if cors_origins:
         from fastapi.middleware.cors import CORSMiddleware
@@ -1088,15 +1094,47 @@ def build_app(
         ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
         _require_scope(ctx, OWNER)
+        if req.destination_darwin_id is not None:
+            _require_owns(ctx, req.destination_darwin_id)
         try:
             quote = _sup(request).fiat_deposit_quote(
                 amount_usd=req.amount_usd,
                 payment_method=req.payment_method,
+                destination_darwin_id=req.destination_darwin_id,
                 actor=_actor(ctx),
             )
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
         return quote.to_json()
+
+    @app.post("/webhooks/stripe")
+    async def stripe_webhook(request: Request) -> dict[str, Any]:
+        """Stripe deposit webhook. UNAUTHENTICATED at the bearer layer —
+        authenticity is established by verifying Stripe's signature against
+        the configured signing secret (set via --stripe-webhook-secret).
+        On ``payment_intent.succeeded`` the matching deposit is confirmed
+        and the destination Darwin's wallet credited. Always returns 200 on
+        a verified event (even when skipped) so Stripe stops retrying; a
+        bad/again signature is a 400."""
+        secret = getattr(request.app.state, "stripe_webhook_secret", None)
+        if not secret:
+            raise HTTPException(503, "stripe webhook secret not configured")
+        try:
+            import stripe
+        except ImportError:
+            raise HTTPException(503, "stripe SDK not installed")
+        payload = await request.body()
+        sig = request.headers.get("Stripe-Signature", "")
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, secret)
+        except Exception as exc:  # SignatureVerificationError / ValueError
+            raise HTTPException(400, f"invalid stripe signature: {exc}")
+        # construct_event returns a Stripe object; normalize to a plain dict.
+        if not isinstance(event, dict):
+            event = json.loads(payload.decode("utf-8") or "{}")
+        return _sup(request).handle_stripe_webhook(event)
 
     @app.post("/platform/fiat/confirm_deposit")
     async def fiat_confirm_deposit(
@@ -1289,8 +1327,17 @@ def build_app(
         ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
         """Credit a user's omnibus balance for an already-settled deposit.
-        Operator-scoped: this is the non-Stripe path to seed the credit a
-        spawn's omnibus funding debits (e.g. a testnet faucet top-up)."""
+        Operator-scoped AND off by default — it mints credit not tied to a
+        verified on-chain/Stripe deposit, so it's a faucet/testnet affordance
+        only. Enable explicitly with --allow-manual-credit; production
+        (real-money) deploys should leave it disabled and credit solely via
+        the Stripe webhook + on-chain deposits."""
+        if not getattr(request.app.state, "allow_manual_credit", False):
+            raise HTTPException(
+                403,
+                "manual omnibus credit is disabled; boot with "
+                "--allow-manual-credit to enable (testnet/dev only)",
+            )
         _require_scope(ctx, PLATFORM_OPERATOR)
         try:
             return _sup(request).credit_user_omnibus(

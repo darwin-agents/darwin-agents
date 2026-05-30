@@ -111,6 +111,7 @@ class FiatRamp(Protocol):
         *,
         amount_usd: float,
         payment_method: str,
+        destination_darwin_id: str | None = None,
     ) -> FiatQuote: ...
 
     def confirm_deposit(
@@ -151,7 +152,9 @@ class StubFiatRamp:
         self._quotes: dict[str, FiatQuote] = {}
         self._tx_counter = 0
 
-    def deposit_quote(self, *, amount_usd, payment_method) -> FiatQuote:
+    def deposit_quote(
+        self, *, amount_usd, payment_method, destination_darwin_id=None,
+    ) -> FiatQuote:
         if amount_usd <= 0:
             raise FiatRampError("amount_usd must be > 0")
         fee = amount_usd * self._fee_rate
@@ -245,22 +248,39 @@ class StripeFiatRamp:
         self._ttl = float(ttl_seconds)
         self._clock = clock
         self._quotes: dict[str, dict] = {}
+        # Optional write-through persistence (set via attach_store); None
+        # keeps quotes in-memory only. With a store, a quote confirmed by
+        # webhook after a restart still resolves, and a consumed quote
+        # makes a replay a safe no-op.
+        self._store: Any | None = None
 
-    def deposit_quote(self, *, amount_usd, payment_method) -> FiatQuote:
+    def attach_store(self, store: Any) -> None:
+        """Bind a persistence store and rehydrate outstanding quotes."""
+        self._store = store
+        self._quotes = {q["quote_id"]: q for q in store.load_all()}
+
+    def deposit_quote(
+        self, *, amount_usd, payment_method, destination_darwin_id=None,
+    ) -> FiatQuote:
         if amount_usd <= 0:
             raise FiatRampError("amount_usd must be > 0")
         fee = amount_usd * self._fee_rate + self._flat
         if fee >= amount_usd:
             raise FiatRampError("amount too small to cover Stripe fee")
         usdc = amount_usd - fee
-        # Create off-session Payment Intent.
+        # Create off-session Payment Intent. Stamp the destination Darwin
+        # into the intent metadata so the webhook (which only sees the
+        # PaymentIntent) can resolve which wallet to credit on success.
+        meta = {"darwin_platform_quote": "true"}
+        if destination_darwin_id:
+            meta["destination_darwin_id"] = str(destination_darwin_id)
         try:
             intent = self._stripe.PaymentIntent.create(
                 amount=int(amount_usd * 100),  # USD cents
                 currency="usd",
                 payment_method=payment_method,
                 automatic_payment_methods={"enabled": True},
-                metadata={"darwin_platform_quote": "true"},
+                metadata=meta,
             )
         except Exception as exc:
             raise FiatRampError(f"stripe quote failed: {exc}") from exc
@@ -276,6 +296,8 @@ class StripeFiatRamp:
             ttl_seconds=self._ttl, quoted_at=self._clock(),
         )
         self._quotes[q.quote_id] = q.to_json()
+        if self._store is not None:
+            self._store.save(q.to_json())
         return q
 
     def confirm_deposit(
@@ -296,6 +318,9 @@ class StripeFiatRamp:
         q_dict = self._quotes.pop(quote_id, None)
         if q_dict is None:
             raise FiatRampError(f"no local quote for intent {quote_id}")
+        # Quote consumed — delete from the store so it can't be replayed.
+        if self._store is not None:
+            self._store.delete(quote_id)
         return FiatDepositReceipt(
             quote_id=quote_id,
             provider_tx_id=quote_id,
@@ -375,7 +400,9 @@ class MoonPayFiatRamp:
             "Content-Type": "application/json",
         }
 
-    def deposit_quote(self, *, amount_usd, payment_method) -> FiatQuote:
+    def deposit_quote(
+        self, *, amount_usd, payment_method, destination_darwin_id=None,
+    ) -> FiatQuote:
         if amount_usd <= 0:
             raise FiatRampError("amount_usd must be > 0")
         try:
