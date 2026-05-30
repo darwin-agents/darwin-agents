@@ -34,7 +34,9 @@ system prompts that callers can override via ``system_prompts``.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -172,6 +174,20 @@ class _CompletionResult:
     raw: Any  # for caller-side debugging / tests
 
 
+@dataclass
+class _PreparedCall:
+    """A per-task request, ready to send and parse. Splitting the task
+    handlers into prepare (build messages) + parse (shape the response) lets
+    the synchronous ``complete`` and the native-async ``acomplete`` share the
+    exact same request shaping and response parsing — only the provider call
+    in the middle differs (blocking-isolated vs awaited)."""
+
+    messages: list[dict[str, Any]]
+    parse: Callable[[_CompletionResult], dict[str, Any]]
+    max_tokens: int | None = None
+    response_format: dict[str, Any] | None = None
+
+
 # Per-tier request timeouts (docs/engineering/28 timeout table). A slow
 # tier needs a longer leash; a fast-tier call hanging for five minutes is a
 # bug, not patience. Tiers absent here fall back to ``request_timeout``.
@@ -210,6 +226,7 @@ class LiteLLMTransport:
         markup_rate: float = 0.10,
         system_prompts: dict[str, str] | None = None,
         litellm_completion: Callable[..., Any] | None = None,
+        litellm_acompletion: Callable[..., Any] | None = None,
         litellm_completion_cost: Callable[..., float] | None = None,
         request_timeout: float = 60.0,
         tier_timeouts: dict[str, float] | None = None,
@@ -236,7 +253,18 @@ class LiteLLMTransport:
             **_DEFAULT_TIER_TIMEOUTS,
             **{k: float(v) for k, v in (tier_timeouts or {}).items()},
         }
-        if litellm_completion is None or litellm_completion_cost is None:
+        # The genuine gateway uses ``_acompletion`` — the native-async client
+        # driven on an isolated loop (see ``_invoke_completion`` and
+        # BUG-drive-loop-tick1-freeze). An injected sync ``litellm_completion``
+        # is a test double / custom transport and is called directly. Resolve
+        # whatever wasn't injected from the real litellm module: the sync
+        # completion only when there is no async path at all, the async client
+        # only when neither was injected.
+        self._acompletion: Callable[..., Any] | None = litellm_acompletion
+        need_completion = litellm_completion is None and self._acompletion is None
+        need_acompletion = self._acompletion is None and litellm_completion is None
+        need_cost = litellm_completion_cost is None
+        if need_completion or need_cost or need_acompletion:
             try:
                 import litellm  # type: ignore[import-not-found]
             except ImportError as exc:  # pragma: no cover
@@ -244,36 +272,83 @@ class LiteLLMTransport:
                     "LiteLLMTransport requires the 'litellm' optional dep: "
                     "`pip install darwin-dna[llm]`"
                 ) from exc
-            litellm_completion = litellm_completion or litellm.completion
-            litellm_completion_cost = (
-                litellm_completion_cost or litellm.completion_cost
-            )
+            if need_completion:
+                litellm_completion = litellm.completion
+            if need_acompletion:
+                self._acompletion = litellm.acompletion
+            if need_cost:
+                litellm_completion_cost = litellm.completion_cost
+        # When only the async path exists, the sync completion must never be
+        # reached — guard it so a regression surfaces loudly instead of
+        # silently re-entering the loop.
+        if litellm_completion is None:
+            def litellm_completion(**_kwargs: Any) -> Any:  # noqa: ANN401
+                raise LLMError(
+                    "synchronous litellm.completion is unavailable; "
+                    "the async (acompletion) path must be used"
+                )
         self._completion: Callable[..., Any] = litellm_completion
         self._completion_cost: Callable[..., float] = litellm_completion_cost
-        # Per-task handlers — keyed by request['task']. Returning a
-        # narrowly-shaped dict that matches what the genome's caller
-        # expects (see FakeLLM for the reference shapes).
-        self._handlers: dict[
+        # Per-task request preparers — keyed by request['task']. Each builds
+        # the messages + a parser that shapes the provider response into the
+        # narrow dict the genome's caller expects (see FakeLLM for the
+        # reference shapes). Shared by ``complete`` and ``acomplete``.
+        self._preparers: dict[
             str,
-            Callable[[Tier, dict[str, Any]], dict[str, Any]],
+            Callable[[Tier, dict[str, Any]], _PreparedCall],
         ] = {
-            "plan": self._handle_plan,
-            "write_long_form": self._handle_write_long_form,
-            "propose_patch": self._handle_propose_patch,
+            "plan": self._prepare_plan,
+            "write_long_form": self._prepare_write_long_form,
+            "propose_patch": self._prepare_propose_patch,
         }
 
     # -- LLMTransport ------------------------------------------------------
-    def complete(self, tier: str, request: dict[str, Any]) -> dict[str, Any]:
+    def _resolve(
+        self, tier: str, request: dict[str, Any]
+    ) -> tuple[Tier, _PreparedCall, str]:
+        """Validate the tier + task and build the prepared call. Shared
+        entry-point bookkeeping for both ``complete`` and ``acomplete``."""
         try:
             tier_enum = Tier(tier)
         except ValueError as exc:
             raise LLMError(f"unknown tier: {tier!r}") from exc
         task = request.get("task")
-        handler = self._handlers.get(task) if isinstance(task, str) else None
-        if handler is None:
+        prep = self._preparers.get(task) if isinstance(task, str) else None
+        if prep is None:
             raise LLMError(f"unknown task: {task!r}")
+        return tier_enum, prep(tier_enum, request), str(task)
+
+    def complete(self, tier: str, request: dict[str, Any]) -> dict[str, Any]:
+        tier_enum, call, task = self._resolve(tier, request)
         try:
-            return handler(tier_enum, request)
+            result = self._call_with_fallback(
+                tier_enum, call.messages,
+                response_format=call.response_format,
+                max_tokens=call.max_tokens,
+            )
+            return call.parse(result)
+        except LLMError:
+            raise
+        except Exception as exc:  # provider error, parser error, etc.
+            raise LLMError(f"{task} via litellm failed: {exc}") from exc
+
+    async def acomplete(
+        self, tier: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Native-async twin of :meth:`complete`. Awaits ``litellm.acompletion``
+        directly on the caller's event loop — no worker thread, no blocking,
+        and crucially no sync→async re-entrancy (which is what froze the
+        supervisor's uvloop drive loop; see BUG-drive-loop-tick1-freeze). This
+        is the path the genome's nodes/neurons use in live operation so one
+        Darwin's LLM call never stalls the loop the others share."""
+        tier_enum, call, task = self._resolve(tier, request)
+        try:
+            result = await self._acall_with_fallback(
+                tier_enum, call.messages,
+                response_format=call.response_format,
+                max_tokens=call.max_tokens,
+            )
+            return call.parse(result)
         except LLMError:
             raise
         except Exception as exc:  # provider error, parser error, etc.
@@ -320,7 +395,7 @@ class LiteLLMTransport:
                     kwargs["response_format"] = response_format
                 if max_tokens is not None:
                     kwargs["max_tokens"] = max_tokens
-                response = self._completion(**kwargs)
+                response = self._invoke_completion(kwargs, self._timeout_for(tier))
             except Exception as exc:
                 last_exc = exc
                 self._breaker.record_failure(model)
@@ -342,6 +417,118 @@ class LiteLLMTransport:
             f"last error: {last_exc!r}"
         )
 
+    async def _acall_with_fallback(
+        self,
+        tier: Tier,
+        messages: list[dict[str, Any]],
+        *,
+        response_format: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> _CompletionResult:
+        """Async twin of :meth:`_call_with_fallback`. Identical fallback,
+        circuit-breaker, and billing semantics; the only difference is the
+        provider call is *awaited* (cooperative, non-blocking) instead of run
+        on an isolated worker thread."""
+        last_exc: Exception | None = None
+        skipped: list[str] = []
+        for model in self._models_for(tier):
+            if not self._breaker.can_call(model):
+                skipped.append(model)
+                continue
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "timeout": self._timeout_for(tier),
+                }
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
+                if max_tokens is not None:
+                    kwargs["max_tokens"] = max_tokens
+                response = await self._aprovider_call(kwargs)
+            except Exception as exc:
+                last_exc = exc
+                self._breaker.record_failure(model)
+                continue
+            text = _extract_text(response)
+            cost = _extract_cost(response, self._completion_cost)
+            self._bill_wallet(tier, cost)
+            self._breaker.record_success(model)
+            return _CompletionResult(
+                text=text, provider_cost_usdc=cost, model=model, raw=response
+            )
+        if skipped and last_exc is None:
+            raise LLMError(
+                f"every model in tier {tier.value} is circuit-open "
+                f"(skipped {len(skipped)})"
+            )
+        raise LLMError(
+            f"every model in tier {tier.value} failed; "
+            f"last error: {last_exc!r}"
+        )
+
+    async def _aprovider_call(self, kwargs: dict[str, Any]) -> Any:
+        """One provider call on the async path. The genuine gateway awaits
+        the native-async client directly on the running loop — no thread, no
+        re-entrancy. An injected sync double (test/fake) has no async client,
+        so it is called inline; that's safe because such doubles are instant
+        and never touch the network or the loop."""
+        if self._acompletion is not None:
+            return await self._acompletion(**kwargs)
+        return self._completion(**kwargs)
+
+    def _invoke_completion(
+        self, kwargs: dict[str, Any], call_timeout: float
+    ) -> Any:
+        """Make one provider completion call.
+
+        For an injected test double (or any non-litellm completion), call it
+        directly — same as before, fully synchronous, no surprises.
+
+        For the genuine LiteLLM gateway, drive the **native-async** client
+        (``litellm.acompletion``) on a private event loop in a dedicated
+        worker thread, and block this thread for the result. We must NEVER
+        call the synchronous ``litellm.completion`` from the supervisor's
+        running event loop: litellm bridges sync→async by re-entering the
+        running loop (via ``nest_asyncio``), and on uvloop that corrupts the
+        loop's timer scheduling — I/O keeps working but ``asyncio.sleep``
+        never fires again, so the drive loop freezes after one heartbeat
+        (BUG-drive-loop-tick1-freeze). The async client on its own fresh
+        ``asyncio.run`` loop needs no re-entrancy, so nest_asyncio is never
+        triggered against the supervisor loop. A fresh thread per call keeps
+        a wedged provider call from blocking the next one.
+
+        Blocking the caller here is the SAME cost the old synchronous path
+        already paid (it ran ``litellm.completion`` inline on the loop); the
+        win is that the loop's timers survive the call.
+        """
+        if self._acompletion is None:
+            return self._completion(**kwargs)
+
+        box: dict[str, Any] = {}
+
+        def _worker() -> None:
+            try:
+                box["result"] = asyncio.run(self._acompletion(**kwargs))
+            except BaseException as exc:  # noqa: BLE001 - re-raised on caller
+                box["error"] = exc
+
+        thread = threading.Thread(
+            target=_worker, name="darwin-litellm", daemon=True
+        )
+        thread.start()
+        # Margin beyond litellm's own per-call timeout so the provider-side
+        # timeout fires first with a clean error rather than this backstop.
+        thread.join(call_timeout + 30.0)
+        if thread.is_alive():
+            raise LLMError(
+                f"litellm acompletion did not return within "
+                f"{call_timeout + 30.0:.0f}s"
+            )
+        if "error" in box:
+            raise box["error"]
+        return box["result"]
+
     @property
     def circuit_breaker(self) -> CircuitBreaker:
         """For ops inspection + tests; the breaker holds per-model state."""
@@ -361,8 +548,8 @@ class LiteLLMTransport:
             ) from exc
         return charged
 
-    # -- task handlers -----------------------------------------------------
-    def _handle_plan(self, tier: Tier, request: dict[str, Any]) -> dict[str, Any]:
+    # -- task preparers (build messages + parser; see _PreparedCall) -------
+    def _prepare_plan(self, tier: Tier, request: dict[str, Any]) -> _PreparedCall:
         context = {
             k: request.get(k)
             for k in (
@@ -378,12 +565,15 @@ class LiteLLMTransport:
             {"role": "system", "content": self._system_prompts["plan"]},
             {"role": "user", "content": json.dumps(context, sort_keys=True)},
         ]
-        result = self._call_with_fallback(tier, messages, max_tokens=300)
-        return {"text": result.text, "cost_usdc": result.provider_cost_usdc}
 
-    def _handle_write_long_form(
+        def parse(result: _CompletionResult) -> dict[str, Any]:
+            return {"text": result.text, "cost_usdc": result.provider_cost_usdc}
+
+        return _PreparedCall(messages=messages, parse=parse, max_tokens=300)
+
+    def _prepare_write_long_form(
         self, tier: Tier, request: dict[str, Any]
-    ) -> dict[str, Any]:
+    ) -> _PreparedCall:
         topic = str(request.get("topic", "the topic"))
         target_words = int(request.get("target_words", 800))
         quality = str(request.get("quality", "standard"))
@@ -403,24 +593,27 @@ class LiteLLMTransport:
         # ~1.4 tokens per word, +20% headroom — LiteLLM normalises across
         # provider tokenisers so this works as a reasonable cap.
         cap = int(target_words * 1.7) + 200
-        result = self._call_with_fallback(tier, messages, max_tokens=cap)
-        body = result.text
-        words = len(body.split())
-        # Real quality assessment would need a separate eval pass (doc 03's
-        # reflect node could do it later). For now a per-tier default that
-        # matches FakeLLM's convention — 0.72 for reasoning, 0.55 otherwise.
-        # Production deployers should replace with a real grader.
-        quality_score = 0.72 if tier is Tier.REASONING else 0.55
-        return {
-            "text": body,
-            "words": words,
-            "quality_score": quality_score,
-            "cost_usdc": result.provider_cost_usdc,
-        }
 
-    def _handle_propose_patch(
+        def parse(result: _CompletionResult) -> dict[str, Any]:
+            body = result.text
+            words = len(body.split())
+            # Real quality assessment would need a separate eval pass (doc 03's
+            # reflect node could do it later). For now a per-tier default that
+            # matches FakeLLM's convention — 0.72 for reasoning, 0.55 otherwise.
+            # Production deployers should replace with a real grader.
+            quality_score = 0.72 if tier is Tier.REASONING else 0.55
+            return {
+                "text": body,
+                "words": words,
+                "quality_score": quality_score,
+                "cost_usdc": result.provider_cost_usdc,
+            }
+
+        return _PreparedCall(messages=messages, parse=parse, max_tokens=cap)
+
+    def _prepare_propose_patch(
         self, tier: Tier, request: dict[str, Any]
-    ) -> dict[str, Any]:
+    ) -> _PreparedCall:
         failure_class = str(request.get("failure_class", "unknown"))
         guidance = str(request.get("guidance", ""))
         messages = [
@@ -434,39 +627,42 @@ class LiteLLMTransport:
                 ),
             },
         ]
-        result = self._call_with_fallback(
-            tier,
-            messages,
+
+        def parse(result: _CompletionResult) -> dict[str, Any]:
+            try:
+                parsed = json.loads(result.text)
+            except json.JSONDecodeError as exc:
+                raise LLMError(
+                    f"propose_patch response was not valid JSON: {exc}"
+                ) from exc
+            # The genome consumes a specific shape; refuse anything else here
+            # rather than let the orchestrator's mutation gate read junk.
+            if not isinstance(parsed, dict):
+                raise LLMError("propose_patch response was not a JSON object")
+            rationale = str(parsed.get("rationale", ""))
+            behavior_delta = parsed.get("behavior_delta") or {
+                "kind": "backoff",
+                "failure_class": failure_class,
+                "after_failures": 2,
+            }
+            if not isinstance(behavior_delta, dict):
+                raise LLMError("propose_patch behavior_delta must be a JSON object")
+            changes = parsed.get("changes") or []
+            if not isinstance(changes, list):
+                raise LLMError("propose_patch changes must be a JSON array")
+            return {
+                "rationale": rationale,
+                "changes": changes,
+                "behavior_delta": behavior_delta,
+                "cost_usdc": result.provider_cost_usdc,
+            }
+
+        return _PreparedCall(
+            messages=messages,
+            parse=parse,
             response_format={"type": "json_object"},
             max_tokens=800,
         )
-        try:
-            parsed = json.loads(result.text)
-        except json.JSONDecodeError as exc:
-            raise LLMError(
-                f"propose_patch response was not valid JSON: {exc}"
-            ) from exc
-        # The genome consumes a specific shape; refuse anything else here
-        # rather than let the orchestrator's mutation gate read junk.
-        if not isinstance(parsed, dict):
-            raise LLMError("propose_patch response was not a JSON object")
-        rationale = str(parsed.get("rationale", ""))
-        behavior_delta = parsed.get("behavior_delta") or {
-            "kind": "backoff",
-            "failure_class": failure_class,
-            "after_failures": 2,
-        }
-        if not isinstance(behavior_delta, dict):
-            raise LLMError("propose_patch behavior_delta must be a JSON object")
-        changes = parsed.get("changes") or []
-        if not isinstance(changes, list):
-            raise LLMError("propose_patch changes must be a JSON array")
-        return {
-            "rationale": rationale,
-            "changes": changes,
-            "behavior_delta": behavior_delta,
-            "cost_usdc": result.provider_cost_usdc,
-        }
 
 
 # -- helpers --------------------------------------------------------------
