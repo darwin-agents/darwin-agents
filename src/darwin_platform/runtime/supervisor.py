@@ -1655,6 +1655,51 @@ class Supervisor:
             sum_of_darwin_wallets=sum_wallets,
         )
 
+    def credit_user_omnibus(
+        self,
+        *,
+        user_subject: str,
+        amount_usdc: float,
+        source_ref: str = "manual",
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Record a confirmed deposit into a user's omnibus credit balance.
+
+        Mirrors what the Stripe webhook does on ``confirm_deposit`` — it
+        assumes the USDC has already settled on the omnibus address (e.g. a
+        testnet faucet top-up or an out-of-band wire the operator has
+        reconciled). Operator-scoped: minting credit is a privileged action.
+        Without it there is no non-Stripe path to give an owner the credit a
+        spawn's ``_fund_darwin_from_omnibus`` debits."""
+        if self._omnibus_wallet is None:
+            raise SupervisorError("omnibus wallet is not configured")
+        if not user_subject:
+            raise SupervisorError("user_subject is required")
+        if float(amount_usdc) <= 0:
+            raise SupervisorError("amount_usdc must be positive")
+        entry = self._omnibus_wallet.record_deposit(
+            user_subject=user_subject,
+            amount_usdc=float(amount_usdc),
+            source_ref=source_ref,
+            actor=actor,
+        )
+        self._audit.record(
+            actor=actor,
+            action="omnibus_manual_credit",
+            darwin_id=None,
+            metadata={
+                "user_subject": user_subject,
+                "amount_usdc": float(amount_usdc),
+                "source_ref": source_ref,
+            },
+        )
+        return {
+            "user_subject": user_subject,
+            "credited_usdc": float(amount_usdc),
+            "balance_usdc": self._omnibus_wallet.user_credit(user_subject),
+            "entry_ts": entry.ts,
+        }
+
     def observe_drift(self, profile: DailyProfile) -> list[DriftAlert]:
         """Feed a per-Darwin daily profile to the drift detector.
         Returns the alerts produced (may be empty). Caller (the platform

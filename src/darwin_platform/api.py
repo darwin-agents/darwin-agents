@@ -158,6 +158,16 @@ class RetryOmnibusFundRequest(BaseModel):
     amount_usdc: float = Field(gt=0)
 
 
+class OmnibusCreditRequest(BaseModel):
+    """Operator credit of a user's omnibus balance for an already-settled
+    deposit (testnet faucet top-up, reconciled wire) — the non-Stripe entry
+    to the credit a spawn's omnibus funding debits."""
+
+    user_subject: str = Field(min_length=1)
+    amount_usdc: float = Field(gt=0)
+    source_ref: str | None = None
+
+
 class FiatWithdrawRequest(BaseModel):
     amount_usdc: float = Field(gt=0)
     destination: str = Field(min_length=1)
@@ -1269,6 +1279,26 @@ def build_app(
             )
         except UnknownDarwin as exc:
             raise HTTPException(404, str(exc))
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/platform/omnibus/credit")
+    async def omnibus_credit(
+        request: Request,
+        req: OmnibusCreditRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Credit a user's omnibus balance for an already-settled deposit.
+        Operator-scoped: this is the non-Stripe path to seed the credit a
+        spawn's omnibus funding debits (e.g. a testnet faucet top-up)."""
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).credit_user_omnibus(
+                user_subject=req.user_subject,
+                amount_usdc=req.amount_usdc,
+                source_ref=req.source_ref or "manual:operator",
+                actor=_actor(ctx),
+            )
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
 
