@@ -23,6 +23,27 @@ from darwin_fakes import FakeStack, make_platform
 from darwin_dna.neurons._base import NeuronContext
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_env(monkeypatch):
+    """Hermetic env for the factory tests.
+
+    ``import litellm`` runs ``dotenv.load_dotenv()`` at import, leaking the
+    repo .env into os.environ for any test that runs after it. Since
+    ``_build_real_factories`` reads ``args.X or os.environ.get(...)``, the
+    'not in result' assertions below would otherwise flake on collection
+    order. Clear every provider-ish var so the tests depend only on their
+    explicit args; monkeypatch restores them afterwards."""
+    import os
+
+    prefixes = (
+        "DARWIN_", "CDP_", "BROWSERBASE", "BROWSER_USE", "E2B_",
+        "STRIPE_", "MOONPAY_", "ONFIDO_", "TWILIO_", "CLERK_", "OTEL_",
+    )
+    for key in list(os.environ):
+        if key.startswith(prefixes):
+            monkeypatch.delenv(key, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers / stubs
 # ---------------------------------------------------------------------------
@@ -377,6 +398,17 @@ def test_build_factories_vault_when_url_and_token():
     ))
     assert "vault_factory" in result
     assert "wallet_factory" not in result
+
+
+def test_build_factories_vault_when_approle_creds():
+    # AppRole creds (no static token) also enable the vault — the method is
+    # auto-selected. The factory is lazy, so this never contacts Vault.
+    from darwin_platform.__main__ import _build_real_factories
+    result = _build_real_factories(_make_args(
+        vault_url="https://vault.example.com:8200",
+        vault_role_id="rid", vault_secret_id="sid",
+    ))
+    assert "vault_factory" in result
 
 
 def test_build_factories_browser_when_api_key():

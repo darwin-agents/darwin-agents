@@ -32,6 +32,27 @@ from darwin_platform.observability.tracing import otlp_traces_url
 from darwin_platform.runtime.supervisor import Supervisor
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_env(monkeypatch):
+    """Hermetic env for the CLI-wiring tests.
+
+    ``import litellm`` runs ``dotenv.load_dotenv()`` at import time, leaking
+    the repo .env into os.environ for whatever test runs after it. Because
+    ``_build_real_factories`` reads ``args.X or os.environ.get(...)``, that
+    makes these tests depend on collection order (the source of an
+    intermittent CI flake). Clear every provider-ish var so the tests depend
+    only on their explicit args; monkeypatch restores them afterwards."""
+    import os
+
+    prefixes = (
+        "DARWIN_", "CDP_", "BROWSERBASE", "BROWSER_USE", "E2B_",
+        "STRIPE_", "MOONPAY_", "ONFIDO_", "TWILIO_", "CLERK_", "OTEL_",
+    )
+    for key in list(os.environ):
+        if key.startswith(prefixes):
+            monkeypatch.delenv(key, raising=False)
+
+
 def _serve_args(*extra: str):
     # The CLI's --wallet-provider default is "cdp" (step 2), which requires
     # CDP credentials and sys.exit(2)s without them. Tests in this file are

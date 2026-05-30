@@ -352,9 +352,40 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # -- vault (doc 16: HvacVaultClient → RealVaultBackend) -----------------
     vault_url = args.vault_url or os.environ.get("DARWIN_VAULT_URL")
     vault_token = args.vault_token or os.environ.get("DARWIN_VAULT_TOKEN")
-    if vault_url and vault_token:
+    vault_auth = getattr(args, "vault_auth", None) or "token"
+    vault_role_id = getattr(args, "vault_role_id", None) or os.environ.get(
+        "DARWIN_VAULT_ROLE_ID"
+    )
+    vault_secret_id = getattr(args, "vault_secret_id", None) or os.environ.get(
+        "DARWIN_VAULT_SECRET_ID"
+    )
+    vault_k8s_role = getattr(args, "vault_k8s_role", None) or os.environ.get(
+        "DARWIN_VAULT_K8S_ROLE"
+    )
+    vault_k8s_jwt_path = (
+        getattr(args, "vault_k8s_jwt_path", None)
+        or "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    )
+    # Ergonomics: if the operator only supplied AppRole / k8s creds (no
+    # explicit --vault-auth), pick the matching method automatically.
+    if vault_auth == "token":
+        if vault_role_id and vault_secret_id:
+            vault_auth = "approle"
+        elif vault_k8s_role:
+            vault_auth = "kubernetes"
+    vault_has_auth = (
+        (vault_auth == "token" and bool(vault_token))
+        or (vault_auth == "approle" and bool(vault_role_id and vault_secret_id))
+        or (vault_auth == "kubernetes" and bool(vault_k8s_role))
+    )
+    if vault_url and vault_has_auth:
         mount = args.vault_mount or "secret"
-        def _vault_factory(*, _url=vault_url, _tok=vault_token, _mnt=mount):
+
+        def _vault_factory(
+            *, _url=vault_url, _tok=vault_token, _mnt=mount, _auth=vault_auth,
+            _rid=vault_role_id, _sid=vault_secret_id, _krole=vault_k8s_role,
+            _kjwt=vault_k8s_jwt_path,
+        ):
             from .adapters.hvac_vault import HvacVaultClient
             from .adapters.vault_backend import RealVaultBackend
             try:
@@ -364,7 +395,11 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                     "Real vault requires the [hvac] extra: "
                     "pip install 'darwin-dna[hvac]'"
                 ) from exc
-            client = HvacVaultClient(url=_url, token=_tok, mount_point=_mnt)
+            client = HvacVaultClient(
+                url=_url, token=_tok, mount_point=_mnt, auth_method=_auth,
+                role_id=_rid, secret_id=_sid, k8s_role=_krole,
+                k8s_jwt_path=_kjwt,
+            )
             return RealVaultBackend(client=client)
         factories["vault_factory"] = _vault_factory
 
@@ -858,12 +893,69 @@ def _build_notification_sink(args: argparse.Namespace):
     if webhook_url:
         from .observability.sinks import GenericWebhookNotificationSink
         sinks.append(GenericWebhookNotificationSink(url=webhook_url))
+    webpush_sink = _build_webpush_sink(args)
+    if webpush_sink is not None:
+        sinks.append(webpush_sink)
     if not sinks:
         return None
     if len(sinks) == 1:
         return sinks[0]
     from .observability.sinks import FanOutNotificationSink
     return FanOutNotificationSink(sinks)
+
+
+def _build_webpush_sink(args: argparse.Namespace):
+    """Construct a :class:`WebPushNotificationSink` when the operator has
+    opted in via ``--push-provider webpush`` and supplied a VAPID keypair.
+    Returns ``None`` otherwise. Refuses to start with half-configured
+    VAPID material — a silent no-op would be worse than crashing."""
+    if getattr(args, "push_provider", "none") != "webpush":
+        return None
+    private = getattr(args, "vapid_private_key", None) or os.environ.get(
+        "DARWIN_VAPID_PRIVATE_KEY"
+    )
+    subject = getattr(args, "vapid_subject", None) or os.environ.get(
+        "DARWIN_VAPID_SUBJECT"
+    )
+    if not private or not subject:
+        print(
+            "--push-provider webpush requires --vapid-private-key and "
+            "--vapid-subject (or DARWIN_VAPID_PRIVATE_KEY + "
+            "DARWIN_VAPID_SUBJECT). Refusing to start.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    # Allow `--vapid-private-key /path/to/key.pem` as a shorthand for
+    # reading the PEM from disk so secrets don't have to ride the command
+    # line. The discriminator is "starts with -" (PEM header) or not.
+    if not private.startswith("-----"):
+        try:
+            private = Path(private).expanduser().read_text()
+        except Exception as exc:
+            print(f"failed to read VAPID private key: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+    from .escalations.notification_webpush import (
+        PyWebPushTransport,
+        WebPushNotificationSink,
+    )
+    return WebPushNotificationSink(
+        vapid_private_key=private,
+        vapid_subject=subject,
+        transport=PyWebPushTransport(),
+    )
+
+
+def _resolve_vapid_public_key(args: argparse.Namespace) -> str | None:
+    """The public half of the VAPID keypair, surfaced to the PWA via
+    GET /me/push-vapid-public-key. Returned even when no sink is built,
+    since the dashboard may want to display "push not configured" with
+    a hint."""
+    if getattr(args, "push_provider", "none") != "webpush":
+        return None
+    return (
+        getattr(args, "vapid_public_key", None)
+        or os.environ.get("DARWIN_VAPID_PUBLIC_KEY")
+    )
 
 
 def _build_alert_sink(args: argparse.Namespace):
@@ -1060,6 +1152,7 @@ def _serve(args: argparse.Namespace) -> int:
         sanctions_screener=sanctions,
         notification_sink=notification_sink,
         alert_sink=alert_sink,
+        push_vapid_public_key=_resolve_vapid_public_key(args),
         k8s_driver=k8s_driver,
         **supervisor_kwargs,
         **(real_factories if k8s_driver is None else {}),
@@ -1326,6 +1419,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--vault-mount", default="secret", metavar="MOUNT",
         help="KV v2 mount point (default: secret).",
     )
+    vault_group.add_argument(
+        "--vault-auth", default="token",
+        choices=["token", "approle", "kubernetes"],
+        help="Vault auth method. 'token' is the dev path (--vault-token); "
+             "'approle' and 'kubernetes' are the production methods (leased "
+             "tokens, auto-renewed on expiry). Auto-selected when only "
+             "AppRole / k8s creds are supplied.",
+    )
+    vault_group.add_argument(
+        "--vault-role-id", default=None, metavar="ID",
+        help="AppRole role id (auth_method=approle). Env: DARWIN_VAULT_ROLE_ID",
+    )
+    vault_group.add_argument(
+        "--vault-secret-id", default=None, metavar="SECRET",
+        help="AppRole secret id (auth_method=approle). "
+             "Env: DARWIN_VAULT_SECRET_ID. Never log this value.",
+    )
+    vault_group.add_argument(
+        "--vault-k8s-role", default=None, metavar="ROLE",
+        help="Vault Kubernetes-auth role (auth_method=kubernetes). "
+             "Env: DARWIN_VAULT_K8S_ROLE",
+    )
+    vault_group.add_argument(
+        "--vault-k8s-jwt-path", default=None, metavar="PATH",
+        help="Service-account JWT path for k8s auth (default: the in-pod "
+             "/var/run/secrets/kubernetes.io/serviceaccount/token).",
+    )
 
     browser_group = serve.add_argument_group(
         "real browser (doc 15)",
@@ -1552,6 +1672,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--fcm-project-id", default=None, metavar="ID",
         help="Firebase project id — enables FCM push for escalation "
              "tickets. Env: DARWIN_FCM_PROJECT_ID",
+    )
+    phase2_group.add_argument(
+        "--push-provider", default="none",
+        choices=["none", "webpush"],
+        help="Mobile escalation companion push delivery (doc 22). The "
+             "PWA path uses W3C Web Push + VAPID; this flag opts in. "
+             "Default: none (escalations notify via the in-memory log "
+             "sink only).",
+    )
+    phase2_group.add_argument(
+        "--vapid-public-key", default=None, metavar="B64",
+        help="Base64url-encoded VAPID public key (P-256). The PWA reads "
+             "this from /me/push-vapid-public-key. Env: DARWIN_VAPID_PUBLIC_KEY",
+    )
+    phase2_group.add_argument(
+        "--vapid-private-key", default=None, metavar="PEM_OR_PATH",
+        help="VAPID private key — either a PEM-encoded EC private key "
+             "string or a file path. Env: DARWIN_VAPID_PRIVATE_KEY",
+    )
+    phase2_group.add_argument(
+        "--vapid-subject", default=None, metavar="URI",
+        help="VAPID subject (mailto: URL or https:// site URL) per RFC "
+             "8292. Required when --push-provider webpush is set. "
+             "Env: DARWIN_VAPID_SUBJECT",
     )
     phase2_group.add_argument(
         "--fiat-provider", default="none",

@@ -115,6 +115,21 @@ from ..tenancy.vault_admin import (
 )
 
 
+# -- small helpers --------------------------------------------------------
+def _push_endpoint_origin(endpoint: str) -> str:
+    """Strip the path from a Web Push subscription endpoint so the audit
+    log records only ``scheme://host``. The full endpoint plus VAPID key
+    lets anyone deliver to that browser; never log it raw."""
+    if not endpoint:
+        return ""
+    try:
+        scheme, rest = endpoint.split("://", 1)
+        host = rest.split("/", 1)[0]
+        return f"{scheme}://{host}"
+    except Exception:
+        return ""
+
+
 # -- errors ----------------------------------------------------------------
 class SupervisorError(Exception):
     """Base for supervisor-side rejections (unknown id, bad state)."""
@@ -376,6 +391,8 @@ class Supervisor:
         cross_pollination_per_scope_limit: int = 3,
         fiat_ramp: FiatRamp | None = None,
         freelancer_registry: Any | None = None,
+        push_subscription_store: Any | None = None,
+        push_vapid_public_key: str | None = None,
         sms_client: Any | None = None,
         resource_throttle_enabled: bool = True,
         persistence_path: str | Path | None = None,
@@ -735,6 +752,24 @@ class Supervisor:
             )
         else:
             self._freelancer_registry = freelancer_registry
+        # Web Push subscriptions for the PWA escalation companion (doc 22).
+        # Bound here so register / revoke can write through; the actual
+        # delivery happens via the notification sink wired into the router.
+        if push_subscription_store is None and self._persistence is not None:
+            self._push_subscription_store: Any | None = (
+                self._persistence.push_subscription_store()
+            )
+        else:
+            self._push_subscription_store = push_subscription_store
+        # VAPID public key the PWA reads at sign-up time to call
+        # ``pushManager.subscribe({ applicationServerKey: <this> })``.
+        # The private half lives only inside the notification sink.
+        self._push_vapid_public_key = push_vapid_public_key
+        # If the notification sink is a WebPushNotificationSink and we have
+        # a persistent push subscription store, hydrate the sink from disk
+        # (so registrations survive a restart) and install the purge
+        # callback (so a 410 deletes the row, not just the in-memory copy).
+        self._wire_push_persistence(notification_sink)
         # Twilio SMS inbox for inbound 2FA codes (doc 15). None = the
         # platform has no shared phone number; accounts.manager escalates
         # every code to the owner instead of the platform auto-answering.
@@ -4370,6 +4405,168 @@ class Supervisor:
                 owner_subject=owner_subject,
             )
         ]
+
+    # -- push subscriptions (doc 22 §"Mobile (escalation push)") -------------
+    def register_push_subscription(
+        self,
+        *,
+        owner_subject: str,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        user_agent: str = "",
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Persist a Web Push subscription for the owner and tell the live
+        notification sink about it. The dashboard / PWA calls this when the
+        browser hands back a fresh subscription from ``PushManager.subscribe``.
+        Idempotent on (owner, endpoint) — re-registering replaces the keys
+        the browser may have rotated."""
+        if self._push_subscription_store is None:
+            raise SupervisorError("push subscription store is not configured")
+        if not endpoint or not p256dh or not auth:
+            raise SupervisorError(
+                "endpoint, p256dh, and auth are required",
+            )
+        try:
+            self._push_subscription_store.register(
+                owner_subject=owner_subject,
+                endpoint=endpoint,
+                p256dh=p256dh,
+                auth=auth,
+                user_agent=user_agent,
+            )
+        except Exception as exc:
+            raise SupervisorError(
+                f"push subscription store refused: {exc}",
+            ) from exc
+        # If the live notification sink is the WebPush one, push the new
+        # subscription in so the next ticket fans out to this device
+        # immediately — no restart needed.
+        sink = getattr(self._router, "sink", None)
+        register_fn = getattr(sink, "register_subscription", None)
+        if callable(register_fn):
+            try:
+                register_fn(
+                    owner_subject=owner_subject,
+                    endpoint=endpoint,
+                    p256dh=p256dh,
+                    auth=auth,
+                    user_agent=user_agent,
+                )
+            except Exception:
+                # The live sink rejecting must not invalidate the persisted
+                # row — a restart will re-hydrate from disk.
+                pass
+        self._audit.record(
+            actor=actor,
+            action="register_push_subscription",
+            darwin_id=None,
+            metadata={
+                "owner_subject": owner_subject,
+                # endpoint is sensitive (anyone with it + the VAPID key can
+                # deliver), so we only log the origin.
+                "endpoint_origin": _push_endpoint_origin(endpoint),
+                "user_agent": user_agent,
+            },
+        )
+        return {
+            "owner_subject": owner_subject,
+            "endpoint_origin": _push_endpoint_origin(endpoint),
+            "registered": True,
+        }
+
+    def revoke_push_subscription(
+        self,
+        *,
+        owner_subject: str,
+        endpoint: str,
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Drop a push subscription from both the persistent store and the
+        live sink. Idempotent: returns ``{"revoked": False}`` if the row
+        wasn't there."""
+        if self._push_subscription_store is None:
+            raise SupervisorError("push subscription store is not configured")
+        removed = bool(self._push_subscription_store.revoke(
+            owner_subject=owner_subject,
+            endpoint=endpoint,
+        ))
+        sink = getattr(self._router, "sink", None)
+        unregister_fn = getattr(sink, "unregister_subscription", None)
+        if callable(unregister_fn):
+            try:
+                unregister_fn(
+                    owner_subject=owner_subject,
+                    endpoint=endpoint,
+                )
+            except Exception:
+                pass
+        if removed:
+            self._audit.record(
+                actor=actor,
+                action="revoke_push_subscription",
+                darwin_id=None,
+                metadata={
+                    "owner_subject": owner_subject,
+                    "endpoint_origin": _push_endpoint_origin(endpoint),
+                },
+            )
+        return {"revoked": removed}
+
+    def push_vapid_public_key(self) -> str | None:
+        """The base64url-encoded VAPID public key (P-256 uncompressed), or
+        None if the platform isn't configured for Web Push. The PWA reads
+        this once at sign-up time to subscribe with the right
+        ``applicationServerKey``."""
+        return self._push_vapid_public_key
+
+    def _wire_push_persistence(self, sink: Any) -> None:
+        """Hook the persistent push subscription store up to the live
+        WebPushNotificationSink (if both are present). Called at the tail
+        of ``__init__`` once both objects exist. No-op when the sink isn't
+        a Web Push one or there's no store."""
+        store = self._push_subscription_store
+        if store is None or sink is None:
+            return
+        # Duck-typed — avoid importing the concrete class to keep the
+        # supervisor independent of the [webpush] optional extra.
+        load = getattr(store, "load_into_sink", None)
+        set_purge = getattr(sink, "set_subscription_purge", None)
+        if not (callable(load) and callable(set_purge)):
+            return
+        try:
+            load(sink)
+        except Exception:
+            # A corrupt row in the store must not crash boot; the sink is
+            # still usable, just empty.
+            pass
+        try:
+            set_purge(
+                lambda owner_subject, endpoint: store.revoke(
+                    owner_subject=owner_subject, endpoint=endpoint,
+                )
+            )
+        except Exception:
+            pass
+
+    def list_push_subscriptions(
+        self, *, owner_subject: str,
+    ) -> list[dict[str, Any]]:
+        """Return the owner's subscriptions with sensitive fields redacted
+        (endpoint origin only; never the full path or the keys)."""
+        if self._push_subscription_store is None:
+            return []
+        out = []
+        for row in self._push_subscription_store.list(
+            owner_subject=owner_subject,
+        ):
+            out.append({
+                "endpoint_origin": _push_endpoint_origin(row["endpoint"]),
+                "user_agent": row.get("user_agent", ""),
+                "registered_at": row.get("registered_at", 0.0),
+            })
+        return out
 
     async def retry_omnibus_fund(
         self,

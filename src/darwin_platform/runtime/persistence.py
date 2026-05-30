@@ -233,6 +233,23 @@ CREATE TABLE IF NOT EXISTS freelancer_registry (
     PRIMARY KEY (owner_subject, freelancer_id)
 );
 
+-- Web Push subscriptions for the PWA escalation companion (doc 22). One
+-- row per (owner_subject, endpoint); the keys (p256dh + auth) are needed
+-- to ECE-encrypt the payload per RFC 8188. Indexed by owner so the
+-- WebPushNotificationSink can fan out a single ticket to every device
+-- the owner has signed in on.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    owner_subject     TEXT     NOT NULL,
+    endpoint          TEXT     NOT NULL,
+    p256dh            TEXT     NOT NULL,
+    auth              TEXT     NOT NULL,
+    user_agent        TEXT     NOT NULL DEFAULT '',
+    registered_at     {real}   NOT NULL,
+    PRIMARY KEY (owner_subject, endpoint)
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_owner_idx
+    ON push_subscriptions(owner_subject);
+
 -- Platform omnibus wallet (doc 22). The derived state (per-user credit
 -- balances + lifetime totals) is snapshotted in a single row so it
 -- survives a supervisor restart; the append-only movement log keeps the
@@ -323,7 +340,7 @@ CREATE TABLE IF NOT EXISTS processed_webhook_events (
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 10
+CURRENT_SCHEMA_VERSION: int = 11
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -682,6 +699,12 @@ class PersistenceStore:
         """Owner-scoped registry of verified fiat-payout destinations.
         Wired into darwin_fiat_payout as the KYC gate."""
         return PersistentFreelancerRegistry(self._backend, clock=self._clock)
+
+    def push_subscription_store(self) -> "PersistentPushSubscriptionStore":
+        """Per-owner Web Push subscriptions registered by the PWA. The
+        :class:`WebPushNotificationSink` is hydrated from this on supervisor
+        boot and writes through on every register / revoke / 410-purge."""
+        return PersistentPushSubscriptionStore(self._backend, clock=self._clock)
 
     def lifecycle_store(self) -> "PersistentLifecycleStore":
         return PersistentLifecycleStore(self._backend)
@@ -1280,6 +1303,123 @@ class PersistentFreelancerRegistry:
             ).fetchone()
             return row is None
         return int(rowcount) > 0
+
+
+# -- push subscriptions (doc 22 §"Mobile (escalation push)") --------------
+class PersistentPushSubscriptionStore:
+    """SQL-backed store for W3C Push API subscriptions registered by the
+    PWA. The :class:`WebPushNotificationSink` is hydrated from this on
+    supervisor boot via :meth:`load_into_sink` and the route handlers
+    write through every register / revoke. 410/404 purges from the sink
+    are persisted via the ``subscription_purge`` callback so a stale
+    subscription doesn't resurrect on a restart.
+
+    The schema lives in :data:`_SCHEMA` (table ``push_subscriptions``,
+    primary key ``(owner_subject, endpoint)``)."""
+
+    def __init__(self, backend: _Backend, *, clock=time.time) -> None:
+        self._backend = backend
+        self._clock = clock
+
+    def register(
+        self,
+        *,
+        owner_subject: str,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        user_agent: str = "",
+    ) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO push_subscriptions"
+                "(owner_subject, endpoint, p256dh, auth, user_agent, "
+                "registered_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (owner_subject, endpoint) DO UPDATE SET "
+                "p256dh = excluded.p256dh, "
+                "auth = excluded.auth, "
+                "user_agent = excluded.user_agent, "
+                "registered_at = excluded.registered_at",
+                (
+                    owner_subject, endpoint, p256dh, auth, user_agent,
+                    float(self._clock()),
+                ),
+            )
+
+    def revoke(self, *, owner_subject: str, endpoint: str) -> bool:
+        with self._backend:
+            cursor = self._backend.execute(
+                "DELETE FROM push_subscriptions "
+                "WHERE owner_subject = ? AND endpoint = ?",
+                (owner_subject, endpoint),
+            )
+        rowcount = getattr(cursor, "rowcount", None)
+        if rowcount is None:
+            row = self._backend.execute(
+                "SELECT 1 FROM push_subscriptions "
+                "WHERE owner_subject = ? AND endpoint = ?",
+                (owner_subject, endpoint),
+            ).fetchone()
+            return row is None
+        return int(rowcount) > 0
+
+    def list(self, *, owner_subject: str) -> list[dict[str, Any]]:
+        rows = self._backend.execute(
+            "SELECT endpoint, p256dh, auth, user_agent, registered_at "
+            "FROM push_subscriptions WHERE owner_subject = ? "
+            "ORDER BY registered_at DESC",
+            (owner_subject,),
+        ).fetchall()
+        return [
+            {
+                "endpoint": r["endpoint"],
+                "p256dh": r["p256dh"],
+                "auth": r["auth"],
+                "user_agent": r["user_agent"] or "",
+                "registered_at": float(r["registered_at"]),
+            }
+            for r in rows
+        ]
+
+    def all(self) -> list[tuple[str, dict[str, Any]]]:
+        """For supervisor boot — every subscription across all owners,
+        each paired with its owner_subject. Order is unspecified."""
+        rows = self._backend.execute(
+            "SELECT owner_subject, endpoint, p256dh, auth, user_agent, "
+            "registered_at FROM push_subscriptions"
+        ).fetchall()
+        out: list[tuple[str, dict[str, Any]]] = []
+        for r in rows:
+            out.append((
+                r["owner_subject"],
+                {
+                    "endpoint": r["endpoint"],
+                    "p256dh": r["p256dh"],
+                    "auth": r["auth"],
+                    "user_agent": r["user_agent"] or "",
+                    "registered_at": float(r["registered_at"]),
+                },
+            ))
+        return out
+
+    def load_into_sink(self, sink: Any) -> None:
+        """Hydrate a :class:`WebPushNotificationSink` from persisted rows.
+        Called once on supervisor boot."""
+        from ..escalations.notification_webpush import PushSubscription
+        items = []
+        for owner_subject, row in self.all():
+            items.append((
+                owner_subject,
+                PushSubscription(
+                    endpoint=row["endpoint"],
+                    p256dh=row["p256dh"],
+                    auth=row["auth"],
+                    registered_at=row["registered_at"],
+                    user_agent=row["user_agent"],
+                ),
+            ))
+        sink.load_subscriptions(items)
 
 
 # -- escalation router ----------------------------------------------------
@@ -2253,6 +2393,12 @@ _MIGRATIONS: dict[int, Any] = {
     # 4: no-op (darwin_preapprovals table covered by schema).
     # 5: no-op (freelancer_registry table covered by schema).
     6: lambda backend: _migrate_v6_preapproval_use_counter(backend),
+    # 7-10: no-op slots reserved for the omnibus / harvest / throttle /
+    # signing-key migrations the schema already covers with CREATE TABLE
+    # IF NOT EXISTS.
+    # 11: push_subscriptions table — covered by CREATE TABLE IF NOT EXISTS,
+    # so no ALTER needed; the bump just ensures opened DBs from older code
+    # get the version row updated.
 }
 
 

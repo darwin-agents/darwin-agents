@@ -93,6 +93,19 @@ class _Server:
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "_Server":
         env = os.environ.copy()
+        # Hermetic: ``import litellm`` runs dotenv.load_dotenv() in this
+        # process, leaking the repo .env into os.environ — which the
+        # subprocess would inherit and use to wire REAL adapters (a real CDP
+        # wallet, real RPC, etc.), breaking these fakes-only assertions and
+        # making spawn hit the network. Strip every provider var so the e2e
+        # serve runs on fakes; a test that wants a real adapter passes its
+        # flag explicitly via extra_args.
+        for key in list(env):
+            if key.startswith((
+                "DARWIN_", "CDP_", "BROWSERBASE", "BROWSER_USE", "E2B_",
+                "STRIPE_", "MOONPAY_", "ONFIDO_", "TWILIO_", "CLERK_", "OTEL_",
+            )):
+                env.pop(key, None)
         # Belt-and-suspenders: the package is installed editable in the
         # test venv, but adding src/ to PYTHONPATH makes the test work on
         # a bare checkout too.

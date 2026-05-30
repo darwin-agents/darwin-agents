@@ -3,8 +3,9 @@
 :class:`EscalationRouter` is the platform-side ledger of every ticket
 the genome posts to its inbox. :class:`NotificationSink` is the
 fan-out Protocol; the default :class:`LogNotificationSink` records
-calls for tests. :class:`FCMNotificationSink` is the Phase-2 mobile
-push delivery.
+calls for tests. The mobile escalation companion (doc 22) ships as a PWA
+and uses :class:`WebPushNotificationSink`; :class:`FCMNotificationSink`
+remains available for deployers that want native FCM/APNs.
 """
 
 from __future__ import annotations
@@ -24,6 +25,13 @@ from .notification_fcm import (
     StubFCMTokenProvider,
     StubFCMTransport,
 )
+from .notification_webpush import (
+    PushSubscription,
+    PyWebPushTransport,
+    WebPushDeliveryRecord,
+    WebPushNotificationSink,
+    WebPushTransport,
+)
 
 __all__ = [
     "EscalationRouter",
@@ -33,8 +41,13 @@ __all__ = [
     "FCMTransport",
     "LogNotificationSink",
     "NotificationSink",
+    "PushSubscription",
+    "PyWebPushTransport",
     "RoutedTicket",
     "StubFCMTokenProvider",
     "StubFCMTransport",
     "TicketStatus",
+    "WebPushDeliveryRecord",
+    "WebPushNotificationSink",
+    "WebPushTransport",
 ]

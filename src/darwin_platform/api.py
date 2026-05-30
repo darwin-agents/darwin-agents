@@ -153,6 +153,25 @@ class DarwinFiatRefundRequest(BaseModel):
     reason: str = "fiat_payout_leg2_failed"
 
 
+class PushSubscriptionRequest(BaseModel):
+    """A W3C `PushSubscription` the PWA hands back after
+    :meth:`PushManager.subscribe`. ``endpoint`` + ``keys.{p256dh,auth}``
+    are everything the server needs to deliver a VAPID-signed, ECE-
+    encrypted push to the registering browser."""
+
+    endpoint: str = Field(min_length=1)
+    p256dh: str = Field(min_length=1)
+    auth: str = Field(min_length=1)
+    user_agent: str = ""
+
+
+class RevokePushSubscriptionRequest(BaseModel):
+    """Owner-driven revoke. We match by endpoint because that's the
+    stable identity the browser hands us; the keys can rotate."""
+
+    endpoint: str = Field(min_length=1)
+
+
 class RetryOmnibusFundRequest(BaseModel):
     """Operator retry of a fund_child that was skipped at spawn time
     (chain hiccup, transient outage)."""
@@ -1295,6 +1314,72 @@ def build_app(
             return _sup(request).revoke_freelancer(
                 owner_subject=subject,
                 freelancer_id=freelancer_id,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    # -- /me/push-subscriptions — Web Push for the PWA (doc 22) ------------
+    # Owner self-serve only; an owner cannot reach another user's devices.
+    # The endpoint is sensitive (anyone with it + the VAPID key can deliver
+    # to that browser), so list responses redact it down to the origin and
+    # the audit log never sees the full URL.
+    @app.get("/me/push-vapid-public-key")
+    async def me_push_vapid_public_key(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        key = _sup(request).push_vapid_public_key()
+        if not key:
+            # 503 — the platform was started without Web Push configured.
+            # 404 would imply "no such resource" which is misleading here.
+            raise HTTPException(503, "web push is not configured")
+        return {"public_key": key}
+
+    @app.post("/me/push-subscriptions", status_code=201)
+    async def me_register_push_subscription(
+        request: Request,
+        req: PushSubscriptionRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, OWNER)
+        subject = ctx.subject or "anonymous"
+        try:
+            return _sup(request).register_push_subscription(
+                owner_subject=subject,
+                endpoint=req.endpoint,
+                p256dh=req.p256dh,
+                auth=req.auth,
+                user_agent=req.user_agent,
+                actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/me/push-subscriptions")
+    async def me_list_push_subscriptions(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> list[dict[str, Any]]:
+        _require_scope(ctx, OWNER)
+        subject = ctx.subject or "anonymous"
+        return _sup(request).list_push_subscriptions(owner_subject=subject)
+
+    @app.delete("/me/push-subscriptions")
+    async def me_revoke_push_subscription(
+        request: Request,
+        req: RevokePushSubscriptionRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        # DELETE with a body (the endpoint URL) is the cleanest API here —
+        # the endpoint is too long for a path param on every browser.
+        _require_scope(ctx, OWNER)
+        subject = ctx.subject or "anonymous"
+        try:
+            return _sup(request).revoke_push_subscription(
+                owner_subject=subject,
+                endpoint=req.endpoint,
                 actor=_actor(ctx),
             )
         except SupervisorError as exc:
