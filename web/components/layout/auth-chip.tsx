@@ -23,7 +23,7 @@ function ClerkChip() {
     "Signed in";
   return (
     <div className="flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5">
-      <UserButton afterSignOutUrl="/sign-in" />
+      <UserButton />
       <span className="truncate text-xs text-[var(--color-muted-foreground)]">
         {label}
       </span>

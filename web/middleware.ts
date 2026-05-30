@@ -2,15 +2,15 @@
  * Clerk auth middleware.
  *
  * Two-mode by build-time env:
- * - Clerk enabled  → `clerkMiddleware()` protects every dashboard route and
- *   redirects unauthenticated requests to `/sign-in`.
+ * - Clerk enabled  → `clerkMiddleware()` redirects unauthenticated requests
+ *   to `/sign-in`. We use the explicit `redirectToSignIn()` over
+ *   `auth.protect()` so the user lands on a sign-in page rather than a
+ *   404 (Clerk 7's protect default is "hide existence").
  * - Clerk disabled → no-op pass-through so the dev-token paste flow keeps
  *   working (used by Playwright + the legacy `--auth-tokens` boot).
- *
- * Public routes (always allowed): /sign-in/*, /sign-up/*, Next.js assets.
  */
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-import type { NextRequest } from "next/server";
+import type { NextFetchEvent, NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { CLERK_ENABLED } from "@/lib/auth-mode";
 
@@ -21,12 +21,13 @@ const isPublic = createRouteMatcher([
 
 const clerkHandler = clerkMiddleware(async (auth, req) => {
   if (isPublic(req)) return;
-  await auth.protect();
+  const { userId, redirectToSignIn } = await auth();
+  if (!userId) return redirectToSignIn();
 });
 
-export default function middleware(req: NextRequest) {
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
   if (!CLERK_ENABLED) return NextResponse.next();
-  return clerkHandler(req, {} as never);
+  return clerkHandler(req, event);
 }
 
 export const config = {
