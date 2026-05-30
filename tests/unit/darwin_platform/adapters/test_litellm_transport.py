@@ -348,6 +348,111 @@ def test_cost_extraction_returns_zero_when_unknown():
     assert out["cost_usdc"] == 0.0
 
 
+# -- async-isolated provider call (BUG-drive-loop-tick1-freeze) -----------
+class _ACompletionStub:
+    """Async test double for ``litellm.acompletion``. The real gateway is
+    driven through the async client on an isolated worker-loop; this lets us
+    exercise that path without litellm or the network."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.thread_names: list[str] = []
+        self.responses: dict[str, object] = {}
+        self.default: object = _FakeResponse("ok", cost=0.001)
+
+    def set(self, model: str, response: object) -> None:
+        self.responses[model] = response
+
+    async def __call__(self, **kwargs):
+        import threading
+
+        self.calls.append(kwargs)
+        self.thread_names.append(threading.current_thread().name)
+        resp = self.responses.get(kwargs["model"], self.default)
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+
+def _make_async_transport(
+    wallet: FakeWallet, astub: _ACompletionStub
+) -> LiteLLMTransport:
+    # No sync ``litellm_completion`` injected → the async path is used and the
+    # sync completion is the loud guard (must never be reached).
+    return LiteLLMTransport(
+        wallet=wallet,
+        tier_mappings={
+            "reasoning": TierMapping(models=("provider/sonnet", "provider/backup")),
+        },
+        litellm_acompletion=astub,
+        litellm_completion_cost=lambda completion_response=None: 0.0,
+    )
+
+
+def test_async_path_runs_off_the_calling_loop_and_returns():
+    """The real gateway path drives ``acompletion`` on a dedicated worker
+    thread (its own event loop), never the calling thread — that is what
+    keeps it from re-entering the supervisor's running loop."""
+    import threading
+
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    astub = _ACompletionStub()
+    astub.set("provider/sonnet", _FakeResponse("planned", cost=0.004))
+    t = _make_async_transport(w, astub)
+
+    out = t.complete("reasoning", {"task": "plan", "strategy_prior": "x"})
+    assert out["text"] == "planned"
+    assert out["cost_usdc"] == pytest.approx(0.004)
+    assert w.balance_usdc() == pytest.approx(10.0 - 0.004 * 1.10)
+    # The provider call ran on a worker thread, not this (main) one.
+    assert astub.thread_names and astub.thread_names[0] != threading.current_thread().name
+
+
+def test_async_path_runs_inside_a_running_event_loop():
+    """The whole point: calling ``complete`` from *inside* a live asyncio
+    loop must still work (this is the supervisor's situation) — the worker
+    loop is independent, so no re-entrancy is required."""
+    import asyncio
+
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    astub = _ACompletionStub()
+    astub.set("provider/sonnet", _FakeResponse("ok-in-loop", cost=0.001))
+    t = _make_async_transport(w, astub)
+
+    async def driver():
+        # Run the blocking sync ``complete`` off the loop thread, exactly as
+        # the supervisor's sync node path does NOT — but this proves the
+        # worker-loop call completes and returns under a running loop.
+        return await asyncio.to_thread(
+            t.complete, "reasoning", {"task": "plan"}
+        )
+
+    out = asyncio.run(driver())
+    assert out["text"] == "ok-in-loop"
+
+
+def test_async_path_provider_error_falls_back_to_next_model():
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    astub = _ACompletionStub()
+    astub.set("provider/sonnet", RuntimeError("rate limited"))
+    astub.set("provider/backup", _FakeResponse("backup ok", cost=0.003))
+    t = _make_async_transport(w, astub)
+
+    out = t.complete("reasoning", {"task": "plan"})
+    assert out["text"] == "backup ok"
+    assert [c["model"] for c in astub.calls] == ["provider/sonnet", "provider/backup"]
+
+
+def test_sync_completion_guard_raises_when_only_async_injected():
+    """When only the async path is wired, the sync completion is a loud
+    guard — a regression that re-introduces the sync call surfaces here
+    instead of silently re-entering the loop."""
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    t = _make_async_transport(w, _ACompletionStub())
+    with pytest.raises(LLMError, match="synchronous litellm.completion is unavailable"):
+        t._completion(model="x", messages=[])  # noqa: SLF001
+
+
 # -- LLMRouter wrapping ---------------------------------------------------
 def test_llm_router_accepts_litellm_transport():
     """The adapter must implement the Protocol the router runtime-checks."""
