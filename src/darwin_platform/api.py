@@ -165,11 +165,9 @@ class PushSubscriptionRequest(BaseModel):
     user_agent: str = ""
 
 
-class RevokePushSubscriptionRequest(BaseModel):
-    """Owner-driven revoke. We match by endpoint because that's the
-    stable identity the browser hands us; the keys can rotate."""
-
-    endpoint: str = Field(min_length=1)
+    # Owner-driven revoke uses ?endpoint=… on DELETE (proxies strip DELETE
+    # bodies often enough that the query form is more reliable). Kept as a
+    # comment for spec-by-grep — there's no body DTO for that route.
 
 
 class RetryOmnibusFundRequest(BaseModel):
@@ -1369,17 +1367,19 @@ def build_app(
     @app.delete("/me/push-subscriptions")
     async def me_revoke_push_subscription(
         request: Request,
-        req: RevokePushSubscriptionRequest,
+        endpoint: str = Query(..., min_length=1),
         ctx: AuthContext = Depends(get_auth),
     ) -> dict[str, Any]:
-        # DELETE with a body (the endpoint URL) is the cleanest API here —
-        # the endpoint is too long for a path param on every browser.
+        # DELETE-with-body works across most servers but enough proxies
+        # strip the body that a query param is more reliable. The endpoint
+        # URL is bounded (browsers cap it at a few hundred chars) so the
+        # ``?endpoint=…`` form fits comfortably.
         _require_scope(ctx, OWNER)
         subject = ctx.subject or "anonymous"
         try:
             return _sup(request).revoke_push_subscription(
                 owner_subject=subject,
-                endpoint=req.endpoint,
+                endpoint=endpoint,
                 actor=_actor(ctx),
             )
         except SupervisorError as exc:

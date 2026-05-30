@@ -114,10 +114,12 @@ async def test_register_list_revoke_round_trip(push_client):
     # The live sink was also told about the subscription.
     assert len(sink.subscriptions_for("anonymous")) == 1
 
-    # Revoke by endpoint.
-    r = await c.request("DELETE", "/me/push-subscriptions", json={
-        "endpoint": endpoint,
-    })
+    # Revoke by endpoint (DELETE with ?endpoint=… — proxies strip DELETE
+    # bodies often enough that we use a query param here).
+    r = await c.delete(
+        "/me/push-subscriptions",
+        params={"endpoint": endpoint},
+    )
     assert r.status_code == 200, r.text
     assert r.json() == {"revoked": True}
 

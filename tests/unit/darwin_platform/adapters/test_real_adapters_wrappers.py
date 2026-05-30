@@ -79,8 +79,11 @@ def test_hvac_get_fails_closed_on_backend_error():
 def test_hvac_requires_url_and_token_when_no_factory():
     from darwin_platform.adapters import HvacVaultClient
 
-    with pytest.raises(ValueError, match="url and token"):
+    # url is always required; token is required for the default token auth.
+    with pytest.raises(ValueError, match="url is required"):
         HvacVaultClient()
+    with pytest.raises(ValueError, match="token is required"):
+        HvacVaultClient(url="https://vault.example.com:8200")
 
 
 def test_hvac_swaps_in_for_RealVaultBackend():
