@@ -130,17 +130,55 @@ class LLMRouter:
         """Snapshot of installed throttles for ops/dashboards."""
         return {t.value: cap for t, cap in self._throttle.items()}
 
-    def complete(self, tier: Tier, request: dict[str, Any]) -> dict[str, Any]:
-        """Route one request at ``tier``. Enforces the cap, then delegates."""
+    def _check_cap(self, tier: Tier) -> None:
         self._roll_if_new_day()
         rem = self.remaining(tier)
         if rem is not None and rem <= 0:
             raise TierBudgetExceeded(
                 f"tier {tier.value} daily call cap exhausted; back off or tier-down"
             )
+
+    def complete(self, tier: Tier, request: dict[str, Any]) -> dict[str, Any]:
+        """Route one request at ``tier``. Enforces the cap, then delegates."""
+        self._check_cap(tier)
         try:
             resp = self._t.complete(tier.value, request)
         except Exception as exc:
             raise LLMError(f"transport failed for tier {tier.value}: {exc}") from exc
         self._calls[tier] += 1
         return resp
+
+    async def acomplete(
+        self, tier: Tier, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Native-async route. Used by the genome's nodes/neurons in live
+        operation so an LLM call never blocks the event loop the supervisor
+        shares across Darwins (BUG-drive-loop-tick1-freeze). Same cap
+        accounting as :meth:`complete`. Delegates to the transport's
+        ``acomplete`` when it has one (the real gateway); otherwise falls back
+        to the synchronous ``complete`` — fine for the deterministic fake,
+        which is instant and never touches the loop or network."""
+        self._check_cap(tier)
+        try:
+            atransport = getattr(self._t, "acomplete", None)
+            if atransport is not None:
+                resp = await atransport(tier.value, request)
+            else:
+                resp = self._t.complete(tier.value, request)
+        except Exception as exc:
+            raise LLMError(f"transport failed for tier {tier.value}: {exc}") from exc
+        self._calls[tier] += 1
+        return resp
+
+
+async def acomplete(llm: Any, tier: Tier, request: dict[str, Any]) -> dict[str, Any]:
+    """Call the non-blocking ``acomplete`` when the LLM object exposes it
+    (the production :class:`LLMRouter`), else fall back to the synchronous
+    ``complete``. Genome nodes and neurons route through this so they stay
+    non-blocking on the real stack without forcing every test double / fake
+    router to grow an async method. The fallback call is synchronous and
+    returns immediately for fakes, so awaiting it is a no-op cost."""
+    afn = getattr(llm, "acomplete", None)
+    if afn is not None:
+        return await afn(tier, request)
+    return llm.complete(tier, request)
