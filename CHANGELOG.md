@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat(platform): add Web Push escalation notifications and subscription API
+- feat(infra): add local dev stack with make up/down targets
+- feat(infra): add darwin-platform supervisor Kubernetes Terraform module
+- feat(infra): add LiteLLM proxy Terraform module
+- feat(infra): add HashiCorp Vault dev-mode Terraform module
+- feat(infra): add CloudNativePG Postgres Terraform module
+- feat(infra): add kind cluster Terraform module
+- feat(web): add PWA escalation companion with Web Push opt-in page
 - feat(platform): add AppRole and Kubernetes auth to HVAC Vault client
 - test(web): add Playwright E2E suite, data browser route, and CI job
 - feat(platform): add Stripe webhook deposits and gated manual omnibus credit
