@@ -552,6 +552,14 @@ class Supervisor:
         # accept one so each call shows up on the operator audit log.
         self._kyc_service: KYCService | None = kyc_service
         self._omnibus_wallet: OmnibusWallet | None = omnibus_wallet
+        # Persist omnibus state (user credits + lifetime totals + ledger)
+        # so a restart doesn't reset every owner's credit to zero. Attach
+        # the persistent store when both are configured; it rehydrates the
+        # wallet from the DB and write-through on every subsequent movement.
+        if self._omnibus_wallet is not None and self._persistence is not None:
+            attach = getattr(self._omnibus_wallet, "attach_store", None)
+            if callable(attach):
+                attach(self._persistence.omnibus_store())
         self._namespace_provisioner: NamespaceProvisioner | None = (
             namespace_provisioner
         )

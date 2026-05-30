@@ -87,6 +87,21 @@ class OmnibusEntry:
             "metadata": dict(self.metadata),
         }
 
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> "OmnibusEntry":
+        """Rebuild an entry from its :meth:`to_json` form (used when a
+        persisted ledger is replayed into memory at boot)."""
+        return cls(
+            kind=OmnibusEntryKind(d["kind"]),
+            amount_usdc=float(d["amount_usdc"]),
+            counterparty=d["counterparty"],
+            actor=d["actor"],
+            ts=float(d["ts"]),
+            memo=d.get("memo", "") or "",
+            tx_hash=d.get("tx_hash", "") or "",
+            metadata=dict(d.get("metadata", {}) or {}),
+        )
+
 
 @runtime_checkable
 class OmnibusChainClient(Protocol):
@@ -201,6 +216,43 @@ class OmnibusWallet:
         self._lifetime_deposits = 0.0
         self._lifetime_withdrawals = 0.0
         self._lifetime_platform_revenue = 0.0
+        # Optional write-through persistence (set via ``attach_store``);
+        # None keeps the wallet purely in-memory (sim / dev / tests).
+        self._store: Any | None = None
+
+    # -- persistence -------------------------------------------------------
+    def attach_store(self, store: Any) -> None:
+        """Bind a persistence store and rehydrate from it. Loads the
+        snapshotted derived state (user credits + lifetime totals) and the
+        movement ledger, then records every future movement through the
+        store. Call once at supervisor boot; without it the wallet is
+        in-memory only (and credit resets on restart). The snapshot is
+        authoritative for derived state — the ledger is replayed only into
+        ``_ledger`` for history, never re-applied to balances."""
+        self._store = store
+        snap = store.load_state()
+        if snap is not None:
+            self._user_credits = {
+                k: float(v) for k, v in snap.get("user_credits", {}).items()
+            }
+            self._lifetime_deposits = float(snap.get("lifetime_deposits", 0.0))
+            self._lifetime_withdrawals = float(
+                snap.get("lifetime_withdrawals", 0.0)
+            )
+            self._lifetime_platform_revenue = float(
+                snap.get("lifetime_platform_revenue", 0.0)
+            )
+        self._ledger = [
+            OmnibusEntry.from_json(d) for d in store.load_entries()
+        ]
+
+    def _state_snapshot(self) -> dict[str, Any]:
+        return {
+            "user_credits": dict(self._user_credits),
+            "lifetime_deposits": self._lifetime_deposits,
+            "lifetime_withdrawals": self._lifetime_withdrawals,
+            "lifetime_platform_revenue": self._lifetime_platform_revenue,
+        }
 
     # -- read-side ---------------------------------------------------------
     def address(self) -> str:
@@ -233,7 +285,12 @@ class OmnibusWallet:
         amount = _require_positive(amount_usdc, "deposit amount")
         if not user_subject:
             raise OmnibusError("deposit requires user_subject")
-        entry = self._append(
+        # Mutate derived state BEFORE appending: ``_append`` snapshots the
+        # post-movement state to the store, so the credit + lifetime totals
+        # must already reflect this deposit.
+        self._user_credits[user_subject] = self.user_credit(user_subject) + amount
+        self._lifetime_deposits += amount
+        return self._append(
             OmnibusEntry(
                 kind=OmnibusEntryKind.DEPOSIT,
                 amount_usdc=amount, counterparty=user_subject,
@@ -241,9 +298,6 @@ class OmnibusWallet:
                 metadata={"source_ref": source_ref},
             )
         )
-        self._user_credits[user_subject] = self.user_credit(user_subject) + amount
-        self._lifetime_deposits += amount
-        return entry
 
     def fund_child(
         self, *, darwin_id: str, to_address: str, amount_usdc: float,
@@ -566,6 +620,14 @@ class OmnibusWallet:
 
     def _append(self, entry: OmnibusEntry) -> OmnibusEntry:
         self._ledger.append(entry)
+        if self._store is not None:
+            # Write-through: append the movement for history, then snapshot
+            # the (already-mutated) derived state. Every caller mutates
+            # credits/lifetime totals BEFORE _append, so the snapshot is
+            # current. Persistence failures must not corrupt in-memory
+            # state — surface them, don't half-apply.
+            self._store.append_entry(entry.to_json())
+            self._store.save_state(self._state_snapshot(), ts=self._clock())
         return entry
 
 

@@ -232,13 +232,40 @@ CREATE TABLE IF NOT EXISTS freelancer_registry (
     metadata_json     TEXT     NOT NULL DEFAULT '{{}}',
     PRIMARY KEY (owner_subject, freelancer_id)
 );
+
+-- Platform omnibus wallet (doc 22). The derived state (per-user credit
+-- balances + lifetime totals) is snapshotted in a single row so it
+-- survives a supervisor restart; the append-only movement log keeps the
+-- forensic history. The omnibus is platform-wide (not per-Darwin), so
+-- one state row suffices.
+CREATE TABLE IF NOT EXISTS omnibus_state (
+    id                         INTEGER PRIMARY KEY CHECK (id = 1),
+    user_credits               TEXT     NOT NULL DEFAULT '{{}}',
+    lifetime_deposits          {real}   NOT NULL DEFAULT 0,
+    lifetime_withdrawals       {real}   NOT NULL DEFAULT 0,
+    lifetime_platform_revenue  {real}   NOT NULL DEFAULT 0,
+    updated_ts                 {real}   NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS omnibus_entries (
+    seq           {auto_id_pk},
+    kind          TEXT     NOT NULL,
+    amount_usdc   {real}   NOT NULL,
+    counterparty  TEXT     NOT NULL,
+    actor         TEXT     NOT NULL,
+    ts            {real}   NOT NULL,
+    memo          TEXT     NOT NULL DEFAULT '',
+    tx_hash       TEXT     NOT NULL DEFAULT '',
+    metadata      TEXT     NOT NULL DEFAULT '{{}}'
+);
+CREATE INDEX IF NOT EXISTS omnibus_entries_ts_idx ON omnibus_entries(ts);
 """
 
 
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 6
+CURRENT_SCHEMA_VERSION: int = 7
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -600,6 +627,13 @@ class PersistenceStore:
 
     def lifecycle_store(self) -> "PersistentLifecycleStore":
         return PersistentLifecycleStore(self._backend)
+
+    def omnibus_store(self) -> "PersistentOmnibusStore":
+        """Persistence for the platform omnibus wallet. The OmnibusWallet
+        attaches this at boot to rehydrate user credit balances + lifetime
+        totals and to write through every subsequent movement, so credit
+        no longer evaporates on restart."""
+        return PersistentOmnibusStore(self._backend)
 
     def audit_sink_for(self, darwin_id: str) -> "PersistentDarwinAuditSink":
         """Per-Darwin audit sink. The genome's AuditLogger rebuilds its
@@ -1399,6 +1433,102 @@ class LifecycleRecord:
             "quarantine_reason": self.quarantine_reason,
             "quarantine_operator": self.quarantine_operator,
             "quarantine_applied_ts": self.quarantine_applied_ts,
+        }
+
+
+class PersistentOmnibusStore:
+    """SQL-backed persistence for the platform omnibus wallet.
+
+    The OmnibusWallet keeps its authoritative derived state (per-user credit
+    balances + lifetime deposit/withdrawal/revenue totals) in memory; this
+    store snapshots that state to a single ``omnibus_state`` row on every
+    movement and appends the movement to ``omnibus_entries`` for history.
+    On boot the wallet calls :meth:`load_state` / :meth:`load_entries` to
+    rehydrate, so user credit no longer resets to zero on a restart.
+
+    Deals only in plain JSON-able dicts — the OmnibusEntry <-> dict mapping
+    lives in the wallet, keeping this layer ignorant of the payments model."""
+
+    def __init__(self, backend: _Backend) -> None:
+        self._backend = backend
+
+    @staticmethod
+    def _get(row: Any, key: str, idx: int) -> Any:
+        return row[key] if isinstance(row, dict) else row[idx]
+
+    def append_entry(self, entry: dict) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO omnibus_entries"
+                "(kind, amount_usdc, counterparty, actor, ts, memo, "
+                "tx_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(entry.get("kind", "")),
+                    float(entry.get("amount_usdc", 0.0)),
+                    str(entry.get("counterparty", "")),
+                    str(entry.get("actor", "")),
+                    float(entry.get("ts", 0.0)),
+                    str(entry.get("memo", "") or ""),
+                    str(entry.get("tx_hash", "") or ""),
+                    json.dumps(entry.get("metadata", {})),
+                ),
+            )
+
+    def load_entries(self) -> list[dict]:
+        rows = self._backend.execute(
+            "SELECT kind, amount_usdc, counterparty, actor, ts, memo, "
+            "tx_hash, metadata FROM omnibus_entries ORDER BY seq ASC"
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            out.append({
+                "kind": self._get(r, "kind", 0),
+                "amount_usdc": float(self._get(r, "amount_usdc", 1)),
+                "counterparty": self._get(r, "counterparty", 2),
+                "actor": self._get(r, "actor", 3),
+                "ts": float(self._get(r, "ts", 4)),
+                "memo": self._get(r, "memo", 5) or "",
+                "tx_hash": self._get(r, "tx_hash", 6) or "",
+                "metadata": json.loads(self._get(r, "metadata", 7) or "{}"),
+            })
+        return out
+
+    def save_state(self, snapshot: dict, *, ts: float) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO omnibus_state"
+                "(id, user_credits, lifetime_deposits, lifetime_withdrawals, "
+                "lifetime_platform_revenue, updated_ts) "
+                "VALUES (1, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "user_credits = excluded.user_credits, "
+                "lifetime_deposits = excluded.lifetime_deposits, "
+                "lifetime_withdrawals = excluded.lifetime_withdrawals, "
+                "lifetime_platform_revenue = excluded.lifetime_platform_revenue, "
+                "updated_ts = excluded.updated_ts",
+                (
+                    json.dumps(snapshot.get("user_credits", {})),
+                    float(snapshot.get("lifetime_deposits", 0.0)),
+                    float(snapshot.get("lifetime_withdrawals", 0.0)),
+                    float(snapshot.get("lifetime_platform_revenue", 0.0)),
+                    float(ts),
+                ),
+            )
+
+    def load_state(self) -> dict | None:
+        row = self._backend.execute(
+            "SELECT user_credits, lifetime_deposits, lifetime_withdrawals, "
+            "lifetime_platform_revenue FROM omnibus_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "user_credits": json.loads(self._get(row, "user_credits", 0) or "{}"),
+            "lifetime_deposits": float(self._get(row, "lifetime_deposits", 1)),
+            "lifetime_withdrawals": float(self._get(row, "lifetime_withdrawals", 2)),
+            "lifetime_platform_revenue": float(
+                self._get(row, "lifetime_platform_revenue", 3)
+            ),
         }
 
 

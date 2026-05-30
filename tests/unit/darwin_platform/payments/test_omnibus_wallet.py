@@ -451,3 +451,65 @@ def test_refund_to_darwin_chain_failure_wraps_as_omnibus_error():
         w.refund_to_darwin(
             darwin_id="d", darwin_address="0xd", amount_usdc=10.0,
         )
+
+
+# -- persistence (doc 22 §HA): credit + lifetime + ledger survive restart ---
+
+def _persist_store(tmp_path):
+    """A real PersistenceStore on a temp SQLite file → its omnibus store."""
+    from darwin_platform.runtime.persistence import PersistenceStore
+
+    store = PersistenceStore(str(tmp_path / "omni.db"))
+    return store, store.omnibus_store()
+
+
+def test_omnibus_state_survives_a_restart(tmp_path):
+    # First "process": deposit then fund, leaving a partial credit balance.
+    _store1, omni1 = _persist_store(tmp_path)
+    w1 = OmnibusWallet(_Chain(), clock=_clock())
+    w1.attach_store(omni1)
+    w1.record_deposit(user_subject="u@x", amount_usdc=1.5, source_ref="stripe:1")
+    w1.fund_child(
+        darwin_id="d1", to_address="0xchild", amount_usdc=1.0, user_subject="u@x",
+    )
+    assert w1.user_credit("u@x") == pytest.approx(0.5)
+
+    # Second "process": brand-new store + wallet on the SAME file.
+    from darwin_platform.runtime.persistence import PersistenceStore
+
+    omni2 = PersistenceStore(str(tmp_path / "omni.db")).omnibus_store()
+    w2 = OmnibusWallet(_Chain(), clock=_clock())
+    w2.attach_store(omni2)
+    assert w2.user_credit("u@x") == pytest.approx(0.5)
+    assert w2.lifetime_totals()["deposits"] == pytest.approx(1.5)
+    # Ledger history is replayed for forensics (deposit + fund_child).
+    assert [e.kind for e in w2.ledger()] == [
+        OmnibusEntryKind.DEPOSIT, OmnibusEntryKind.FUND_CHILD,
+    ]
+
+
+def test_omnibus_withdraw_fee_revenue_persists(tmp_path):
+    _store, omni = _persist_store(tmp_path)
+    w = OmnibusWallet(_Chain(), clock=_clock())
+    w.attach_store(omni)
+    w.record_deposit(user_subject="u@x", amount_usdc=10.0, source_ref="s")
+    w.withdraw_to_user(
+        user_subject="u@x", amount_usdc=4.0, to_address="0xext", fee_usdc=1.0,
+    )
+    # Reload and confirm the fee carved into platform_revenue persisted.
+    from darwin_platform.runtime.persistence import PersistenceStore
+
+    w2 = OmnibusWallet(_Chain(), clock=_clock())
+    w2.attach_store(
+        PersistenceStore(str(tmp_path / "omni.db")).omnibus_store()
+    )
+    assert w2.user_credit("u@x") == pytest.approx(5.0)  # 10 - (4 + 1)
+    assert w2.lifetime_totals()["withdrawals"] == pytest.approx(4.0)
+    assert w2.lifetime_totals()["platform_revenue"] == pytest.approx(1.0)
+
+
+def test_omnibus_without_store_stays_in_memory():
+    # No attach_store → purely in-memory, no crash on movements.
+    w = OmnibusWallet(_Chain(), clock=_clock())
+    w.record_deposit(user_subject="u@x", amount_usdc=2.0, source_ref="s")
+    assert w.user_credit("u@x") == pytest.approx(2.0)
