@@ -23,19 +23,36 @@ module "cluster" {
   host_api_port = var.host_api_port
 }
 
+/**
+ * Provider configs use inline credentials from the kind module rather
+ * than `config_path = .kubeconfig`. Reason: with the file form,
+ * Terraform tries to evaluate provider config at plan time, before the
+ * cluster (and therefore the kubeconfig file) exists — leading to a
+ * "file doesn't exist" error on cold-start. Inline credentials are
+ * lazily evaluated and work on a fresh `terraform apply`.
+ */
 provider "helm" {
   kubernetes {
-    config_path = module.cluster.kubeconfig_path
+    host                   = module.cluster.endpoint
+    cluster_ca_certificate = module.cluster.cluster_ca_certificate
+    client_certificate     = module.cluster.client_certificate
+    client_key             = module.cluster.client_key
   }
 }
 
 provider "kubernetes" {
-  config_path = module.cluster.kubeconfig_path
+  host                   = module.cluster.endpoint
+  cluster_ca_certificate = module.cluster.cluster_ca_certificate
+  client_certificate     = module.cluster.client_certificate
+  client_key             = module.cluster.client_key
 }
 
 provider "kubectl" {
-  config_path      = module.cluster.kubeconfig_path
-  load_config_file = true
+  host                   = module.cluster.endpoint
+  cluster_ca_certificate = module.cluster.cluster_ca_certificate
+  client_certificate     = module.cluster.client_certificate
+  client_key             = module.cluster.client_key
+  load_config_file       = false
 }
 
 module "cnpg" {
