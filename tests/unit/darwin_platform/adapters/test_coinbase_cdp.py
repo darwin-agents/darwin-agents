@@ -15,6 +15,8 @@ import pytest
 from darwin_platform.adapters.coinbase_cdp import (
     CdpChainClient,
     _AsyncBridge,
+    _CDP_NAME_RE,
+    _coerce_cdp_account_name,
     build_cdp_chain_client,
 )
 from darwin_platform.adapters.wallet import ChainClient
@@ -144,3 +146,54 @@ def test_build_cdp_without_the_sdk_gives_a_clear_hint():
         pytest.skip("cdp-sdk is installed — the ImportError path is moot")
     with pytest.raises(ImportError, match="cdp"):
         build_cdp_chain_client(api_key_id="key-id", api_key_secret="secret")
+
+
+# -- CDP account-name coercion ---------------------------------------------
+# CDP names must match ^[A-Za-z0-9][A-Za-z0-9-]{0,34}[A-Za-z0-9]$ (2-36 chars,
+# alphanumeric ends). ``darwin-<uuid>`` (43 chars) overflows it.
+
+_DARWIN_UUID_NAME = "darwin-019e79b4-1881-7e7d-9647-4d61f486f29c"
+
+
+def test_coerce_passes_through_an_already_valid_name():
+    # Idempotent: an in-spec name is returned byte-for-byte so existing CDP
+    # accounts keep resolving via get_or_create_account.
+    assert _coerce_cdp_account_name("darwin-wallet") == "darwin-wallet"
+
+
+def test_coerce_is_a_no_op_on_its_own_output():
+    once = _coerce_cdp_account_name(_DARWIN_UUID_NAME)
+    assert _coerce_cdp_account_name(once) == once
+
+
+def test_coerce_brings_the_darwin_uuid_name_into_spec():
+    out = _coerce_cdp_account_name(_DARWIN_UUID_NAME)
+    assert _CDP_NAME_RE.match(out)
+    assert 2 <= len(out) <= 36
+
+
+def test_coerce_is_deterministic():
+    assert _coerce_cdp_account_name(_DARWIN_UUID_NAME) == _coerce_cdp_account_name(
+        _DARWIN_UUID_NAME
+    )
+
+
+def test_coerce_keeps_distinct_darwins_distinct():
+    # Two ids sharing the 23-char alphanumeric prefix must still map to
+    # different CDP names — the digest is taken over the full original name.
+    a = _coerce_cdp_account_name("darwin-019e79b4-1881-7e7d-9647-000000000000")
+    b = _coerce_cdp_account_name("darwin-019e79b4-1881-7e7d-9647-ffffffffffff")
+    assert a != b
+    assert _CDP_NAME_RE.match(a) and _CDP_NAME_RE.match(b)
+
+
+@pytest.mark.parametrize("name", [
+    _DARWIN_UUID_NAME,
+    "darwin-" + "0" * 40,
+    "a" * 50,
+    "darwin-wallet",
+    "ab",
+    "darwin_wallet#1!",
+])
+def test_coerce_always_yields_a_cdp_valid_name(name):
+    assert _CDP_NAME_RE.match(_coerce_cdp_account_name(name))

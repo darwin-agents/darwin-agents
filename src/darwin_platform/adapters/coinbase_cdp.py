@@ -28,8 +28,36 @@ SDK release moves a method, that one class is the only thing to update;
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 import threading
 from typing import Any, Protocol, runtime_checkable
+
+
+# CDP requires account names to match this exactly: 2-36 chars, alphanumeric
+# at both ends, only ``[A-Za-z0-9-]`` between. ``darwin-<uuid>`` (43 chars)
+# overflows it, so callers' names are coerced through ``_coerce_cdp_account_name``.
+_CDP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,34}[A-Za-z0-9]$")
+
+
+def _coerce_cdp_account_name(name: str) -> str:
+    """Map any caller-supplied name to a CDP-valid account name.
+
+    Idempotent: a name already in-spec is returned unchanged, so existing
+    on-chain accounts keep resolving via ``get_or_create_account``. An
+    overflowing name (e.g. ``darwin-<uuid>``) is stripped to its
+    alphanumerics; if still too long, a deterministic 12-char blake2 digest
+    of the *original* name is appended so distinct Darwins never collide
+    while the same Darwin always maps to the same account on resume.
+    """
+    if _CDP_NAME_RE.match(name):
+        return name
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", name)
+    if 2 <= len(cleaned) <= 36:
+        return cleaned
+    digest = hashlib.blake2b(name.encode(), digest_size=6).hexdigest()  # 12 hex
+    prefix = cleaned[: 36 - 1 - len(digest)]
+    return f"{prefix}-{digest}" if prefix else digest
 
 
 @runtime_checkable
@@ -240,7 +268,9 @@ def build_cdp_chain_client(
         wallet_secret=wallet_secret,
     )
     account = bridge.run(
-        client.evm.get_or_create_account(name=account_name)
+        client.evm.get_or_create_account(
+            name=_coerce_cdp_account_name(account_name)
+        )
     )
     real = _RealCdpAccount(
         client=client, account=account, network=network, bridge=bridge,
