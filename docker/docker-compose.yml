@@ -27,6 +27,10 @@ services:
       - "8000:8000"
     volumes:
       - supervisor-data:/data
+      # Live source mount (local dev/test): PYTHONPATH=/app/src wins over the
+      # installed package, so local edits (e.g. the drive-task done-callback)
+      # take effect on restart without a rebuild. Remove for a pure-image run.
+      - ../src:/app/src:ro
       # Bearer-token auth. tokens.json (owner-dev-token + ops-dev-token) is
       # mounted read-only and activated by the --auth-tokens flag below.
       # Comment both out to fall back to permissive (trust-every-caller) mode.
@@ -45,6 +49,11 @@ services:
       # (--db /data/state.db) for a dependency-free dev run.
       - --db
       - postgresql://${POSTGRES_USER:-darwin}:${POSTGRES_PASSWORD:-dev_only_password}@postgres:5432/${POSTGRES_DB:-darwin}
+      # Wallet: 'web3' with no RPC/key env falls back to the in-process
+      # FakeWallet (instant spend bookkeeping, no faucet). Switch to 'cdp'
+      # (+ CDP_* env) or 'local-vault' (+ RPC URLs) for real on-chain money.
+      - --wallet-provider
+      - web3
       # real LLM through the bundled LiteLLM proxy (doc 13). Without this
       # the supervisor falls back to the deterministic FakeLLM.
       - --litellm-url
@@ -85,7 +94,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_only_password}
       POSTGRES_DB: ${POSTGRES_DB:-darwin}
     ports:
-      - "5432:5432"
+      # Host 15432 -> container 5432 (host 5432 is used by another local
+      # project; the supervisor reaches PG via the internal DNS name
+      # `postgres:5432`, so this remap is host-side only).
+      - "15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -101,7 +113,9 @@ services:
     image: redis:7-alpine
     container_name: darwin-redis
     ports:
-      - "6379:6379"
+      # Host 16379 -> container 6379 (host 6379 is used by another local
+      # project; litellm reaches redis via the internal DNS name `redis`).
+      - "16379:6379"
     volumes:
       - redis-data:/data
     command: ["redis-server", "--appendonly", "yes"]
