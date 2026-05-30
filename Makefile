@@ -94,11 +94,11 @@ real-preflight: ## Validate .env has the credentials a real boot needs
 	@set -a; . ./.env; set +a; \
 	  scripts/real_preflight.sh --network $(REAL_NETWORK) --tokens $(REAL_TOKENS)
 
-real-serve: install-serve ## Boot platform against real adapters (after preflight)
+real-serve: install-all ## Boot platform against real adapters (after preflight)
 	@test -f .env  || { echo "missing .env" >&2; exit 1; }
 	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS); run: make real-preflight" >&2; exit 1; }
 	set -a; . ./.env; set +a; \
-	  $(UV) run darwin-platform serve \
+	  $(UV) run --all-extras darwin-platform serve \
 	    --db $(DB) \
 	    --auth-tokens $(REAL_TOKENS) \
 	    --heartbeat-seconds 5 \
@@ -107,7 +107,7 @@ real-serve: install-serve ## Boot platform against real adapters (after prefligh
 
 real-checklist: ## Smoke test the running platform (the 3 pre-mainnet items)
 	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS)" >&2; exit 1; }
-	@TOKEN=$$(python -c "import json,sys;d=json.load(open('$(REAL_TOKENS)'));print(d['tokens'][0]['token'])"); \
+	@TOKEN=$$(python -c "import json,sys;d=json.load(open('$(REAL_TOKENS)'));t=d['tokens'] if isinstance(d,dict) else d;print(t[0]['token'])"); \
 	$(UV) run python scripts/real_checklist.py \
 	  --url http://127.0.0.1:8000 \
 	  --token "$$TOKEN" \
@@ -115,7 +115,7 @@ real-checklist: ## Smoke test the running platform (the 3 pre-mainnet items)
 
 real-spawn: ## Spawn one Darwin against the running platform (uses first token)
 	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS)" >&2; exit 1; }
-	@TOKEN=$$(python -c "import json,sys;d=json.load(open('$(REAL_TOKENS)'));print(d['tokens'][0]['token'])"); \
+	@TOKEN=$$(python -c "import json,sys;d=json.load(open('$(REAL_TOKENS)'));t=d['tokens'] if isinstance(d,dict) else d;print(t[0]['token'])"); \
 	curl -sS -X POST http://127.0.0.1:8000/darwins \
 	  -H "Authorization: Bearer $$TOKEN" \
 	  -H "Content-Type: application/json" \
