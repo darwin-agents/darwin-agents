@@ -32,14 +32,40 @@ const CATEGORY_FILTERS = [
 ] as const;
 type CategoryFilter = (typeof CATEGORY_FILTERS)[number];
 
+export interface EventTableFilters {
+  /** Audit kind prefix (e.g. `event:payment`, `intent:neuron.content.publisher`). */
+  kind?: string;
+  /** Restrict to events emitted by or about this neuron. */
+  neuron_id?: string;
+  /** LLM tier filter (matches `payload.tier`). */
+  tier?: string;
+}
+
 /**
  * Newest-first event feed. First page comes from
  * `GET /events?limit=N` (head); polling uses `?since=` to fetch only
  * deltas, eliminating the page-0 re-download. Older pages load on demand
  * via `?cursor=`.
+ *
+ * Server-side filters (kind / neuron_id / tier) are forwarded to the
+ * backend. The category chips below the header are a client-side bucket
+ * filter that composes on top.
  */
-export function EventTable({ darwinId }: { darwinId: string }) {
+export function EventTable({
+  darwinId,
+  filters,
+}: {
+  darwinId: string;
+  filters?: EventTableFilters;
+}) {
   const [category, setCategory] = useState<CategoryFilter>("all");
+  const apiFilters = useMemo(() => {
+    const out: EventTableFilters = {};
+    if (filters?.kind) out.kind = filters.kind;
+    if (filters?.neuron_id) out.neuron_id = filters.neuron_id;
+    if (filters?.tier) out.tier = filters.tier;
+    return out;
+  }, [filters?.kind, filters?.neuron_id, filters?.tier]);
   const [window, setWindow] = useState<DarwinEvent[]>([]);
   const headSeqRef = useRef<number | undefined>(undefined);
   const tailSeqRef = useRef<number | undefined>(undefined);
@@ -56,10 +82,21 @@ export function EventTable({ darwinId }: { darwinId: string }) {
 
   const liveBlocked = paused || expandedSeq !== null;
 
+  // Reset window + cursors whenever the backend filter changes — the previous
+  // page is no longer valid input for the new query.
+  useEffect(() => {
+    setWindow([]);
+    headSeqRef.current = undefined;
+    tailSeqRef.current = undefined;
+    setHasMoreOlder(true);
+    bufferRef.current = [];
+    setBufferedCount(0);
+  }, [apiFilters.kind, apiFilters.neuron_id, apiFilters.tier]);
+
   // Initial head fetch — newest-first, no cursor.
   const head = useQuery({
-    queryKey: queryKeys.events(darwinId, 0),
-    queryFn: () => api.events(darwinId, { limit: PAGE_SIZE }),
+    queryKey: queryKeys.events(darwinId, 0, apiFilters as Record<string, unknown>),
+    queryFn: () => api.events(darwinId, { limit: PAGE_SIZE, ...apiFilters }),
   });
 
   useEffect(() => {
@@ -72,12 +109,20 @@ export function EventTable({ darwinId }: { darwinId: string }) {
 
   // Tail-cursor polling — only events newer than the head we've seen.
   useQuery({
-    queryKey: ["darwin", darwinId, "events", "since", headSeqRef.current ?? -1] as const,
+    queryKey: [
+      "darwin",
+      darwinId,
+      "events",
+      "since",
+      headSeqRef.current ?? -1,
+      apiFilters,
+    ] as const,
     enabled: !!head.data && headSeqRef.current !== undefined,
     queryFn: async () => {
       const res = await api.events(darwinId, {
         since: headSeqRef.current!,
         limit: PAGE_SIZE,
+        ...apiFilters,
       });
       const evs = res.events ?? [];
       if (evs.length > 0) {
@@ -129,6 +174,7 @@ export function EventTable({ darwinId }: { darwinId: string }) {
       const res = await api.events(darwinId, {
         cursor: tailSeqRef.current,
         limit: PAGE_SIZE,
+        ...apiFilters,
       });
       const evs = res.events ?? [];
       if (evs.length === 0) {
@@ -209,6 +255,7 @@ export function EventTable({ darwinId }: { darwinId: string }) {
                 <EventRow
                   key={key}
                   ev={ev}
+                  darwinId={darwinId}
                   open={isExpanded}
                   onToggle={() => setExpandedSeq(isExpanded ? null : (key ?? null))}
                 />
