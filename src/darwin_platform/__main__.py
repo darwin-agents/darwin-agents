@@ -631,16 +631,32 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
                 file=sys.stderr,
             )
             sys.exit(2)
+        from eth_account import Account
+        from web3 import Web3
+
         from .adapters.web3_chain import Web3ChainClient
         from .payments.omnibus_wallet import OmnibusWallet
 
-        chain_kwargs: dict[str, Any] = dict(
-            rpc_url=rpc_url, private_key=wallet_key,
+        # Match the USDC contract + chain id to the RPC. Default to Base
+        # Sepolia (testnet); --cdp-mainnet or a mainnet RPC switches to Base
+        # mainnet. The omnibus address is derived from its signing key.
+        is_mainnet = getattr(args, "cdp_mainnet", False) or (
+            "mainnet" in rpc_url.lower()
         )
-        if args.usdc_contract:
-            chain_kwargs["usdc_contract"] = args.usdc_contract
+        usdc_contract = args.usdc_contract or (
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" if is_mainnet
+            else "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+        )
+        chain_id = 8453 if is_mainnet else 84532
+        omnibus_address = Account.from_key(wallet_key).address
         kwargs["omnibus_wallet"] = OmnibusWallet(
-            Web3ChainClient(**chain_kwargs),
+            Web3ChainClient(
+                web3_factory=lambda url=rpc_url: Web3(Web3.HTTPProvider(url)),
+                wallet_address=omnibus_address,
+                private_key=wallet_key,
+                usdc_contract=usdc_contract,
+                chain_id=chain_id,
+            ),
         )
 
     # -- KYC (doc 22) ----------------------------------------------------
