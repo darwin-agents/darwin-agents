@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Pause, Play, RefreshCw } from "lucide-react";
+import { ArrowLeft, Clock, Pause, Play, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { DarwinStream, type StreamMessage, type ConnectionState } from "@/lib/ws";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,7 +27,12 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
 
   const [snapshot, setSnapshot] = useState<AnatomySnapshot | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("idle");
-  const [selectedNeuronId, setSelectedNeuronId] = useState<string | null>(null);
+  // Deep-link in: `?selected=<neuron-id>` from a timeline row pre-selects.
+  const sp = useSearchParams();
+  const preselected = sp.get("selected");
+  const [selectedNeuronId, setSelectedNeuronId] = useState<string | null>(
+    preselected,
+  );
   const [paused, setPaused] = useState(false);
 
   useEffect(() => {
@@ -109,6 +115,7 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
                 />
               </div>
               <SidePanel
+                darwinId={id}
                 snapshot={snapshot}
                 selectedNeuronId={selectedNeuronId}
                 onClear={() => setSelectedNeuronId(null)}
@@ -133,10 +140,12 @@ function ConnectionPill({ state }: { state: ConnectionState }) {
 }
 
 function SidePanel({
+  darwinId,
   snapshot,
   selectedNeuronId,
   onClear,
 }: {
+  darwinId: string;
   snapshot: AnatomySnapshot;
   selectedNeuronId: string | null;
   onClear: () => void;
@@ -171,6 +180,16 @@ function SidePanel({
           <dt className="text-[var(--color-muted-foreground)]">Last error</dt>
           <dd>{n.last_error_at ? formatRelative(n.last_error_at) : "—"}</dd>
         </dl>
+        <Link
+          href={{
+            pathname: `/darwins/${darwinId}/timeline`,
+            query: { neuron: n.id },
+          }}
+          className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1 text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+        >
+          <Clock className="size-3" />
+          View timeline for {n.id}
+        </Link>
       </div>
     );
   }

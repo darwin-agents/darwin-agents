@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
@@ -10,6 +11,7 @@ import {
   DollarSign,
   Dna,
   Flag,
+  GitBranch,
   Shield,
   Skull,
   Sparkles,
@@ -114,10 +116,13 @@ function costOf(ev: DarwinEvent): number | null {
 
 export function EventRow({
   ev,
+  darwinId,
   open: controlledOpen,
   onToggle,
 }: {
   ev: DarwinEvent;
+  /** Required to render the "show in anatomy" deep-link. */
+  darwinId?: string;
   open?: boolean;
   onToggle?: () => void;
 }) {
@@ -163,9 +168,28 @@ export function EventRow({
       </button>
       {open && (
         <div className="border-t border-[var(--color-border)] bg-[var(--color-background)] px-3 py-3 text-xs">
-          <div className="mono mb-2 text-[var(--color-muted-foreground)]">
-            seq: {ev.seq ?? "—"} · kind: {ev.kind ?? ev.type ?? ev.category ?? "—"}
-            {ev.hash && <> · hash: {String(ev.hash).slice(0, 16)}…</>}
+          <div className="mono mb-2 flex flex-wrap items-center gap-2 text-[var(--color-muted-foreground)]">
+            <span>seq: {ev.seq ?? "—"}</span>
+            <span>·</span>
+            <span>kind: {ev.kind ?? ev.type ?? ev.category ?? "—"}</span>
+            {ev.hash && (
+              <>
+                <span>·</span>
+                <span>hash: {String(ev.hash).slice(0, 16)}…</span>
+              </>
+            )}
+            {darwinId && ev.neuron_id && (
+              <Link
+                href={{
+                  pathname: `/darwins/${darwinId}/anatomy`,
+                  query: { selected: String(ev.neuron_id) },
+                }}
+                className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-2 py-0.5 text-[var(--color-foreground)] hover:bg-[var(--color-muted)]"
+              >
+                <GitBranch className="size-3" />
+                Show in anatomy
+              </Link>
+            )}
           </div>
           <pre className="mono max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-[var(--color-card)] p-3 text-[11px] leading-relaxed">
             {JSON.stringify(ev, null, 2)}
