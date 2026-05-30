@@ -1177,16 +1177,21 @@ class Supervisor:
             )
             self._darwins[handle.darwin_id] = handle
             annotate_span_with_runtime(s, runtime)
+            # Fund from the omnibus BEFORE starting the drive loop. The
+            # genome's first reconcile seeds its opening from the live
+            # wallet balance; if the loop starts first it races the
+            # on-chain transfer, seeds 0, then halts on drift when the
+            # funds land. Debit user_credits + chain-transfer for root
+            # spawns; skipped silently for anonymous/in-process flows where
+            # the FakeWallet's opening balance is the in-memory proxy.
+            if parent_id is None:
+                funded = self._fund_darwin_from_omnibus(handle, opening_usdc)
+                if funded > 0:
+                    await self._await_funded_balance(handle, funded)
             handle.task = asyncio.create_task(
                 self._drive(handle), name=f"darwin:{handle.darwin_id}"
             )
             handle.task.add_done_callback(self._log_drive_done)
-            # Best-effort: debit user_credits + chain-transfer from
-            # omnibus to the new wallet for root spawns. Skipped silently
-            # for anonymous/in-process flows where the FakeWallet's
-            # opening balance is the in-memory proxy.
-            if parent_id is None:
-                self._fund_darwin_from_omnibus(handle, opening_usdc)
             self._audit.record(
                 actor=actor,
                 action="spawn",
@@ -3692,11 +3697,13 @@ class Supervisor:
 
     def _fund_darwin_from_omnibus(
         self, handle: _Handle, opening_usdc: float,
-    ) -> None:
+    ) -> float:
         """Best-effort: debit the owning user's omnibus credit by
         ``opening_usdc`` and chain-transfer the funds to the new Darwin's
-        wallet address. Called after the wallet is bound and the handle
-        is registered. Silently skips when:
+        wallet address. Returns the amount actually funded (0.0 when
+        skipped/failed). Called before the drive loop starts so the
+        genome's first ledger reconciliation seeds its opening at the
+        funded balance. Silently skips (returns 0.0) when:
 
         - no omnibus wallet is wired (in-process dev / 90-day sim),
         - the owner is anonymous (no credit attribution possible),
@@ -3709,22 +3716,22 @@ class Supervisor:
         FakeWallet's opening balance is the in-memory proxy for the
         funding intent."""
         if self._omnibus_wallet is None:
-            return
+            return 0.0
         if handle.owner_subject == "anonymous":
-            return
+            return 0.0
         amount = float(opening_usdc)
         if amount <= 0:
-            return
+            return 0.0
         wallet = handle.stack.wallet
         address_getter = getattr(wallet, "address", None)
         if not callable(address_getter):
-            return
+            return 0.0
         try:
             to_address = address_getter()
         except Exception:
-            return
+            return 0.0
         if not to_address:
-            return
+            return 0.0
         try:
             self._omnibus_wallet.fund_child(
                 darwin_id=handle.darwin_id,
@@ -3732,6 +3739,7 @@ class Supervisor:
                 amount_usdc=amount,
                 user_subject=handle.owner_subject,
             )
+            return amount
         except Exception as exc:
             self._audit.record(
                 actor="supervisor.spawn",
@@ -3743,6 +3751,39 @@ class Supervisor:
                     "reason": str(exc),
                 },
             )
+            return 0.0
+
+    async def _await_funded_balance(
+        self,
+        handle: _Handle,
+        expected_usdc: float,
+        *,
+        timeout_s: float = 45.0,
+    ) -> None:
+        """After an omnibus fund, wait for the per-Darwin wallet to REPORT
+        the funded balance before the drive loop's first reconcile.
+
+        The omnibus transfer settles on-chain synchronously, but a
+        CDP-backed wallet's balance API can lag the chain by a few seconds.
+        Seeding the genome's ledger off a stale $0 would trip the drift
+        halt the instant the balance catches up (the symptom: a Darwin that
+        dies at tick 1 with ``ledger $0 vs wallet $X``). Best-effort: audit
+        the lag and proceed if the balance hasn't surfaced by ``timeout_s``."""
+        deadline = float(self._clock()) + timeout_s
+        wallet = handle.stack.wallet
+        while float(self._clock()) < deadline:
+            try:
+                if float(wallet.balance_usdc()) + 1e-9 >= expected_usdc:
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+        self._audit.record(
+            actor="supervisor.spawn",
+            action="omnibus_fund_balance_lag",
+            darwin_id=handle.darwin_id,
+            metadata={"expected_usdc": expected_usdc},
+        )
 
     def _sweep_dead_darwin_to_omnibus(self, handle: _Handle) -> None:
         """On kill, move the dead Darwin's residual USDC back to the
