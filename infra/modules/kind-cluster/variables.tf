@@ -10,8 +10,8 @@ variable "kubeconfig_path" {
 
 variable "node_image" {
   type        = string
-  description = "Image used for every kind node. Pin so a rerun lands on the same K8s version. Bump intentionally."
-  default     = "kindest/node:v1.31.0"
+  description = "Image used for every kind node. Pin so a rerun lands on the same K8s version. The default targets the K8s release the locally-installed kind binary supports; bump alongside `kind --version` upgrades. Compatibility matrix: https://github.com/kubernetes-sigs/kind/releases."
+  default     = "kindest/node:v1.27.3"
 }
 
 variable "host_api_port" {

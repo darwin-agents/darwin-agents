@@ -24,12 +24,13 @@ module "cluster" {
 }
 
 /**
- * Provider configs use inline credentials from the kind module rather
- * than `config_path = .kubeconfig`. Reason: with the file form,
- * Terraform tries to evaluate provider config at plan time, before the
- * cluster (and therefore the kubeconfig file) exists — leading to a
- * "file doesn't exist" error on cold-start. Inline credentials are
- * lazily evaluated and work on a fresh `terraform apply`.
+ * Provider configs use inline credentials sourced from the kind
+ * module's `data.external` (which runs `kubectl config view` against
+ * the kubeconfig kind wrote, AFTER the cluster is up). This sidesteps
+ * the eager-config-validation problem: passing `config_path` to the
+ * kubernetes provider fails at plan time if the file doesn't exist yet,
+ * which it doesn't on a fresh `terraform apply`. Inline values are
+ * unknown at plan time and lazily resolved at apply, which is fine.
  */
 provider "helm" {
   kubernetes {
@@ -53,15 +54,16 @@ provider "kubectl" {
   client_certificate     = module.cluster.client_certificate
   client_key             = module.cluster.client_key
   load_config_file       = false
+  lazy_load              = true
 }
 
 module "cnpg" {
   source = "../../modules/cnpg"
 
-  namespace      = var.platform_namespace
-  cluster_name   = "darwin-platform-db"
-  instances      = 1
-  storage_size   = "2Gi"
+  namespace    = var.platform_namespace
+  cluster_name = "darwin-platform-db"
+  instances    = 1
+  storage_size = "2Gi"
 
   depends_on = [module.cluster]
 }
@@ -77,9 +79,9 @@ module "vault" {
 module "litellm" {
   source = "../../modules/litellm"
 
-  namespace      = "litellm"
-  master_key     = var.litellm_master_key
-  provider_keys  = var.litellm_provider_keys
+  namespace     = "litellm"
+  master_key    = var.litellm_master_key
+  provider_keys = var.litellm_provider_keys
 
   depends_on = [module.cluster]
 }
@@ -87,13 +89,13 @@ module "litellm" {
 module "platform" {
   source = "../../modules/darwin-platform"
 
-  namespace        = var.platform_namespace
-  image            = var.platform_image
-  database_secret  = module.cnpg.connection_secret_name
-  vault_address    = module.vault.address
-  vault_token      = module.vault.root_token
-  litellm_url      = module.litellm.in_cluster_url
-  litellm_key      = var.litellm_master_key
+  namespace       = var.platform_namespace
+  image           = var.platform_image
+  database_secret = module.cnpg.connection_secret_name
+  vault_address   = module.vault.address
+  vault_token     = module.vault.root_token
+  litellm_url     = module.litellm.in_cluster_url
+  litellm_key     = var.litellm_master_key
 
   depends_on = [module.cnpg, module.vault, module.litellm]
 }

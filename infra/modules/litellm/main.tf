@@ -62,8 +62,8 @@ resource "kubernetes_deployment" "this" {
     name      = "litellm"
     namespace = kubernetes_namespace.this.metadata[0].name
     labels = {
-      "app.kubernetes.io/name"     = "litellm"
-      "app.kubernetes.io/part-of"  = "darwin"
+      "app.kubernetes.io/name"    = "litellm"
+      "app.kubernetes.io/part-of" = "darwin"
     }
   }
   spec {

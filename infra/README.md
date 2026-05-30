@@ -34,8 +34,14 @@ What's NOT provided (intentionally):
 
 - Terraform ≥ 1.6
 - Docker (for kind)
-- kubectl ≥ 1.30
+- `kind` ≥ 0.20
+- kubectl ≥ 1.27
 - ~6 GB free RAM for the local stack
+
+The default `kindest/node` image in `modules/kind-cluster/variables.tf`
+is pinned to a tag the most common installed `kind` version (0.20.0)
+supports. If you upgrade `kind`, bump `node_image` in lockstep
+([compatibility matrix](https://github.com/kubernetes-sigs/kind/releases)).
 
 ## Quickstart — local
 

@@ -4,6 +4,7 @@
 **/*.tfstate
 **/*.tfstate.*
 **/.kubeconfig
+**/.kind-config-*.yaml
 
 # Per-developer overrides (see envs/local/terraform.tfvars)
 **/terraform.tfvars.local
