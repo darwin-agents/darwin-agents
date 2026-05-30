@@ -5,7 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import { use } from "react";
 import {
   Activity,
+  Clock,
   CreditCard,
+  Database,
   GitBranch,
   Lock,
   Receipt,
@@ -42,12 +44,14 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
 
       <div className="flex flex-wrap gap-2 text-xs">
         <SubNav href={`/darwins/${id}/anatomy`} icon={Activity} label="Anatomy" />
+        <SubNav href={`/darwins/${id}/timeline`} icon={Clock} label="Timeline" />
         <SubNav href={`/darwins/${id}/lineage`} icon={GitBranch} label="Lineage" />
         <SubNav href={`/darwins/${id}/billing`} icon={Receipt} label="Billing & ledger" />
         <SubNav href={`/darwins/${id}/preapprovals`} icon={ShieldCheck} label="Pre-approvals" />
         <SubNav href={`/darwins/${id}/payments`} icon={CreditCard} label="Payments" />
         <SubNav href={`/darwins/${id}/vault`} icon={Lock} label="Vault" />
         <SubNav href={`/darwins/${id}/resources`} icon={Server} label="Resources" />
+        <SubNav href={`/darwins/${id}/data`} icon={Database} label="Data" />
         <SubNav href={`/darwins/${id}/settings`} icon={Settings} label="Settings & controls" />
       </div>
 
