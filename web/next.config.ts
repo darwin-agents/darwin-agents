@@ -28,6 +28,9 @@ const cspDirectives = [
 ];
 
 const nextConfig: NextConfig = {
+  // Emit a self-contained server bundle (.next/standalone/server.js) so the
+  // Docker image ships only what the server needs — no full node_modules.
+  output: "standalone",
   reactStrictMode: true,
   poweredByHeader: false,
   experimental: {

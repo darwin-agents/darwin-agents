@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+Dockerfile
+.dockerignore
+npm-debug.log*
+*.log
+.env*
+!.env.example
+coverage
+playwright-report
+test-results
+.vscode
+.idea
+README.md
