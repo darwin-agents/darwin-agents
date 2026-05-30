@@ -144,6 +144,10 @@ services:
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Proxy master key — must match what the bare-metal supervisor sends
+      # via --litellm-master-key (sourced from the same .env). Falls back to
+      # the dev default when unset so a keyless compose run still boots.
+      DARWIN_LITELLM_MASTER_KEY: ${DARWIN_LITELLM_MASTER_KEY:-dev_only_master_key}
       # Redis connection for the response cache (see litellm.config.yaml).
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}

@@ -69,4 +69,4 @@ general_settings:
   # real deployment puts LiteLLM behind an auth proxy (or sets
   # master_key) and provisions per-Darwin virtual keys via the LiteLLM
   # API.
-  master_key: dev_only_master_key
+  master_key: os.environ/DARWIN_LITELLM_MASTER_KEY
