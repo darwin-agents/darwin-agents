@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- chore(web): add Playwright and Clerk testing dev dependencies
+- feat(web): add timeline and data tabs to Darwin sub-navigation
+- feat(web): deep-link timeline rows to anatomy and neurons to timeline
+- feat(web): add timeline page with URL-encoded server-side filters
+- feat(platform): persist omnibus wallet state across supervisor restarts
+- feat(web): add Clerk user chip to dashboard sidebar
+- feat(web): add Clerk sign-in and sign-up pages
+- feat(web): wire Clerk middleware and dual-mode auth token resolver
+- feat(platform): add operator omnibus credit endpoint for manual deposits
 - test(dna): update orchestrator and untrusted tests for async LLM nodes
 - feat(dna): add LLMRouter.acomplete and shared acomplete helper
 - test(platform): cover async LiteLLM transport and running-loop safety
@@ -29,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs(config): reorganize env example with required and optional sections
 - refactor(dna): await async LLM calls in content and support neurons
 - refactor(dna): await async LLM calls in orchestrator plan and mutation nodes
 - docs(engineering): update backlog for payments dashboard and completion arc
@@ -41,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(web): redirect Clerk guests to sign-in and document URL env vars
+- fix(platform): require Persona template id for KYC via env or CLI
+- fix(platform): fund Darwin from omnibus before drive loop starts
+- fix(platform): configure omnibus Web3ChainClient for Base mainnet and Sepolia
 - fix(platform): coerce per-Darwin CDP account names to valid length
 - fix(platform): log drive task crashes instead of silently stopping ticks
 - fix(platform): bind serve LiteLLM factory to litellm.acompletion
