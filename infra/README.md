@@ -34,14 +34,39 @@ What's NOT provided (intentionally):
 
 - Terraform ≥ 1.6
 - Docker (for kind)
-- `kind` ≥ 0.20
+- `kind` ≥ 0.24 (boot detection regex on cgroup v2 hosts needs ≥ 0.24).
+  Tested with kind 0.24.0 + `kindest/node:v1.31.0`.
 - kubectl ≥ 1.27
 - ~6 GB free RAM for the local stack
 
-The default `kindest/node` image in `modules/kind-cluster/variables.tf`
-is pinned to a tag the most common installed `kind` version (0.20.0)
-supports. If you upgrade `kind`, bump `node_image` in lockstep
-([compatibility matrix](https://github.com/kubernetes-sigs/kind/releases)).
+**inotify limits** — kind nodes consume `fs.inotify.max_user_instances`
+heavily (≥3 per node). On hosts where the limit hasn't been raised from
+the default (often 128 on Linux), kind's nodes fail to boot with the
+opaque `could not find a log line that matches …Multi-User System…`
+error. The real message in the failed node's logs is:
+
+```
+Failed to create control group inotify object: Too many open files
+```
+
+Fix per [kind's docs](https://kind.sigs.k8s.io/docs/user/known-issues/#pod-errors-due-to-too-many-open-files):
+
+```bash
+# Persistent — survives reboot.
+sudo tee /etc/sysctl.d/99-kind.conf <<'EOF'
+fs.inotify.max_user_watches=524288
+fs.inotify.max_user_instances=512
+EOF
+sudo sysctl --system
+
+# Or, transient, just for this session:
+sudo sysctl fs.inotify.max_user_instances=512
+sudo sysctl fs.inotify.max_user_watches=524288
+```
+
+Confirm with `sysctl fs.inotify`. Without this, `terraform apply` will
+plan + init cleanly but the `null_resource.cluster` step (which shells
+out to `kind create cluster`) will fail.
 
 ## Quickstart — local
 
