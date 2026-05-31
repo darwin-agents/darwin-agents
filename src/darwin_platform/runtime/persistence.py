@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS freelancer_registry (
 );
 
 -- Web Push subscriptions for the PWA escalation companion (doc 22). One
--- row per (owner_subject, endpoint); the keys (p256dh + auth) are needed
+-- row per (owner_subject, endpoint). Keys (p256dh + auth) are needed
 -- to ECE-encrypt the payload per RFC 8188. Indexed by owner so the
 -- WebPushNotificationSink can fan out a single ticket to every device
 -- the owner has signed in on.
@@ -252,7 +252,7 @@ CREATE INDEX IF NOT EXISTS push_subscriptions_owner_idx
 
 -- Platform omnibus wallet (doc 22). The derived state (per-user credit
 -- balances + lifetime totals) is snapshotted in a single row so it
--- survives a supervisor restart; the append-only movement log keeps the
+-- survives a supervisor restart, while the append-only movement log keeps the
 -- forensic history. The omnibus is platform-wide (not per-Darwin), so
 -- one state row suffices.
 CREATE TABLE IF NOT EXISTS omnibus_state (
@@ -278,7 +278,7 @@ CREATE TABLE IF NOT EXISTS omnibus_entries (
 CREATE INDEX IF NOT EXISTS omnibus_entries_ts_idx ON omnibus_entries(ts);
 
 -- Recurring profit-harvest rules (doc 05). Owner-registered automation
--- that the supervisor evaluates every drive cycle; persisted so a restart
+-- that the supervisor evaluates every drive cycle, persisted so a restart
 -- doesn't silently drop the owner's "sweep above $X daily" intent.
 CREATE TABLE IF NOT EXISTS harvest_rules (
     id                    TEXT PRIMARY KEY,
@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS resource_throttles (
 );
 
 -- Open fiat-deposit quotes (doc 17). A quote is created off-session and
--- confirmed later by the Stripe webhook; persisting it means a confirm
+-- confirmed later by the Stripe webhook, and persisting it means a confirm
 -- that lands after a restart still finds its quote (instead of the
 -- deposit being silently lost), and a consumed/deleted quote makes a
 -- webhook replay a safe no-op across restarts. Rows are deleted on
