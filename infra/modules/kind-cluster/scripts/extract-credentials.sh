@@ -27,18 +27,12 @@ if [[ ! -f "$kubeconfig" ]]; then
     exit 1
 fi
 
-# Use kubectl to extract — it handles base64 fields + path resolution
-# correctly across all kubeconfig formats kind has ever written.
-host=$(kubectl --kubeconfig "$kubeconfig" config view --raw --minify \
-    --output 'jsonpath={.clusters[?(@.name=="kind-"+"'"${context#kind-}"'")].cluster.server}')
-
-# Fall back to the contextless name lookup if the above came back empty
-# (older kind versions used context name = cluster name).
-if [[ -z "$host" ]]; then
-    host=$(kubectl --kubeconfig "$kubeconfig" --context "$context" \
-        config view --raw --minify \
-        --output 'jsonpath={.clusters[0].cluster.server}')
-fi
+# Use kubectl --minify to drop everything but the current context's
+# cluster + user, then read fields off [0]. This avoids fragile jsonpath
+# selectors with quoted names that vary across kind versions.
+host=$(kubectl --kubeconfig "$kubeconfig" --context "$context" \
+    config view --raw --minify \
+    --output 'jsonpath={.clusters[0].cluster.server}')
 
 ca=$(kubectl --kubeconfig "$kubeconfig" --context "$context" \
     config view --raw --minify \
