@@ -70,3 +70,21 @@ variable "host_ingress" {
   description = "If true, install an NGINX Ingress backed by the supervisor Service so the host port mapping (kind extraPortMappings → 80) reaches the API."
   default     = true
 }
+
+variable "wallet_provider" {
+  type        = string
+  description = "Wallet provider for newly-spawned Darwins. Options: `cdp` (Coinbase CDP, requires CDP_API_KEY_*; production default), `local-vault` (per-Darwin keypair sealed in the cluster's Vault; no external dependency for storage but still needs an RPC URL for chain calls), `web3` (legacy shared-key path)."
+  default     = "local-vault"
+}
+
+variable "base_rpc_url" {
+  type        = string
+  description = "EVM RPC URL the supervisor uses for Base / Base Sepolia transactions. The supervisor's preflight refuses to start without one when wallet_provider != cdp. Default points at Base Sepolia (public testnet)."
+  default     = "https://sepolia.base.org"
+}
+
+variable "extra_args" {
+  type        = list(string)
+  description = "Additional CLI flags appended to `darwin-platform serve`. Useful for `--auth-tokens` / `--clerk-issuer` / `--push-provider` without forking the module."
+  default     = []
+}

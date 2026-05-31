@@ -25,11 +25,18 @@ resource "kubernetes_secret" "env" {
     namespace = var.namespace
   }
   type = "Opaque"
+  # In --driver=k8s mode the supervisor doesn't talk to LiteLLM or
+  # Vault directly — those substrates are forwarded into each
+  # per-Darwin orchestrator pod via DarwinPodConfig. Setting
+  # DARWIN_LITELLM_URL / VAULT_URL on the supervisor would auto-build
+  # the corresponding factory and trip the "real-adapter flags not
+  # supported with --driver=k8s" preflight. The values are stored in
+  # this Secret so the K8s driver can mount them onto spawned pods.
   data = {
-    VAULT_ADDR                = var.vault_address
-    VAULT_TOKEN               = var.vault_token
-    DARWIN_LITELLM_URL        = var.litellm_url
-    DARWIN_LITELLM_MASTER_KEY = var.litellm_key
+    DARWIN_POD_VAULT_ADDR     = var.vault_address
+    DARWIN_POD_VAULT_TOKEN    = var.vault_token
+    DARWIN_POD_LITELLM_URL    = var.litellm_url
+    DARWIN_POD_LITELLM_KEY    = var.litellm_key
   }
 }
 
@@ -71,16 +78,23 @@ resource "kubernetes_deployment" "platform" {
           image_pull_policy = var.image_pull_policy
 
           command = ["darwin-platform"]
-          args = [
+          # In --driver=k8s the supervisor doesn't host substrates
+          # directly — every real-factory flag (--litellm-url, --rpc-url,
+          # etc.) is rejected because the supervisor would be configuring
+          # something it never uses. The per-Darwin orchestrator pods get
+          # those flags via DarwinPodConfig instead. The supervisor stays
+          # minimal: API surface + DB + RBAC for spawning pods.
+          # --wallet-provider IS forwarded into spawned pods, so we set it
+          # here as the fleet-wide default.
+          args = concat([
             "serve",
             "--host", "0.0.0.0",
             "--port", tostring(var.service_port),
             "--driver", "k8s",
             "--heartbeat-seconds", tostring(var.heartbeat_seconds),
             "--db", "$(DATABASE_URL)",
-            "--litellm-url", "$(DARWIN_LITELLM_URL)",
-            "--litellm-master-key", "$(DARWIN_LITELLM_MASTER_KEY)",
-          ]
+            "--wallet-provider", var.wallet_provider,
+          ], var.extra_args)
 
           # Argv substitutions reference these envFrom-injected keys.
           env_from {

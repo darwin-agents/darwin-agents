@@ -99,6 +99,13 @@ module "platform" {
   vault_token     = module.vault.root_token
   litellm_url     = module.litellm.in_cluster_url
   litellm_key     = var.litellm_master_key
+  # In --driver=k8s the supervisor doesn't host wallets — each
+  # per-Darwin orchestrator pod does. We still set --wallet-provider
+  # because it's forwarded into DarwinPodConfig for the spawned pods.
+  # `web3` with no chain RPC URLs is the only provider that lets the
+  # supervisor itself pass preflight in k8s mode without external API
+  # keys; the real chain config lands on each spawned pod separately.
+  wallet_provider = "web3"
 
   depends_on = [module.cnpg, module.vault, module.litellm]
 }
