@@ -15,19 +15,37 @@ from dataclasses import dataclass
 
 @dataclass
 class RevenueModel:
-    """Affiliate economics. Weekly-ish commissions, concave in library size
-    (the 50th post earns less than the 5th), scaled by content quality."""
+    """Affiliate economics. Weekly-ish commissions that *compound* with the
+    published library: a content/affiliate blog's organic traffic grows with
+    the number of indexed pages — sub-linearly (each additional page adds less
+    than the last, as SEO returns diminish per-page) but without ever
+    plateauing (a bigger library always earns more). This is the founding
+    strategy's premise — it keeps writing and publishing for life because it
+    pays to keep metabolising — so the world must reward a growing library,
+    not cap it. Scaled by content quality.
+
+    (An earlier model was concave-to-an-asymptote — ``n/(1+n/k)`` — which
+    suited the original "seed 5 pieces then idle" strategy. Once the strategy
+    was changed to metabolise continuously, that asymptote made endless
+    publishing a pure cost with no upside, so the Darwin bled out and never
+    reproduced. The curve below restores the "Layer 0 done" bar.)"""
 
     cadence_days: float = 7.0
-    usd_per_effective_piece: float = 1.6
+    usd_per_effective_piece: float = 0.12
     quality: float = 0.72  # matches the reasoning-tier writer in the fake LLM
-    diminishing_k: float = 8.0  # concavity knob
+    growth_exponent: float = 0.6  # SEO compounding: revenue ∝ pages**exponent
+    diminishing_k: float = 8.0  # launch-ramp softener (small-library knee)
 
     def commission(self, content_pieces: int) -> float:
         if content_pieces <= 0:
             return 0.0
-        # concave: k * ln(1 + n/…)-ish via n/(1+n/k)
-        effective = content_pieces / (1.0 + content_pieces / self.diminishing_k)
+        # Unbounded but sub-linear in library size: ≈ linear while the blog
+        # is tiny (the diminishing_k knee), tending to ∝ n**growth_exponent
+        # as it grows. A 1000-post blog out-earns a 100-post one, but not 10x.
+        effective = self.diminishing_k * (
+            (1.0 + content_pieces / self.diminishing_k) ** self.growth_exponent
+            - 1.0
+        )
         return round(self.usd_per_effective_piece * effective * self.quality, 4)
 
 

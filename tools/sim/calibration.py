@@ -91,6 +91,7 @@ KNOWN_METRICS = frozenset({
     "revenue_usd_per_effective_piece",
     "revenue_quality",
     "revenue_cadence_days",
+    "revenue_growth_exponent",
     "diminishing_k",
 })
 
@@ -122,6 +123,8 @@ def apply_calibration(
             revenue_model.quality = point.value
         elif metric == "revenue_cadence_days":
             revenue_model.cadence_days = point.value
+        elif metric == "revenue_growth_exponent":
+            revenue_model.growth_exponent = point.value
         elif metric == "diminishing_k":
             revenue_model.diminishing_k = point.value
         summary[metric] = {
