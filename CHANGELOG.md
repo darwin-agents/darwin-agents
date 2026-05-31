@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-05-31
+
 ### Changed
 
+- docs: sync unreleased changelog for recent infra and sim fixes
 - docs: sync unreleased changelog for kind bootstrap fix
 - docs(engineering): mark cloud-agnostic Terraform IaC as shipped in backlog
 
 ### Fixed
 
+- fix(infra): run darwin-platform supervisor in k8s driver mode locally
 - fix(sim): compound affiliate revenue with library size for continuous publishing
 - fix(infra): fix LiteLLM mount path and drop Redis cache for local stack
 - fix(infra): simplify kube credential extraction from kind kubeconfig
