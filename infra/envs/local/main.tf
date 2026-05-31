@@ -82,6 +82,9 @@ module "litellm" {
   namespace     = "litellm"
   master_key    = var.litellm_master_key
   provider_keys = var.litellm_provider_keys
+  # Local override: drop the Redis cache section from the docker/
+  # default config, since the local infra stack doesn't deploy Redis.
+  config_yaml = file("${path.module}/litellm.config.yaml")
 
   depends_on = [module.cluster]
 }

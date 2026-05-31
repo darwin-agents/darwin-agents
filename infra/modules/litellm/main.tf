@@ -85,7 +85,10 @@ resource "kubernetes_deployment" "this" {
           name  = "proxy"
           image = var.image
           # BerriAI's image launches the proxy when --config is set.
-          args = ["--config", "/app/config.yaml", "--port", "4000"]
+          # NOTE: don't mount onto /app — that's the image's WORKDIR and
+          # contains the `docker/prod_entrypoint.sh` the image's
+          # ENTRYPOINT references. We use a subPath into a non-app dir.
+          args = ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
 
           port {
             container_port = 4000
@@ -100,7 +103,8 @@ resource "kubernetes_deployment" "this" {
 
           volume_mount {
             name       = "config"
-            mount_path = "/app"
+            mount_path = "/etc/litellm/config.yaml"
+            sub_path   = "config.yaml"
             read_only  = true
           }
 
@@ -125,11 +129,14 @@ resource "kubernetes_deployment" "this" {
           resources {
             requests = {
               cpu    = "100m"
-              memory = "256Mi"
+              memory = "512Mi"
             }
             limits = {
               cpu    = "1"
-              memory = "1Gi"
+              # 1Gi was getting OOMKilled at boot — the proxy pulls in a
+              # big SDK surface (every provider's SDK) before listening,
+              # which spikes RSS well over 1Gi briefly.
+              memory = "2Gi"
             }
           }
         }

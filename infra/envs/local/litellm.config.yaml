@@ -1,0 +1,46 @@
+# LiteLLM proxy config for the local kind stack.
+#
+# Same model_list as docker/litellm.config.yaml, MINUS the Redis cache
+# section — Redis isn't deployed in the local infra stack, and LiteLLM's
+# cache init blocks on the unreachable host long enough to fail the
+# Terraform readiness wait.
+#
+# A future `modules/redis` would re-enable caching via an env override.
+
+model_list:
+  # tier=fast — snap judgments, classification, routing
+  - model_name: tier-fast
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/CLAUDE_API_KEY
+  - model_name: tier-fast
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # tier=reasoning — the planner; the default thinking tier
+  - model_name: tier-reasoning
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/CLAUDE_API_KEY
+
+  # tier=coding — self-modification; expensive, gated hard
+  - model_name: tier-coding
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/CLAUDE_API_KEY
+
+  # tier=embedding — episodic memory + retrieval
+  - model_name: tier-embedding
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  routing_strategy: latency-based-routing
+  fallbacks:
+    - tier-reasoning: ["tier-fast"]
+    - tier-coding: ["tier-reasoning"]
+
+general_settings:
+  master_key: os.environ/DARWIN_LITELLM_MASTER_KEY
