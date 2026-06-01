@@ -76,6 +76,30 @@ module "vault" {
   depends_on = [module.cluster]
 }
 
+/**
+ * kind doesn't have kata-containers installed, but the platform's K8s
+ * driver hard-defaults runtimeClassName=kata on every per-Darwin pod
+ * (production isolation posture). This shim creates a RuntimeClass
+ * named "kata" backed by the default runc handler — the selector
+ * resolves locally, no real isolation, fine for the local stack.
+ * Production swaps this for a real kata install.
+ */
+resource "kubectl_manifest" "kata_shim" {
+  yaml_body = yamlencode({
+    apiVersion = "node.k8s.io/v1"
+    kind       = "RuntimeClass"
+    metadata = {
+      name = "kata"
+      labels = {
+        "app.kubernetes.io/part-of" = "darwin"
+      }
+    }
+    handler = "runc"
+  })
+
+  depends_on = [module.cluster]
+}
+
 module "litellm" {
   source = "../../modules/litellm"
 

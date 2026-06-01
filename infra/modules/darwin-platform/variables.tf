@@ -88,3 +88,9 @@ variable "extra_args" {
   description = "Additional CLI flags appended to `darwin-platform serve`. Useful for `--auth-tokens` / `--clerk-issuer` / `--push-provider` without forking the module."
   default     = []
 }
+
+variable "orchestrator_image" {
+  type        = string
+  description = "Image the K8s driver uses for per-Darwin orchestrator pods (forwarded via --k8s-orchestrator-image). Defaults to the same image as the supervisor so a `docker build -t darwin-platform:dev .` covers both."
+  default     = "darwin-platform:dev"
+}

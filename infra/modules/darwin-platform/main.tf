@@ -94,12 +94,30 @@ resource "kubernetes_deployment" "platform" {
             "--heartbeat-seconds", tostring(var.heartbeat_seconds),
             "--db", "$(DATABASE_URL)",
             "--wallet-provider", var.wallet_provider,
+            "--k8s-orchestrator-image", var.orchestrator_image,
+            # Skip LanceDB sidecar in the local stack — no public
+            # `lancedb/lancedb` image exists. Orchestrator falls back to
+            # the deterministic in-memory EpisodicMemory.
+            "--k8s-lancedb-image", "",
           ], var.extra_args)
 
           # Argv substitutions reference these envFrom-injected keys.
           env_from {
             secret_ref {
               name = kubernetes_secret.env.metadata[0].name
+            }
+          }
+
+          # Downward API: the supervisor needs to know its own namespace
+          # so the per-Darwin NetworkPolicy's "allow ingress from the
+          # supervisor pod" rule selects the right source. Without this
+          # the NetworkPolicy hardcodes "default" and blocks us.
+          env {
+            name = "POD_NAMESPACE"
+            value_from {
+              field_ref {
+                field_path = "metadata.namespace"
+              }
             }
           }
 
