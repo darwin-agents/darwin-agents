@@ -428,6 +428,27 @@ _PG_RECONNECT_ATTEMPTS = 5
 _PG_RECONNECT_BASE_DELAY = 1.0
 
 
+def _split_sql_statements(script: str) -> list[str]:
+    """Split a multi-statement SQL script into individual statements,
+    safely ignoring ``;`` that appears inside ``--`` line comments.
+
+    Without this, a schema comment like ``-- foo; bar`` would cause the
+    naive `script.split(";")` to mis-parse every statement after it. No
+    SQL in this module embeds a literal ``;`` inside a string, so a full
+    SQL parser is overkill — line-by-line ``--``-stripping is enough.
+
+    Returns a list of trimmed, non-empty statements.
+    """
+    stripped: list[str] = []
+    for line in script.splitlines():
+        idx = line.find("--")
+        if idx >= 0:
+            line = line[:idx]
+        stripped.append(line)
+    cleaned = "\n".join(stripped)
+    return [s.strip() for s in cleaned.split(";") if s.strip()]
+
+
 def _retry_connect(
     connect_fn: Callable[[], Any],
     *,
@@ -548,15 +569,12 @@ class _PostgresBackend(_Backend):
 
     def executescript(self, script):
         # Postgres doesn't have an executescript shortcut. Split on
-        # semicolon at statement boundaries (no SQL in this module
-        # embeds a literal ``;`` inside a string, which would break
-        # naive splitting). No explicit commit — the caller's
-        # ``with backend:`` transaction handles that.
+        # semicolon at statement boundaries — but FIRST strip ``--``
+        # comments line-by-line via _split_sql_statements so a ``;`` inside
+        # a comment doesn't break the split.
         with self._conn.cursor() as cur:
-            for raw in script.split(";"):
-                stmt = raw.strip()
-                if stmt:
-                    cur.execute(self._adapt(stmt))
+            for stmt in _split_sql_statements(script):
+                cur.execute(self._adapt(stmt))
 
     def __enter__(self):
         # psycopg 3.3 changed ``with conn:`` to close the connection on

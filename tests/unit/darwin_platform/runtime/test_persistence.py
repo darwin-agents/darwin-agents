@@ -466,3 +466,50 @@ def test_retry_connect_does_not_swallow_unexpected_errors():
             _connect, attempts=5, base_delay=1.0,
             sleep=lambda _s: None, retry_on=(_Transient,),
         )
+
+
+# -- SQL splitter (Postgres backend) --------------------------------------
+def test_split_sql_statements_ignores_semicolons_in_dash_comments():
+    from darwin_platform.runtime.persistence import _split_sql_statements
+
+    # Regression: a ``;`` inside an inline ``--`` comment must not split
+    # the script. Without comment-stripping, the executescript adapter
+    # would mis-parse every statement after the first comment containing
+    # a semicolon — and the supervisor would refuse to boot on Postgres.
+    script = """
+    -- Outer comment with a ; in it
+    CREATE TABLE a (id INT);
+    -- Multiple ; in one comment; like; this; too
+    CREATE TABLE b (id INT);
+    SELECT 1;
+    """
+    stmts = _split_sql_statements(script)
+    assert len(stmts) == 3
+    assert stmts[0].startswith("CREATE TABLE a")
+    assert stmts[1].startswith("CREATE TABLE b")
+    assert stmts[2] == "SELECT 1"
+
+
+def test_split_sql_statements_drops_empty_and_comment_only_lines():
+    from darwin_platform.runtime.persistence import _split_sql_statements
+
+    script = """
+    -- just a comment, no SQL
+    ;
+    ;
+
+    SELECT 1;
+    -- trailing comment
+    """
+    assert _split_sql_statements(script) == ["SELECT 1"]
+
+
+def test_split_sql_statements_preserves_strings_lacking_dashes():
+    """Sanity: a ``--``-free script splits exactly on ``;``."""
+    from darwin_platform.runtime.persistence import _split_sql_statements
+
+    script = "CREATE TABLE a (id INT); CREATE TABLE b (name TEXT);"
+    assert _split_sql_statements(script) == [
+        "CREATE TABLE a (id INT)",
+        "CREATE TABLE b (name TEXT)",
+    ]
