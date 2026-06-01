@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- feat(docker): add Next.js dashboard to local compose stack
+- feat(charts): add walletProvider, heartbeatSeconds, and extraArgs passthrough
+
 ### Changed
 
+- docs: sync unreleased changelog for infra consolidation and k8s fixes
+- refactor(terraform): deploy darwin-platform supervisor via Helm chart
 - refactor(infra): consolidate deploy assets under infra/
 - docs(engineering): update backlog for k8s substrate forwarding and SQL splitter
 - docs(engineering): document infra e2e verification and eight k8s driver fixes
