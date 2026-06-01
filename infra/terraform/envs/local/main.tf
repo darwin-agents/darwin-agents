@@ -131,5 +131,10 @@ module "platform" {
   # keys; the real chain config lands on each spawned pod separately.
   wallet_provider = "web3"
 
+  # Allow the local web dashboard (compose, :3000) to call the platform
+  # API cross-origin. Without this the supervisor is same-origin only and
+  # the browser blocks the dashboard's fetches (CORS preflight 405).
+  extra_args = ["--cors-origin", "http://localhost:3000"]
+
   depends_on = [module.cnpg, module.vault, module.litellm]
 }
