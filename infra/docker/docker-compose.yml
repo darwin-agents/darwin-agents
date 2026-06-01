@@ -3,12 +3,12 @@
 # One command brings up the supervisor, persistence, an LLM gateway,
 # metrics, and tracing:
 #
-#     cd docker && docker compose up --build
+#     cd infra/docker && docker compose up --build
 #
 # Compose auto-loads ./.env for the ${...} substitutions below — create it
-# with `cp ../.env.example .env` (the repo-root .env.example is the single
+# with `cp ../../.env.example .env` (the repo-root .env.example is the single
 # source of truth). Everything has a dev-only default so the stack comes up
-# even with no .env at all — see docker/README.md.
+# even with no .env at all — see infra/docker/README.md.
 
 name: darwin-platform
 
@@ -19,8 +19,8 @@ services:
       # Context is the repo root so the Dockerfile's COPY of pyproject /
       # uv.lock / src reaches the actual sources; the Dockerfile path is
       # resolved relative to that context.
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     image: darwin-platform:dev
     container_name: darwin-supervisor
     ports:
@@ -30,7 +30,7 @@ services:
       # Live source mount (local dev/test): PYTHONPATH=/app/src wins over the
       # installed package, so local edits (e.g. the drive-task done-callback)
       # take effect on restart without a rebuild. Remove for a pure-image run.
-      - ../src:/app/src:ro
+      - ../../src:/app/src:ro
       # Bearer-token auth. tokens.json (owner-dev-token + ops-dev-token) is
       # mounted read-only and activated by the --auth-tokens flag below.
       # Comment both out to fall back to permissive (trust-every-caller) mode.

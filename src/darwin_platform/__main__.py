@@ -499,7 +499,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
 
     # -- LLM gateway (doc 13: LiteLLMTransport → real proxy) ---------------
     # Point the genome's LLM transport at a running LiteLLM proxy. The
-    # bundled docker/litellm.config.yaml exposes tier-* model names on an
+    # bundled infra/docker/litellm.config.yaml exposes tier-* model names on an
     # OpenAI-compatible surface, so `openai/tier-*` + api_base routes
     # every call through the proxy. Without --litellm-url the supervisor
     # keeps the deterministic FakeLLM.
@@ -1617,7 +1617,7 @@ def build_parser() -> argparse.ArgumentParser:
     llm_group.add_argument(
         "--litellm-master-key", default=None, metavar="KEY",
         help="LiteLLM proxy master key (default: dev_only_master_key, "
-             "matching docker/litellm.config.yaml). "
+             "matching infra/docker/litellm.config.yaml). "
              "Env: DARWIN_LITELLM_MASTER_KEY",
     )
 

@@ -1,6 +1,6 @@
 # LiteLLM proxy config for the local kind stack.
 #
-# Same model_list as docker/litellm.config.yaml, MINUS the Redis cache
+# Same model_list as infra/docker/litellm.config.yaml, MINUS the Redis cache
 # section — Redis isn't deployed in the local infra stack, and LiteLLM's
 # cache init blocks on the unreachable host long enough to fail the
 # Terraform readiness wait.

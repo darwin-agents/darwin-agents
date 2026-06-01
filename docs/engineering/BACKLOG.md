@@ -241,28 +241,28 @@ see `memory/project_mobile_pwa.md` for the rationale. Docs 19, 22.
 EKS / Aurora / AWS-Vault explicitly; we replaced each with a
 self-hostable equivalent so the same modules run on a laptop (kind),
 self-hosted k3s, DOKS, GKE, AKS — anything `kubectl` reaches. Layout:
-  - `infra/envs/local/` — turnkey local stack via `make -C infra up`.
-  - `infra/modules/kind-cluster/` — 1 control + 2 worker kind nodes
+  - `infra/terraform/envs/local/` — turnkey local stack via `make -C infra/terraform up`.
+  - `infra/terraform/modules/kind-cluster/` — 1 control + 2 worker kind nodes
   with `extraPortMappings` 80→8000, 443→8443 + the `ingress-ready`
   label so ingress-nginx lands on the host-mapped node.
-  - `infra/modules/cnpg/` — CloudNativePG operator + a Postgres
+  - `infra/terraform/modules/cnpg/` — CloudNativePG operator + a Postgres
   `Cluster` CR; outputs the connection-string Secret name.
-  - `infra/modules/vault/` — HashiCorp Vault Helm release in dev mode
+  - `infra/terraform/modules/vault/` — HashiCorp Vault Helm release in dev mode
   (in-memory, auto-unsealed) with a generated root token; the
   variable surface is preserved so a future `modules/vault-prod/`
   with raft + KMS auto-unseal is a drop-in replacement.
-  - `infra/modules/litellm/` — proxy Deployment + Service +
-  ConfigMap (mounts the existing `docker/litellm.config.yaml`) +
+  - `infra/terraform/modules/litellm/` — proxy Deployment + Service +
+  ConfigMap (mounts the existing `infra/docker/litellm.config.yaml`) +
   Secret for provider keys.
-  - `infra/modules/darwin-platform/` — supervisor Deployment +
+  - `infra/terraform/modules/darwin-platform/` — supervisor Deployment +
   Service + Ingress + Recreate strategy + a `ClusterRole` granting
   the K8s driver the per-Darwin RBAC it needs (namespaces +
   configmaps / secrets / PVCs / services / deployments /
   networkpolicies, scoped cluster-wide because per-Darwin namespaces
   don't exist at plan time).
-  - `infra/Makefile` — `up`, `down`, `kubeconfig`, `logs`, `pods`,
+  - `infra/terraform/Makefile` — `up`, `down`, `kubeconfig`, `logs`, `pods`,
   `port-forward`. `make up` is `terraform apply -auto-approve`.
-  - `infra/README.md` — design rationale + quickstart.
+  - `infra/terraform/README.md` — design rationale + quickstart.
   
   AWS / GCP / Azure cluster modules deliberately omitted; the platform
   layer is provider-neutral, so adding a managed-K8s wrapper later is
@@ -414,7 +414,7 @@ comments before splitting; `executescript` now delegates to it.
 
 **Infra side**
 
-- `infra/envs/local/litellm.config.yaml` — env-specific config with
+- `infra/terraform/envs/local/litellm.config.yaml` — env-specific config with
 the Redis cache section stripped (the local stack doesn't deploy
 Redis, and LiteLLM's cache init blocks for ~minutes against
 unreachable Redis).
@@ -429,19 +429,19 @@ downward-API env var on the supervisor Deployment; added the
 loaded image and skips the unbuildable sidecar.
 - `modules/darwin-platform/variables.tf` — new `orchestrator_image`
 variable.
-- `infra/Makefile` + `infra/README.md` — documented inotify prerequisite
+- `infra/terraform/Makefile` + `infra/terraform/README.md` — documented inotify prerequisite
 (`fs.inotify.max_user_instances=512`), updated kind version requirement
 (≥ 0.24 for cgroup v2 hosts).
 
 **Docker / image**
 
-- `docker/Dockerfile` — added `k8s,cdp,webpush,lancedb` to the uv
+- `infra/docker/Dockerfile` — added `k8s,cdp,webpush,lancedb` to the uv
 install extras. Without them the supervisor crashes on import as
 soon as the K8s driver / CDP / push sink / Vector store is wired.
 
 **State after this pass**
 
-- `make -C infra up` brings up a 6-pod cluster end-to-end
+- `make -C infra/terraform up` brings up a 6-pod cluster end-to-end
 - `curl -X POST http://localhost:8000/darwins -d '{"opening_usdc":1.0}'`
 returns HTTP 201 with a live, ticking Darwin
 - A 9th per-Darwin pod appears in the cluster; `GET /darwins`

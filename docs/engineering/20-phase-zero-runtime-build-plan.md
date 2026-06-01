@@ -250,7 +250,7 @@ uv run python -m tools.soak.run_soak --duration 24h --url https://darwin-dev.int
 | OpenTelemetry tracing           | **Done**   | `tracing.py` — NoOp shim when SDK absent                   |
 | Soak test harness (24h)         | **TODO**   | `tools/soak/` — the Phase 0 acceptance gate                 |
 | Next.js dashboard (minimal)     | **TODO**   | List Darwins + event log view (Phase 0 MVP)                 |
-| Helm chart dev values           | **Done**   | `deploy/helm/` — values.yaml + templates                    |
+| Helm chart dev values           | **Done**   | `infra/charts/` — values.yaml + templates                    |
 | Dev EKS Terraform               | **TODO**   | AWS EKS + Aurora + ElastiCache IaC                          |
 
 ## The minimal dashboard (Phase 0 scope)

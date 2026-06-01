@@ -20,7 +20,7 @@ plan: init  ## terraform plan
 up: init  ## Bring the whole local stack online (kind cluster + Helm releases + supervisor)
 	$(TF) apply -auto-approve
 	@echo
-	@echo "✓ infra is up. Run:  eval \$$(make -C infra kubeconfig)"
+	@echo "✓ infra is up. Run:  eval \$$(make -C infra/terraform kubeconfig)"
 	@echo "  Then:              kubectl get pods -A"
 
 apply: up

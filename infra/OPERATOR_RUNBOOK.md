@@ -7,7 +7,7 @@ respond to common failures, and where to look first when something
 trips.
 
 For an architecture tour, see `docs/engineering/`. For the chart's
-values reference, see `deploy/helm/darwin-platform/README.md`.
+values reference, see `infra/charts/darwin-platform/README.md`.
 
 ---
 
@@ -145,7 +145,7 @@ If it does, the SQLite library has been patched in a way that
 overrides our flag. Switch to the Postgres backend.
 
 ### `helm install` rendering fails with provider templates
-Run `helm template darwin deploy/helm/darwin-platform > /tmp/out.yaml`
+Run `helm template darwin infra/charts/darwin-platform > /tmp/out.yaml`
 and grep for the failing kind. The CI's `helm template (provider
 integrations)` step covers the supported combinations; an
 unsupported combo (e.g. `existingSecret` AND inline values for the
@@ -213,7 +213,7 @@ Use the `test_redteam.py` scenarios as the starting checklist.
 
 ## 7. Cost dashboards
 
-Grafana dashboard JSON: `deploy/grafana/darwin-platform-dashboard.json`.
+Grafana dashboard JSON: `infra/grafana/darwin-platform-dashboard.json`.
 
 Panels relevant for cost:
 - Platform revenue (USDC, cumulative)

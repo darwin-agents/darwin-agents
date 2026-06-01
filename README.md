@@ -212,10 +212,12 @@ In-memory implementations of external deps (`FakeLLM`, `FakeWallet`, `FakeVault`
 | `tools/soak/`                  | Long-run soak harness for supervisor invariants                                                                                                                                 |
 | `tools/evolution_test/`        | End-to-end evolution / patch pipeline exercises                                                                                                                                 |
 | `scripts/changelog.py`         | `git-cliff` integration for `CHANGELOG.md` (via `make changelog`)                                                                                                               |
-| `docker/`                      | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger — [`docker/README.md`](docker/README.md)                                                                   |
-| `deploy/helm/darwin-platform/` | Production Kubernetes chart                                                                                                                                                     |
-| `deploy/grafana/`              | Dashboard JSON for platform metrics                                                                                                                                             |
-| `deploy/OPERATOR_RUNBOOK.md`   | Provider matrix, env vars, failure-response checklist                                                                                                                           |
+| `infra/`                         | All build & deploy assets — Docker stack, Helm chart, Terraform, dashboards, runbook |
+| `infra/docker/`                  | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger — [`infra/docker/README.md`](infra/docker/README.md) |
+| `infra/charts/darwin-platform/`  | Production Kubernetes Helm chart — [`infra/charts/darwin-platform/README.md`](infra/charts/darwin-platform/README.md) |
+| `infra/terraform/`               | Cloud-agnostic Terraform (kind/CNPG/Vault/LiteLLM/platform) — [`infra/terraform/README.md`](infra/terraform/README.md) |
+| `infra/grafana/`                 | Dashboard JSON for platform metrics |
+| `infra/OPERATOR_RUNBOOK.md`      | Provider matrix, env vars, failure-response checklist |
 | `docs/overview/`               | Vision, principles, prior art, market, legal, roadmap                                                                                                                           |
 | `docs/engineering/`            | Architecture and build plans — [`docs/engineering/00-README.md`](docs/engineering/00-README.md)                                                                                 |
 | `docs/marketing/`              | Product-facing copy assets                                                                                                                                                      |
@@ -255,10 +257,10 @@ Prints a live ledger, neuron dispatch log, and fitness trajectory.
 Supervisor on `:8000`, Postgres, LiteLLM proxy, Prometheus on `:9090`, Jaeger on `:16686`:
 
 ```bash
-make docker-up      # copies .env.example → docker/.env if missing, then compose up
+make docker-up      # copies .env.example → infra/docker/.env if missing, then compose up
 ```
 
-Full instructions: [`docker/README.md`](docker/README.md)
+Full instructions: [`infra/docker/README.md`](infra/docker/README.md)
 
 ### 4 — Platform CLI (bare metal)
 
@@ -390,15 +392,15 @@ pip install -e ".[dev]"        # pytest + ruff — development tooling
 
 ### Docker Compose (dev / staging)
 
-See [`docker/README.md`](docker/README.md).
+See [`infra/docker/README.md`](infra/docker/README.md).
 
 ### Kubernetes (Helm)
 
-See [`deploy/helm/darwin-platform/README.md`](deploy/helm/darwin-platform/README.md) for the full values reference, HA setup, real-adapter secret injection, and production checklist.
+See [`infra/charts/darwin-platform/README.md`](infra/charts/darwin-platform/README.md) for the full values reference, HA setup, real-adapter secret injection, and production checklist.
 
 ```bash
 # HA production install:
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --namespace darwin --create-namespace \
   --set image.tag=sha-abc1234 \
   --set replicaCount=3 \

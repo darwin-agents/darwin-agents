@@ -16,16 +16,16 @@ and tracing.
 
 ## Quickstart
 
-All `docker compose` commands run from this `docker/` directory (that is
+All `docker compose` commands run from this `infra/docker/` directory (that is
 where `docker-compose.yml` lives, and Compose auto-loads `./.env` from
 there).
 
 ```bash
-cd docker
+cd infra/docker
 
 # 1. (Optional) Seed provider API keys so LiteLLM works.
 #    .env.example lives at the repo root — the single source of truth.
-cp ../.env.example .env
+cp ../../.env.example .env
 $EDITOR .env
 
 # 2. (Optional) Enable bearer auth on the supervisor.
@@ -88,7 +88,7 @@ The supervisor supports two backends, both restart-survivable:
 - **Postgres:** uncomment the `--db=postgresql://...` line in
   `docker-compose.yml` to point the supervisor at the bundled
   `postgres` service. The default credentials are dev-only —
-  override via `docker/.env`.
+  override via `infra/docker/.env`.
 
 Audit log + tokens + billing + lineage + escalation tickets + monitor
 alerts persist in either mode.

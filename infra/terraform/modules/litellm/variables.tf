@@ -31,6 +31,6 @@ variable "provider_keys" {
 
 variable "config_yaml" {
   type        = string
-  description = "Optional override for the LiteLLM proxy config. Default is the model_list from docker/litellm.config.yaml (read at apply time)."
+  description = "Optional override for the LiteLLM proxy config. Default is the model_list from infra/docker/litellm.config.yaml (read at apply time)."
   default     = null
 }

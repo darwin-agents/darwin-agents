@@ -10,13 +10,13 @@ defaults to deny-egress with explicit allow rules.
 
 ```bash
 # Render and inspect before installing.
-helm template darwin deploy/helm/darwin-platform | less
+helm template darwin infra/charts/darwin-platform | less
 
 # Install with defaults (no auth, no ingress — DEV ONLY).
-helm install darwin deploy/helm/darwin-platform
+helm install darwin infra/charts/darwin-platform
 
 # Install with production-flavoured overrides.
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --namespace darwin --create-namespace \
   --set image.tag=sha-abc1234 \
   --set auth.enabled=true \
@@ -100,12 +100,12 @@ deployments and dev clusters. Switch to Postgres when you want:
 
 ```bash
 # Inline DSN (simplest; the URL ends up in the rendered manifest).
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --set database.url='postgresql://darwin:CHANGE_ME@postgres-rw:5432/darwin'
 
 # Production (recommended): reference a Secret managed by ExternalSecrets
 # / SealedSecrets. The chart never sees the URL in plain text.
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --set database.existingSecret=darwin-db-url
 ```
 
@@ -114,7 +114,7 @@ helm install darwin deploy/helm/darwin-platform \
 Requires Postgres and `leaderElection.enabled`:
 
 ```bash
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --set replicaCount=3 \
   --set leaderElection.enabled=true \
   --set database.existingSecret=darwin-db-url
@@ -206,7 +206,7 @@ Until `envFrom` is a first-class chart value, the simplest production
 approach is `extraEnv` with `valueFrom.secretKeyRef`:
 
 ```bash
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --set 'extraEnv[0].name=DARWIN_RPC_URL' \
   --set 'extraEnv[0].valueFrom.secretKeyRef.name=darwin-wallet' \
   --set 'extraEnv[0].valueFrom.secretKeyRef.key=rpc_url' \
@@ -254,7 +254,7 @@ Before exposing publicly:
 ## Upgrades
 
 ```bash
-helm upgrade darwin deploy/helm/darwin-platform -f my-values.yaml
+helm upgrade darwin infra/charts/darwin-platform -f my-values.yaml
 ```
 
 The PVC has `helm.sh/resource-policy=keep`, so `helm uninstall` does

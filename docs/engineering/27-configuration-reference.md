@@ -247,7 +247,7 @@ Configured in `src/darwin_platform/observability/monitoring.py`. Currently code 
 
 ## Docker Compose environment
 
-The `docker/.env` file configures the compose stack:
+The `infra/docker/.env` file configures the compose stack:
 
 | Variable | Service | Purpose |
 | -------- | ------- | ------- |
@@ -255,11 +255,11 @@ The `docker/.env` file configures the compose stack:
 | `DARWIN_RPC_URL` | supervisor | Optional: real wallet (if set in compose override) |
 | `DARWIN_WALLET_KEY` | supervisor | Optional: real wallet signing |
 
-See [`docker/README.md`](../../docker/README.md) for the complete compose setup.
+See [`infra/docker/README.md`](../../infra/docker/README.md) for the complete compose setup.
 
 ## Helm values (summary)
 
-The full values reference is in [`deploy/helm/darwin-platform/README.md`](../../deploy/helm/darwin-platform/README.md). Key values:
+The full values reference is in [`infra/charts/darwin-platform/README.md`](../../infra/charts/darwin-platform/README.md). Key values:
 
 | Value path | Maps to | Notes |
 | ---------- | ------- | ----- |

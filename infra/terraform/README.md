@@ -8,7 +8,7 @@ Hetzner, GKE, AKS, or anything else `kubectl` can reach.
 
 What's provided:
 
-- `envs/local/` — turnkey **local** stack. One `make infra-up` and you
+- `envs/local/` — turnkey **local** stack. One `make -C infra/terraform up` and you
   get a kind cluster, CloudNativePG-managed Postgres, HashiCorp Vault
   (dev mode), LiteLLM proxy, and the `darwin-platform` supervisor
   deployment.
@@ -71,10 +71,10 @@ out to `kind create cluster`) will fail.
 ## Quickstart — local
 
 ```bash
-make -C infra up           # brings everything online (~3-5 min cold start)
-make -C infra kubeconfig   # echoes KUBECONFIG export for your shell
-make -C infra logs SVC=darwin-platform
-make -C infra down         # tears the stack down + deletes the kind cluster
+make -C infra/terraform up           # brings everything online (~3-5 min cold start)
+make -C infra/terraform kubeconfig   # echoes KUBECONFIG export for your shell
+make -C infra/terraform logs SVC=darwin-platform
+make -C infra/terraform down         # tears the stack down + deletes the kind cluster
 ```
 
 The platform's REST API is reachable at `http://localhost:8000` after

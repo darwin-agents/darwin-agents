@@ -14,12 +14,12 @@ on:
   push:
     branches: [main, "release/**"]
     paths:
-      - "deploy/helm/**"
+      - "infra/charts/**"
       - ".github/workflows/helm.yml"
   pull_request:
     branches: [main, "release/**"]
     paths:
-      - "deploy/helm/**"
+      - "infra/charts/**"
       - ".github/workflows/helm.yml"
   workflow_dispatch: {}
 
@@ -42,11 +42,11 @@ jobs:
           version: v3.14.0
 
       - name: helm lint
-        run: helm lint deploy/helm/darwin-platform
+        run: helm lint infra/charts/darwin-platform
 
       - name: helm template (default values)
         run: |
-          helm template darwin deploy/helm/darwin-platform > /tmp/default.yaml
+          helm template darwin infra/charts/darwin-platform > /tmp/default.yaml
           # Sanity: every default install renders at least Deployment +
           # Service + PVC + ServiceAccount.
           for kind in Deployment Service PersistentVolumeClaim ServiceAccount NetworkPolicy; do
@@ -56,8 +56,8 @@ jobs:
 
       - name: helm template (production values fixture)
         run: |
-          helm template darwin deploy/helm/darwin-platform \
-            -f deploy/helm/darwin-platform/tests/values-prod.yaml \
+          helm template darwin infra/charts/darwin-platform \
+            -f infra/charts/darwin-platform/tests/values-prod.yaml \
             > /tmp/prod.yaml
           # Production fixture exercises every optional template. Note:
           # the Secret is NOT rendered when auth.existingSecret is set
@@ -73,7 +73,7 @@ jobs:
           # Exercise the Secret-rendering path with auth.enabled=true and
           # no existingSecret — the chart should produce a Secret with
           # tokens.json stringData.
-          helm template darwin deploy/helm/darwin-platform \
+          helm template darwin infra/charts/darwin-platform \
             --set auth.enabled=true \
             --set 'auth.tokens[0].token=alice' \
             --set 'auth.tokens[0].scopes[0]=owner' \
@@ -88,7 +88,7 @@ jobs:
           # Exercise the Postgres-mode rendering: PVC is omitted, the
           # Deployment env carries DATABASE_URL, the Deployment args
           # use --db=$(DATABASE_URL). Both URL forms (inline + Secret).
-          helm template darwin deploy/helm/darwin-platform \
+          helm template darwin infra/charts/darwin-platform \
             --set database.url='postgresql://darwin:test@pg:5432/darwin' \
             > /tmp/pg.yaml
           grep -q "^kind: PersistentVolumeClaim$" /tmp/pg.yaml \
@@ -96,7 +96,7 @@ jobs:
           grep -q "DATABASE_URL" /tmp/pg.yaml \
             || { echo "Postgres mode missing DATABASE_URL env"; exit 1; }
           # existingSecret path: env value should reference the Secret.
-          helm template darwin deploy/helm/darwin-platform \
+          helm template darwin infra/charts/darwin-platform \
             --set database.existingSecret=darwin-db-url \
             > /tmp/pgsec.yaml
           grep -q "secretKeyRef:" /tmp/pgsec.yaml \
@@ -106,7 +106,7 @@ jobs:
         run: |
           # Inline values render a providers Secret + the corresponding
           # env vars on the Deployment.
-          helm template darwin deploy/helm/darwin-platform \
+          helm template darwin infra/charts/darwin-platform \
             --set 'providers.sanctions.provider=chainalysis' \
             --set 'providers.sanctions.apiKey=test-key' \
             --set 'providers.notifications.slackWebhookUrl=https://hook.example/x' \
@@ -128,7 +128,7 @@ jobs:
           # When existingSecret is set, no providers Secret should be
           # rendered, but env vars should still be wired via
           # secretKeyRef pointing at the referenced Secret.
-          helm template darwin deploy/helm/darwin-platform \
+          helm template darwin infra/charts/darwin-platform \
             --set 'providers.notifications.existingSecret=my-notif-secret' \
             > /tmp/providers-ext.yaml
           grep -q "DARWIN_SLACK_WEBHOOK_URL" /tmp/providers-ext.yaml \

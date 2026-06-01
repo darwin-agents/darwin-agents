@@ -24,23 +24,23 @@ darwin-platform serve --db state.db \
 ### Docker Compose (local stack)
 
 ```bash
-cd docker
-cp ../.env.example .env   # add LLM provider keys (.env.example: repo root)
+cd infra/docker
+cp ../../.env.example .env   # add LLM provider keys (.env.example: repo root)
 docker compose up --build
 ```
 
 Services: supervisor (:8000), postgres (:5432), litellm (:4000), prometheus (:9090), jaeger (:16686).
 
-See [`docker/README.md`](../../docker/README.md) for full documentation.
+See [`infra/docker/README.md`](../../infra/docker/README.md) for full documentation.
 
 ### Helm (Kubernetes)
 
 ```bash
 # Dev (defaults — no auth, SQLite):
-helm install darwin deploy/helm/darwin-platform
+helm install darwin infra/charts/darwin-platform
 
 # Production:
-helm install darwin deploy/helm/darwin-platform \
+helm install darwin infra/charts/darwin-platform \
   --namespace darwin --create-namespace \
   --set image.tag=sha-abc1234 \
   --set auth.enabled=true \
@@ -51,7 +51,7 @@ helm install darwin deploy/helm/darwin-platform \
   --set serviceMonitor.enabled=true
 ```
 
-See [`deploy/helm/darwin-platform/README.md`](../../deploy/helm/darwin-platform/README.md) for the full values reference.
+See [`infra/charts/darwin-platform/README.md`](../../infra/charts/darwin-platform/README.md) for the full values reference.
 
 ## Health-check endpoints
 
