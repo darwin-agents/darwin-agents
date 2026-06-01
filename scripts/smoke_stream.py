@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Darwin platform smoke test — WebSocket live-stream variant.
 
-Same interaction story as ``smoke_test.sh`` (spawn parent A -> watch it
+Same interaction story as ``scripts/smoke_test.sh`` (spawn parent A -> watch it
 think -> reproduce into child B -> kill both), but instead of polling the
 REST event log it attaches to the live multiplexed stream at
 ``/darwins/{id}/stream`` and prints events as they happen.
@@ -10,9 +10,9 @@ REST calls use stdlib urllib (no dependency). The WebSocket uses the
 ``websockets`` package:  pip install websockets
 
 Usage:
-    ./smoke_stream.py                 # full flow against http://localhost:8000
-    ./smoke_stream.py darwin-abc123   # just live-tail an existing Darwin
-    BASE=http://host:8000 WATCH_SECS=60 ./smoke_stream.py
+    ./scripts/smoke_stream.py                 # full flow against http://localhost:8000
+    ./scripts/smoke_stream.py darwin-abc123   # just live-tail an existing Darwin
+    BASE=http://host:8000 WATCH_SECS=60 ./scripts/smoke_stream.py
 
 Auth: permissive when the supervisor runs without --auth-tokens (the compose
 default). Set TOKEN=... to send a bearer token (?token= handshake).

@@ -11,8 +11,8 @@
 # Auth is permissive when the supervisor runs without --auth-tokens (the
 # compose default), so no bearer token is needed. Requires: curl, jq.
 #
-#   ./smoke_test.sh            # against http://localhost:8000
-#   BASE=http://host:8000 ./smoke_test.sh
+#   ./scripts/smoke_test.sh                  # against http://localhost:8000
+#   BASE=http://host:8000 ./scripts/smoke_test.sh
 #
 set -euo pipefail
 
