@@ -280,6 +280,23 @@ serviceAccount:
 podDisruptionBudget:
   enabled: false
 
+# -- Supervisor runtime flags ----------------------------------------------
+# Direct passthroughs to `darwin-platform serve`. Each is optional; an
+# empty value omits the flag and lets the supervisor's own CLI default
+# apply.
+#
+# `walletProvider` is forwarded into every spawned Darwin's DarwinPodConfig
+# (in driver.mode=k8s the supervisor itself holds no wallet). Leaving it
+# empty falls back to the CLI default (`cdp`), which requires CDP API
+# keys — set it explicitly (e.g. `web3` / `local-vault`) when those keys
+# aren't present, or the supervisor's preflight refuses to start.
+walletProvider: ""        # → --wallet-provider; empty uses the CLI default
+heartbeatSeconds: ""      # → --heartbeat-seconds; empty uses the CLI default (5)
+# Escape hatch for flags the chart doesn't model as first-class values
+# (e.g. --clerk-issuer, --push-provider). Appended verbatim to the args.
+extraArgs: []
+# - --clerk-issuer=https://clerk.example.com
+
 # -- Driver mode (in-process vs K8s) ---------------------------------------
 # `in-process` (default): every Darwin is an asyncio.Task in the
 # supervisor pod. Right for dev + single-tenant deploys.

@@ -17,7 +17,10 @@ type: application
 # Chart-side semver. Bump when chart templates change in a breaking way.
 # 0.2.0 adds the K8s-driver mode (per-Darwin namespace + orchestrator
 # pod + egress proxy + Kata RuntimeClass + RBAC for namespace mgmt).
-version: 0.2.0
+# 0.3.0 adds first-class walletProvider / heartbeatSeconds / extraArgs
+# passthroughs so the Terraform local stack can drive the chart instead
+# of re-declaring the supervisor workload.
+version: 0.3.0
 
 # The supervisor image tag this chart's manifests are validated against.
 # Helm's standard `image.tag` value can override this per-release.

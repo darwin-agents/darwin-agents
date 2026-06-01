@@ -84,6 +84,10 @@ same cluster:
 | `affinity`                                   | `{}`                                                 |                                                                                                            |
 | `podAnnotations`                             | `{}`                                                 |                                                                                                            |
 | `extraEnv`                                   | `[]`                                                 | Extra env vars injected verbatim. Use to pass real-adapter secrets (see below).                            |
+| `walletProvider`                             | `""` → supervisor default (`cdp`)                    | `--wallet-provider` forwarded into spawned Darwins. Set to `web3` / `local-vault` when no CDP keys are present, else preflight fails. |
+| `heartbeatSeconds`                           | `""` → supervisor default (`5`)                      | `--heartbeat-seconds` drive-loop interval.                                                                  |
+| `extraArgs`                                  | `[]`                                                 | Flags appended verbatim to `darwin-platform serve` (e.g. `--clerk-issuer`, `--push-provider`).             |
+| `driver.mode`                                | `in-process`                                         | `k8s` runs each Darwin in its own namespace + orchestrator pod (production posture).                        |
 
 ## SQLite vs Postgres / HA
 

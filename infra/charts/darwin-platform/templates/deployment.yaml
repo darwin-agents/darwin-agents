@@ -74,6 +74,14 @@ spec:
             - --leader-lock-key={{ .Values.leaderElection.lockKey }}
             {{- end }}
             {{- end }}
+            {{- if .Values.walletProvider }}
+            # Forwarded into each spawned Darwin's DarwinPodConfig (the
+            # supervisor itself holds no wallet in k8s mode).
+            - --wallet-provider={{ .Values.walletProvider }}
+            {{- end }}
+            {{- if .Values.heartbeatSeconds }}
+            - --heartbeat-seconds={{ .Values.heartbeatSeconds }}
+            {{- end }}
             {{- if eq .Values.driver.mode "k8s" }}
             - --driver=k8s
             - --k8s-namespace-prefix={{ .Values.driver.namespacePrefix }}
@@ -94,6 +102,9 @@ spec:
             - --k8s-postgres-pod-label={{ .Values.postgresEgress.podLabelKey }}={{ .Values.postgresEgress.podLabelValue }}
             - --k8s-postgres-port={{ .Values.postgresEgress.port }}
             {{- end }}
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: http
