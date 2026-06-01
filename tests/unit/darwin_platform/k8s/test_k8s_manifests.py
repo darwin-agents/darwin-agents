@@ -246,3 +246,32 @@ def test_build_bundle_returns_every_resource_in_one_namespace():
     for obj in (bundle.configmap, bundle.secret, bundle.pvc, bundle.service,
                 bundle.deployment, bundle.network_policy):
         assert obj["metadata"]["namespace"] == ns_name
+
+
+def test_extra_env_lands_on_orchestrator_container():
+    """`DarwinPodConfig.extra_env` is the seam the supervisor uses to
+    forward substrate config (DARWIN_LITELLM_URL, DARWIN_VAULT_URL, ...)
+    onto per-Darwin pods in --driver=k8s mode. Each entry must appear in
+    the orchestrator container's env list, in addition to the built-ins
+    DARWIN_ID / DARWIN_NAMESPACE that build_deployment always emits."""
+    cfg = DarwinPodConfig(
+        extra_env=(
+            {"name": "DARWIN_LITELLM_URL", "value": "http://litellm:4000"},
+            {"name": "DARWIN_LITELLM_MASTER_KEY", "value": "sk-test"},
+            {"name": "DARWIN_VAULT_URL", "value": "http://vault:8200"},
+            {"name": "DARWIN_VAULT_TOKEN", "value": "root-tok"},
+        ),
+    )
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=cfg, opening_usdc=1.0, escalation_auto="approve",
+    )
+    env = d["spec"]["template"]["spec"]["containers"][0]["env"]
+    env_names = {e["name"]: e.get("value") for e in env if "value" in e}
+    assert env_names["DARWIN_LITELLM_URL"] == "http://litellm:4000"
+    assert env_names["DARWIN_LITELLM_MASTER_KEY"] == "sk-test"
+    assert env_names["DARWIN_VAULT_URL"] == "http://vault:8200"
+    assert env_names["DARWIN_VAULT_TOKEN"] == "root-tok"
+    # The built-ins also still present.
+    assert env_names["DARWIN_ID"] == "abc123"
+    assert env_names["DARWIN_NAMESPACE"] == "darwin-abc123"

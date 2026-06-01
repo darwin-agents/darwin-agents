@@ -1005,6 +1005,24 @@ def _build_k8s_driver(args: argparse.Namespace):
         or os.environ.get("POD_NAMESPACE")
         or "default"
     )
+    # Substrate config forwarded onto each per-Darwin pod via env. The
+    # supervisor itself can't host these substrates in --driver=k8s mode
+    # (the real-factory preflight refuses), so the operator stashes the
+    # connection details under DARWIN_POD_* env vars on the supervisor
+    # pod and the K8s driver hands them off to spawned orchestrators.
+    # Each entry maps "what the supervisor pod sees" → "what the
+    # orchestrator's _build_real_factories looks for".
+    pod_extra_env: list[dict[str, Any]] = []
+    for supervisor_key, pod_key in (
+        ("DARWIN_POD_LITELLM_URL", "DARWIN_LITELLM_URL"),
+        ("DARWIN_POD_LITELLM_KEY", "DARWIN_LITELLM_MASTER_KEY"),
+        ("DARWIN_POD_VAULT_ADDR", "DARWIN_VAULT_URL"),
+        ("DARWIN_POD_VAULT_TOKEN", "DARWIN_VAULT_TOKEN"),
+    ):
+        value = os.environ.get(supervisor_key)
+        if value:
+            pod_extra_env.append({"name": pod_key, "value": value})
+
     pod_config = DarwinPodConfig(
         orchestrator_image=orchestrator_image,
         supervisor_namespace=supervisor_namespace,
@@ -1012,6 +1030,7 @@ def _build_k8s_driver(args: argparse.Namespace):
         # per-Darwin pod. Without this, the pod default ("cdp") is used
         # regardless of what the operator started the supervisor with.
         wallet_provider=getattr(args, "wallet_provider", None) or "cdp",
+        extra_env=tuple(pod_extra_env),
         runtime_class_name=getattr(args, "k8s_runtime_class", None) or "kata",
         # Empty string means "skip the LanceDB sidecar entirely" — the
         # orchestrator falls back to the deterministic in-memory
