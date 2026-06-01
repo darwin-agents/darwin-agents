@@ -268,7 +268,7 @@ Full instructions: [`infra/docker/README.md`](infra/docker/README.md)
 pip install -e ".[platform,postgres]"
 
 # Dev (SQLite, no auth):
-darwin-platform serve --db state.db
+darwin-platform serve --db var/state.db
 
 # Production (Postgres, HA leader election):
 darwin-platform serve \

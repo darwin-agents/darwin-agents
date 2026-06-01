@@ -6,7 +6,7 @@ SHELL := /bin/bash
 
 UV              := uv
 RUFF_PATHS      := src tests tools
-DB              ?= state.db
+DB              ?= var/state.db
 COMPOSE         := docker compose -f infra/docker/docker-compose.yml
 HELM_CHART      := infra/charts/darwin-platform
 POSTGRES_DSN    ?= postgresql://darwin:test@127.0.0.1:5432/darwin
@@ -45,7 +45,8 @@ lock: ## Refresh uv.lock after pyproject changes
 # CORS_ORIGINS is space-separated; map it to repeated --cors-origin flags.
 CORS_FLAGS = $(foreach o,$(CORS_ORIGINS),--cors-origin $(o))
 
-serve: install-serve ## Run supervisor on SQLite (default: state.db)
+serve: install-serve ## Run supervisor on SQLite (default: var/state.db)
+	@mkdir -p $(dir $(DB))
 	$(UV) run darwin-platform serve --db $(DB) $(CORS_FLAGS)
 
 serve-postgres: install-serve ## Run supervisor against POSTGRES_DSN
@@ -60,7 +61,7 @@ serve-postgres: install-serve ## Run supervisor against POSTGRES_DSN
 # Env vars are loaded from .env automatically. Override DB / TOKENS via
 # CLI: `make real TOKENS=path/to/tokens.json DB=prod.db NETWORK=mainnet`.
 
-REAL_TOKENS  ?= tokens.json
+REAL_TOKENS  ?= var/tokens.json
 REAL_NETWORK ?= testnet
 REAL_OPENING_USDC ?= 1.0
 
@@ -101,6 +102,7 @@ real-preflight: ## Validate .env has the credentials a real boot needs
 real-serve: install-all ## Boot platform against real adapters (after preflight)
 	@test -f .env  || { echo "missing .env" >&2; exit 1; }
 	@test -f $(REAL_TOKENS) || { echo "missing $(REAL_TOKENS); run: make real-preflight" >&2; exit 1; }
+	@mkdir -p $(dir $(DB))
 	set -a; . ./.env; set +a; \
 	  $(UV) run --all-extras darwin-platform serve \
 	    --db $(DB) \

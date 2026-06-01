@@ -27,8 +27,8 @@ Real-adapter flags (all optional; fakes are used when omitted):
 Examples::
 
     python -m darwin_platform serve
-    python -m darwin_platform serve --host 0.0.0.0 --port 8000 --db state.db
-    python -m darwin_platform serve --auth-tokens tokens.json
+    python -m darwin_platform serve --host 0.0.0.0 --port 8000 --db var/state.db
+    python -m darwin_platform serve --auth-tokens var/tokens.json
 
     # Run against Base Sepolia testnet with a real Vault:
     python -m darwin_platform serve --db postgres://... \\

@@ -9,14 +9,14 @@
 #                               check + refuses if the RPC URL still says
 #                               "sepolia".
 #   --tokens PATH               Path to the auth-tokens JSON file. Default:
-#                               tokens.json in the repo root. Created from a
+#                               var/tokens.json (gitignored). Created from a
 #                               template if missing.
 #   --strict                    Treat optional integrations (Slack, FCM,
 #                               PagerDuty, Vault, Stripe, KYC) as required.
 set -euo pipefail
 
 NETWORK="testnet"
-TOKENS_FILE="tokens.json"
+TOKENS_FILE="var/tokens.json"
 STRICT=0
 
 while [[ $# -gt 0 ]]; do
@@ -120,6 +120,7 @@ if [[ -f "$TOKENS_FILE" ]]; then
   fi
 else
   printf "${C_Y}create ${C_X}  %-32s writing template at %s\n" "auth-tokens" "$TOKENS_FILE"
+  mkdir -p "$(dirname "$TOKENS_FILE")"
   cat > "$TOKENS_FILE" <<'JSON'
 {
   "tokens": [
