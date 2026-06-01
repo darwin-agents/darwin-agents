@@ -4,11 +4,14 @@ output "namespace" {
 }
 
 output "service_name" {
-  value       = kubernetes_service.platform.metadata[0].name
+  # The chart names its Service (and ServiceAccount) after the release.
+  value       = local.release_name
   description = "Kubernetes Service the supervisor's HTTP API answers on."
+  depends_on  = [helm_release.platform]
 }
 
 output "service_account" {
-  value       = kubernetes_service_account.platform.metadata[0].name
+  value       = local.release_name
   description = "ServiceAccount the supervisor pod runs as (carries the K8s-driver RBAC)."
+  depends_on  = [helm_release.platform]
 }

@@ -89,12 +89,23 @@ host via an extraPortMapping).
 | Postgres         | CloudNativePG operator + 1-instance Cluster CR       | `modules/cnpg/`           |
 | Secrets          | HashiCorp Vault (dev mode, in-memory)                | `modules/vault/`          |
 | LLM router       | LiteLLM proxy Deployment + Service + ConfigMap       | `modules/litellm/`        |
-| Platform         | `darwin-platform` supervisor Deployment + RBAC       | `modules/darwin-platform/`|
+| Platform         | `darwin-platform` supervisor (via the Helm chart)    | `modules/darwin-platform/`|
+
+`modules/darwin-platform/` is a thin wrapper that installs the
+`infra/charts/darwin-platform` Helm chart (the single source of truth
+for the supervisor's Deployment, Service, ServiceAccount, and K8s-driver
+RBAC) and wires its values to the CNPG / Vault / LiteLLM module outputs.
+It keeps two things in Terraform that the chart deliberately doesn't
+model: the `DARWIN_POD_*` Secret (substrate creds the driver mounts onto
+spawned pods) and the NGINX Ingress fronting the API on the kind host
+port. The local stack runs the chart's k8s driver mode with the
+production extras stripped (no egress proxy / per-Darwin NetworkPolicies
+/ LanceDB sidecar).
 
 The supervisor's K8s driver creates one namespace per Darwin (per doc
-08) — `modules/darwin-platform/` grants it the cluster-scoped RBAC
-needed to do that (create/delete namespaces; within each, manage
-configmaps, secrets, PVCs, services, deployments, network policies).
+08) — the chart grants it the cluster-scoped RBAC needed to do that
+(create/delete namespaces; within each, manage configmaps, secrets,
+PVCs, services, deployments, network policies).
 
 ## State
 

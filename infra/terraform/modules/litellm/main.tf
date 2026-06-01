@@ -132,7 +132,7 @@ resource "kubernetes_deployment" "this" {
               memory = "512Mi"
             }
             limits = {
-              cpu    = "1"
+              cpu = "1"
               # 1Gi was getting OOMKilled at boot — the proxy pulls in a
               # big SDK surface (every provider's SDK) before listening,
               # which spikes RSS well over 1Gi briefly.

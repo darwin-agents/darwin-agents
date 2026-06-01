@@ -78,7 +78,10 @@ resource "kubernetes_ingress_v1" "platform" {
           path_type = "Prefix"
           backend {
             service {
-              name = kubernetes_service.platform.metadata[0].name
+              # The chart names its Service after the release (fullname
+              # helper). Reference it by name so we don't depend on a
+              # TF-managed Service resource that no longer exists.
+              name = local.release_name
               port {
                 number = var.service_port
               }
@@ -89,5 +92,5 @@ resource "kubernetes_ingress_v1" "platform" {
     }
   }
 
-  depends_on = [helm_release.ingress_nginx]
+  depends_on = [helm_release.ingress_nginx, helm_release.platform]
 }
