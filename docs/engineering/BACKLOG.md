@@ -2,7 +2,7 @@
 
 Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-06-01**.
 
-**~511 specified features DONE · ~69 PARTIAL · ~35 MISSING.** The Python core is
+**~513 specified features DONE · ~69 PARTIAL · ~35 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
 `darwin_dna/` or `darwin_platform/`. The web dashboard is complete (Clerk
 swap, Timeline route + URL filters, Anatomy↔Timeline link, Data browser,
@@ -13,12 +13,12 @@ shipped 2026-05-31 and verified end-to-end on 2026-06-01 — `infra/` brings
 the full stack online on any kubectl-reachable cluster, with a turnkey
 kind-based local env, and a Darwin successfully spawned through it
 (`POST /darwins` → per-Darwin namespace + orchestrator pod ticking).
-The verification surfaced **8 latent platform bugs in the `--driver=k8s`
+The verification surfaced **10 latent platform bugs in the `--driver=k8s`
 path** that would have shipped broken to any production K8s deployment —
-all 8 fixed in this round. **Everything outstanding is now process /
-operator commitments** (24h soak run, 7-day testnet, drills, legal +
-planner-prompt reviews, etc.). A real-money onboarding recipe
-(`make real` + preflight + checklist) is wired.
+all 10 fixed in this round (+4 new unit tests). **Everything outstanding
+is now process / operator commitments** (24h soak run, 7-day testnet,
+drills, legal + planner-prompt reviews, etc.). A real-money onboarding
+recipe (`make real` + preflight + checklist) is wired.
 
 Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
@@ -326,13 +326,13 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 
 ---
 
-## Shipped since 2026-06-01 — infra/ end-to-end verification + 8 latent platform bugs fixed
+## Shipped since 2026-06-01 — infra/ end-to-end verification + 10 latent platform bugs fixed
 
 The cloud-agnostic Terraform IaC landed 2026-05-31, but a real spawn was
 never exercised through it. This pass closed that gap: `terraform apply`
 on a fresh box, build + load the supervisor image, `POST /darwins`, watch
 the K8s driver provision a per-Darwin namespace + orchestrator pod, and
-confirm the orchestrator is ticking. The path surfaced **eight bugs in
+confirm the orchestrator is ticking. The path surfaced **ten bugs in
 the platform's `--driver=k8s` code path** — every one would have shipped
 silently broken to any operator running the production deployment shape.
 
@@ -392,6 +392,25 @@ With the default value, any supervisor running outside the
 reach its own Darwins for readiness probing → 100% spawn timeout.
 Read `POD_NAMESPACE` env (downward API) in `__main__.py`; the infra
 module wires it via `valueFrom.fieldRef metadata.namespace`.
+9. **K8s driver doesn't forward substrate URLs/keys to per-Darwin pods** —
+the supervisor's `DarwinPodConfig` had an `extra_env` seam but
+`_build_k8s_driver` never populated it. Result: every spawned
+orchestrator ran against deterministic fakes for LLM + Vault even
+when the supervisor pod had real-substrate config in its own env.
+`__main__.py` now reads `DARWIN_POD_LITELLM_URL` / `_KEY` /
+`_VAULT_ADDR` / `_VAULT_TOKEN` from its own env and emits them on
+each per-Darwin pod as the env vars the orchestrator's
+`_build_real_factories` already looks for (`DARWIN_LITELLM_URL`,
+`DARWIN_LITELLM_MASTER_KEY`, `DARWIN_VAULT_URL`,
+`DARWIN_VAULT_TOKEN`). +1 unit test on `manifests.py` covering the
+end-to-end forwarding through `extra_env`.
+10. **`_PgBackend.executescript` was `;`-naive** — split on raw `;`
+without comment-stripping. Any future schema comment containing
+`;` would silently break Postgres deployments (SQLite tolerates it
+via its own splitter). Extracted a module-level
+`_split_sql_statements(script)` helper that strips `--` line
+comments before splitting; `executescript` now delegates to it.
++3 unit tests covering the splitter contract.
 
 **Infra side**
 
