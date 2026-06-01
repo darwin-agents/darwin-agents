@@ -213,7 +213,7 @@ In-memory implementations of external deps (`FakeLLM`, `FakeWallet`, `FakeVault`
 | `tools/evolution_test/`        | End-to-end evolution / patch pipeline exercises                                                                                                                                 |
 | `scripts/changelog.py`         | `git-cliff` integration for `CHANGELOG.md` (via `make changelog`)                                                                                                               |
 | `infra/`                         | All build & deploy assets — Docker stack, Helm chart, Terraform, dashboards, runbook |
-| `infra/docker/`                  | Compose stack: supervisor + Postgres + LiteLLM + Prometheus + Jaeger — [`infra/docker/README.md`](infra/docker/README.md) |
+| `infra/docker/`                  | Compose stack: web dashboard + supervisor + Postgres + Redis + LiteLLM + Prometheus + Jaeger — [`infra/docker/README.md`](infra/docker/README.md) |
 | `infra/charts/darwin-platform/`  | Production Kubernetes Helm chart — [`infra/charts/darwin-platform/README.md`](infra/charts/darwin-platform/README.md) |
 | `infra/terraform/`               | Cloud-agnostic Terraform (kind/CNPG/Vault/LiteLLM/platform) — [`infra/terraform/README.md`](infra/terraform/README.md) |
 | `infra/grafana/`                 | Dashboard JSON for platform metrics |
@@ -254,7 +254,7 @@ Prints a live ledger, neuron dispatch log, and fitness trajectory.
 
 ### 3 — Local dev stack (Docker Compose)
 
-Supervisor on `:8000`, Postgres, LiteLLM proxy, Prometheus on `:9090`, Jaeger on `:16686`:
+Dashboard on `:3000`, Supervisor on `:8000`, Postgres, LiteLLM proxy, Prometheus on `:9090`, Jaeger on `:16686`:
 
 ```bash
 make docker-up      # copies .env.example → infra/docker/.env if missing, then compose up

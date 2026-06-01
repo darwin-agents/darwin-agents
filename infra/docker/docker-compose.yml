@@ -1,7 +1,7 @@
 # Local dev stack for the Darwin platform (docs/engineering/20 §"Docker Compose").
 #
-# One command brings up the supervisor, persistence, an LLM gateway,
-# metrics, and tracing:
+# One command brings up the supervisor, the web dashboard, persistence,
+# an LLM gateway, metrics, and tracing:
 #
 #     cd infra/docker && docker compose up --build
 #
@@ -84,6 +84,42 @@ services:
         condition: service_started
     restart: unless-stopped
     # The image already declares a /healthz HEALTHCHECK; Compose inherits it.
+
+  # -- web: Next.js dashboard (docs/frontend) --------------------------
+  # The dashboard ships as its own artifact (Vercel / edge host in
+  # production); it lives here so `make docker-up` brings up a complete
+  # local loop — UI on :3000 talking to the supervisor on :8000.
+  #
+  # NEXT_PUBLIC_* are inlined into the browser bundle at BUILD time, so
+  # they're build args, not runtime env. NEXT_PUBLIC_API_BASE_URL must be
+  # the *host* URL the browser can reach (localhost:8000), NOT the
+  # in-cluster DNS name `supervisor` — those API calls run in the user's
+  # browser, not inside this container.
+  web:
+    build:
+      # The web Dockerfile's `COPY . .` expects the web/ dir as its
+      # context (not the repo root like the supervisor uses).
+      context: ../../web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        # Dev-only: a non-empty token skips the dashboard's token-paste
+        # gate. The default compose supervisor runs permissive (no
+        # --auth-tokens mounted), so any value authenticates; this matches
+        # the owner token in tokens.example.json if you do enable auth.
+        NEXT_PUBLIC_DEV_BEARER_TOKEN: ${NEXT_PUBLIC_DEV_BEARER_TOKEN:-owner-dev-token}
+    image: darwin-web:dev
+    container_name: darwin-web
+    ports:
+      - "3000:3000"
+    environment:
+      # Runtime-only server var, used when Clerk auth is enabled.
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+    depends_on:
+      supervisor:
+        condition: service_started
+    restart: unless-stopped
 
   # -- postgres: optional restart-survivable backend --------------------
   postgres:

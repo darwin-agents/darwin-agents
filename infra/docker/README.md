@@ -6,13 +6,15 @@ and tracing.
 
 ## Services
 
-| Service      | Port  | Purpose                                                |
-| ------------ | ----- | ------------------------------------------------------ |
-| `supervisor` | 8000  | FastAPI Supervisor (Darwin lifecycle, billing, audit). |
-| `postgres`   | 5432  | Reserved for a future Postgres persistence backend.    |
-| `litellm`    | 4000  | Real LLM gateway (BerriAI LiteLLM proxy, doc 13).      |
-| `prometheus` | 9090  | Scrapes `supervisor:8000/metrics` every 15s.           |
-| `jaeger`     | 16686 | Trace UI (OpenTelemetry receiver on 4317/4318).        |
+| Service      | Host port | Purpose                                                |
+| ------------ | --------- | ------------------------------------------------------ |
+| `web`        | 3000      | Next.js dashboard (docs/frontend) — talks to the supervisor on :8000. |
+| `supervisor` | 8000      | FastAPI Supervisor (Darwin lifecycle, billing, audit). |
+| `postgres`   | 15432     | Postgres persistence backend (host 15432 → container 5432). |
+| `redis`      | 16379     | LiteLLM response cache + rate limits (host 16379 → container 6379). |
+| `litellm`    | 4000      | Real LLM gateway (BerriAI LiteLLM proxy, doc 13).      |
+| `prometheus` | 9090      | Scrapes `supervisor:8000/metrics` every 15s.           |
+| `jaeger`     | 16686     | Trace UI (OpenTelemetry receiver on 4317/4318).        |
 
 ## Quickstart
 
@@ -44,10 +46,17 @@ curl -s http://localhost:8000/metrics | head
 In another terminal:
 
 ```bash
-# Open the dashboards.
+# Open the UIs.
+open http://localhost:3000           # Darwin dashboard (Next.js)
 open http://localhost:9090           # Prometheus
 open http://localhost:16686          # Jaeger
 ```
+
+The dashboard is baked with `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`
+and a dev bearer token, so it loads straight into the fleet view against
+the local supervisor. Those are **build args** (Next inlines `NEXT_PUBLIC_*`
+at build time) — change them and rebuild (`docker compose build web`) for
+them to take effect; a plain restart won't pick up new values.
 
 ## Spawning a Darwin
 

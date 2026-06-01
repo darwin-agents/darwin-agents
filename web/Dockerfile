@@ -21,8 +21,12 @@ COPY . .
 # NEXT_PUBLIC_* values are inlined at BUILD time — pass them as build args.
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+# Dev-only: when non-empty the dashboard skips its bearer-token paste gate.
+# Leave empty for production builds (Clerk's getToken() supplies the JWT).
+ARG NEXT_PUBLIC_DEV_BEARER_TOKEN=
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
-    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY \
+    NEXT_PUBLIC_DEV_BEARER_TOKEN=$NEXT_PUBLIC_DEV_BEARER_TOKEN
 RUN pnpm build
 
 # -- runtime: copy only the standalone server + static assets --------------
