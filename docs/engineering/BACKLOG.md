@@ -1,20 +1,24 @@
 # Darwin — Engineering Backlog
 
-Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-05-31**.
+Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-06-01**.
 
-**~503 specified features DONE · ~69 PARTIAL · ~35 MISSING.** The Python core is
+**~511 specified features DONE · ~69 PARTIAL · ~35 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
 `darwin_dna/` or `darwin_platform/`. The web dashboard is complete (Clerk
 swap, Timeline route + URL filters, Anatomy↔Timeline link, Data browser,
 Playwright E2E shipped 2026-05-30). The mobile escalation companion shipped
 2026-05-31 via the PWA path (Web Push + VAPID + installable manifest);
 native Expo/RN remains open but not blocking. Cloud-agnostic Terraform IaC
-shipped 2026-05-31 — `infra/` brings the full stack online on any
-kubectl-reachable cluster, with a turnkey kind-based local env.
-**Everything outstanding is now process / operator commitments** (24h
-soak run, 7-day testnet, drills, legal + planner-prompt reviews, etc.).
-A real-money onboarding recipe (`make real` + preflight + checklist) is
-wired.
+shipped 2026-05-31 and verified end-to-end on 2026-06-01 — `infra/` brings
+the full stack online on any kubectl-reachable cluster, with a turnkey
+kind-based local env, and a Darwin successfully spawned through it
+(`POST /darwins` → per-Darwin namespace + orchestrator pod ticking).
+The verification surfaced **8 latent platform bugs in the `--driver=k8s`
+path** that would have shipped broken to any production K8s deployment —
+all 8 fixed in this round. **Everything outstanding is now process /
+operator commitments** (24h soak run, 7-day testnet, drills, legal +
+planner-prompt reviews, etc.). A real-money onboarding recipe
+(`make real` + preflight + checklist) is wired.
 
 Legend: `[ ]` not started · `[~]` partial / in progress · `[x]` done
 
@@ -319,6 +323,116 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 - **Doc 30** — calibration example uses `apply_calibration(sim_world=, revenue_model=, dataset=)` and `runtime.archive`. *(done 2026-05-22)*
 - **Doc 05** — MoonPay confirmed implemented (`MoonPayFiatRamp`,
 `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
+
+---
+
+## Shipped since 2026-06-01 — infra/ end-to-end verification + 8 latent platform bugs fixed
+
+The cloud-agnostic Terraform IaC landed 2026-05-31, but a real spawn was
+never exercised through it. This pass closed that gap: `terraform apply`
+on a fresh box, build + load the supervisor image, `POST /darwins`, watch
+the K8s driver provision a per-Darwin namespace + orchestrator pod, and
+confirm the orchestrator is ticking. The path surfaced **eight bugs in
+the platform's `--driver=k8s` code path** — every one would have shipped
+silently broken to any operator running the production deployment shape.
+
+**Verification result**
+
+Stack: 6 platform-layer pods (`darwin-platform`, `darwin-platform-db-1`,
+`cnpg-cloudnative-pg`, `vault-0`, `litellm`, `ingress-nginx-controller`)
+all 1/1 Running. `POST /darwins` → HTTP 201 returns a snapshot with
+`alive: true` and `tick: 48046+` within 2 minutes; namespace
+`darwin-<id>` contains the full per-Darwin resource graph (Deployment +
+Pod + Service + ConfigMap + Secret + NetworkPolicy).
+
+**Platform bugs fixed (all in `src/darwin_platform/`)**
+
+1. **`runtime/persistence.py` Postgres SQL splitter is `;`-naive** —
+`_PgBackend.executescript` splits on raw `;` without comment-awareness.
+Four schema comments (omnibus, harvest, fiat, push_subscriptions)
+contained `;` and broke supervisor boot on Postgres. Reworded the
+four comments. Splitter itself is still naive — a follow-up should
+make it strip `--` comments before splitting; documented inline so
+future schema edits don't trip on it.
+2. **`k8s/manifests.py` orchestrator pod missing `seccompProfile`** —
+the namespace is labeled `pod-security.kubernetes.io/enforce:
+restricted` (correctly, doc 22) but the pod manifest's pod-level
+securityContext didn't set `seccompProfile`. Every spawn failed
+admission with "violates PodSecurity restricted:latest". Added
+`seccompProfile: { type: RuntimeDefault }` to the pod-level context.
+3. **`__main__.py` `lancedb_image=getattr(...) or "lancedb/lancedb:latest"`
+swallows empty-string override** — operators can't disable the LanceDB
+sidecar even when the image isn't published anywhere. Changed to
+`getattr(default=...)` so `--k8s-lancedb-image=""` reaches the
+manifest builder unchanged.
+4. **`k8s/manifests.py` always emits the LanceDB sidecar** — even when
+the image is empty/missing. Made the sidecar conditional on
+`bool(config.lancedb_image)`; the orchestrator falls back to the
+deterministic in-memory EpisodicMemory when disabled.
+5. **`k8s/manifests.py` references `darwin_platform.orchestrator`
+(module doesn't exist)** — the per-Darwin pod's CMD was
+`python -m darwin_platform.orchestrator`, but the actual module is
+at `darwin_platform.runtime.orchestrator`. Every spawn's
+orchestrator container exited with `ModuleNotFoundError`. Fixed
+the module path.
+6. **`runtime/orchestrator.py` imports `__main__` one package level
+too low** — `from . import __main__ as cli_main` looks under
+`darwin_platform.runtime/`, but `__main__` lives at
+`darwin_platform/`. Changed to `from .. import __main__`.
+7. **`__main__.py` doesn't forward `--wallet-provider` to
+`DarwinPodConfig`** — the supervisor's choice is read from `args`,
+but the pod config uses the dataclass default (`"cdp"`) regardless.
+Every per-Darwin pod started with `cdp` which required CDP API
+keys, blocking spawns. Forwarded the choice into `DarwinPodConfig`.
+8. **`DarwinPodConfig.supervisor_namespace` hardcoded to `"default"`** —
+the NetworkPolicy on per-Darwin namespaces uses
+`supervisor_namespace` to allow inbound from "the supervisor pod".
+With the default value, any supervisor running outside the
+`default` namespace (which is the normal deployment shape) couldn't
+reach its own Darwins for readiness probing → 100% spawn timeout.
+Read `POD_NAMESPACE` env (downward API) in `__main__.py`; the infra
+module wires it via `valueFrom.fieldRef metadata.namespace`.
+
+**Infra side**
+
+- `infra/envs/local/litellm.config.yaml` — env-specific config with
+the Redis cache section stripped (the local stack doesn't deploy
+Redis, and LiteLLM's cache init blocks for ~minutes against
+unreachable Redis).
+- `kubectl_manifest.kata_shim` in `envs/local/main.tf` — installs a
+`RuntimeClass` named `kata` whose handler is `runc`, because kind
+doesn't ship kata-containers but the platform manifests hard-default
+`runtimeClassName: kata`. Production swaps for a real kata install.
+- `modules/darwin-platform/main.tf` — added the `POD_NAMESPACE`
+downward-API env var on the supervisor Deployment; added the
+`--k8s-orchestrator-image=darwin-platform:dev` arg and
+`--k8s-lancedb-image=""` arg so the supervisor forwards the locally-
+loaded image and skips the unbuildable sidecar.
+- `modules/darwin-platform/variables.tf` — new `orchestrator_image`
+variable.
+- `infra/Makefile` + `infra/README.md` — documented inotify prerequisite
+(`fs.inotify.max_user_instances=512`), updated kind version requirement
+(≥ 0.24 for cgroup v2 hosts).
+
+**Docker / image**
+
+- `docker/Dockerfile` — added `k8s,cdp,webpush,lancedb` to the uv
+install extras. Without them the supervisor crashes on import as
+soon as the K8s driver / CDP / push sink / Vector store is wired.
+
+**State after this pass**
+
+- `make -C infra up` brings up a 6-pod cluster end-to-end
+- `curl -X POST http://localhost:8000/darwins -d '{"opening_usdc":1.0}'`
+returns HTTP 201 with a live, ticking Darwin
+- A 9th per-Darwin pod appears in the cluster; `GET /darwins`
+includes the new id; `GET /darwins/<id>` reports tick growth in
+real time
+
+Want to repeat the verification on a non-kind cluster (DOKS, k3s on a
+VPS, etc.)? The same modules deploy unchanged — only the cluster
+module is provider-specific, and the platform layer auto-detects its
+own namespace via the downward API now.
 
 ---
 
