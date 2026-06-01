@@ -314,7 +314,7 @@ def build_deployment(
     for the same Darwin)."""
 
     args = [
-        "python", "-m", "darwin_platform.orchestrator",
+        "python", "-m", "darwin_platform.runtime.orchestrator",
         "--darwin-id", darwin_id,
         "--manifest-path", "/etc/darwin/manifest.json",
         "--layer-blob-dir", "/etc/darwin",
@@ -416,6 +416,28 @@ def build_deployment(
         ],
     }
 
+    # LanceDB sidecar is opt-in. Setting --k8s-lancedb-image="" (empty)
+    # drops it entirely; the orchestrator's episodic memory falls back
+    # to the deterministic in-memory default. Useful for local stacks
+    # where no published lancedb container image exists yet.
+    lancedb_enabled = bool(config.lancedb_image)
+    containers = (
+        [orchestrator_container, lancedb_container]
+        if lancedb_enabled
+        else [orchestrator_container]
+    )
+    volumes = [
+        {"name": "darwin-dna",
+         "configMap": {"name": "darwin-dna"}},
+        {"name": "darwin-control",
+         "secret": {"secretName": "darwin-control"}},
+    ]
+    if lancedb_enabled:
+        volumes.append({
+            "name": "darwin-lancedb",
+            "persistentVolumeClaim": {"claimName": "darwin-lancedb"},
+        })
+
     pod_spec: dict[str, Any] = {
         "serviceAccountName": config.service_account_name or "default",
         "automountServiceAccountToken": False,
@@ -423,16 +445,15 @@ def build_deployment(
             "fsGroup": 1000,
             "runAsNonRoot": True,
             "runAsUser": 1000,
+            # Pod Security Admission's "restricted" profile (which the
+            # namespace labels at creation, line 145 below) requires a
+            # seccomp profile of RuntimeDefault or Localhost. Without
+            # this every spawn fails admission with "violates PodSecurity
+            # restricted:latest".
+            "seccompProfile": {"type": "RuntimeDefault"},
         },
-        "containers": [orchestrator_container, lancedb_container],
-        "volumes": [
-            {"name": "darwin-dna",
-             "configMap": {"name": "darwin-dna"}},
-            {"name": "darwin-control",
-             "secret": {"secretName": "darwin-control"}},
-            {"name": "darwin-lancedb",
-             "persistentVolumeClaim": {"claimName": "darwin-lancedb"}},
-        ],
+        "containers": containers,
+        "volumes": volumes,
     }
     if config.runtime_class_name:
         pod_spec["runtimeClassName"] = config.runtime_class_name

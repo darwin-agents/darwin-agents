@@ -115,8 +115,10 @@ def _apply_real_adapters(
     directly to a FakeStack. Each adapter is only swapped in when its
     required flag/env is present; otherwise the fake stays."""
     # We intentionally avoid importing __main__ to keep startup light;
-    # the env var fallback set is the same.
-    from . import __main__ as cli_main
+    # the env var fallback set is the same. (Note: __main__ lives at the
+    # darwin_platform package root, not under runtime/ — relative import
+    # needs to go one level up.)
+    from .. import __main__ as cli_main
     fake_args = argparse.Namespace(
         # wallet — provider + per-chain config (forwarded from the
         # supervisor's --wallet-provider choice when it launched this pod).

@@ -996,10 +996,28 @@ def _build_k8s_driver(args: argparse.Namespace):
     postgres_ns = getattr(args, "k8s_postgres_namespace", None) or ""
     postgres_label = getattr(args, "k8s_postgres_pod_label", None) or "="
     pg_key, _, pg_val = postgres_label.partition("=")
+    # Where the supervisor pod itself runs. The NetworkPolicy on every
+    # per-Darwin namespace uses this to allow inbound from "the supervisor
+    # pod" only. Defaults to "default" for backwards compat; production
+    # exports POD_NAMESPACE via the downward API.
+    supervisor_namespace = (
+        getattr(args, "k8s_supervisor_namespace", None)
+        or os.environ.get("POD_NAMESPACE")
+        or "default"
+    )
     pod_config = DarwinPodConfig(
         orchestrator_image=orchestrator_image,
+        supervisor_namespace=supervisor_namespace,
+        # Forward the supervisor's --wallet-provider choice to every
+        # per-Darwin pod. Without this, the pod default ("cdp") is used
+        # regardless of what the operator started the supervisor with.
+        wallet_provider=getattr(args, "wallet_provider", None) or "cdp",
         runtime_class_name=getattr(args, "k8s_runtime_class", None) or "kata",
-        lancedb_image=getattr(args, "k8s_lancedb_image", None) or "lancedb/lancedb:latest",
+        # Empty string means "skip the LanceDB sidecar entirely" — the
+        # orchestrator falls back to the deterministic in-memory
+        # EpisodicMemory. Use `getattr(default=...)` not `or` so an
+        # explicit "" reaches the manifest builder unchanged.
+        lancedb_image=getattr(args, "k8s_lancedb_image", "lancedb/lancedb:latest"),
         lancedb_storage_size=getattr(args, "k8s_lancedb_storage_size", None) or "1Gi",
         lancedb_storage_class=getattr(args, "k8s_lancedb_storage_class", None) or None,
         platform_data_namespace=(
