@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(infra): consolidate deploy assets under infra/
+- docs(engineering): update backlog for k8s substrate forwarding and SQL splitter
+- docs(engineering): document infra e2e verification and eight k8s driver fixes
+
+### Fixed
+
+- fix(platform): forward LiteLLM and Vault env to per-Darwin k8s pods
+- fix(platform): strip SQL comments before splitting Postgres executescript
+- fix(infra): add kata RuntimeClass shim and supervisor pod namespace wiring
+- fix(platform): repair k8s driver spawn path for per-Darwin pods
+
 ## [0.0.5] - 2026-05-31
 
 ### Changed
