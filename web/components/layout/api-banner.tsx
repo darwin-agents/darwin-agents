@@ -7,7 +7,12 @@ import { queryKeys } from "@/lib/queryKeys";
 export function ApiBanner() {
   const { error, isError } = useQuery({
     queryKey: queryKeys.health(),
-    queryFn: () => api.healthz(),
+    // Probe /readyz, not /healthz: an ingress in front of the platform
+    // (e.g. ingress-nginx) may reserve /healthz for its own controller
+    // liveness and answer it itself, so /healthz never reaches the
+    // supervisor (and loses its CORS headers). /readyz forwards normally
+    // and is the better "ready to serve" signal for this banner anyway.
+    queryFn: () => api.readyz(),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     retry: false,
