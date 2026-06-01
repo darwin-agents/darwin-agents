@@ -5,6 +5,14 @@ import { QueryProvider } from "@/providers/query-provider";
 import { AuthProvider } from "@/providers/auth-provider";
 import { ServiceWorkerRegistrar } from "@/components/pwa/service-worker-registrar";
 
+// Render every route per-request so the CSP nonce that `middleware.ts`
+// generates is injected into Next's inline bootstrap scripts. A statically
+// prerendered document is baked at build time with no nonce, so its inline
+// scripts get blocked by the strict `script-src`. The dashboard is
+// auth-gated and live-data driven, so there's nothing to statically cache
+// anyway.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Darwin",
   description: "Own a Darwin without operating it.",
