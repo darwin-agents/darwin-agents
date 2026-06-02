@@ -189,8 +189,18 @@ services:
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # Postgres backing per-Darwin virtual keys + the per-key spend table
+      # (doc 13). Without it /key/generate has nowhere to persist keys, so the
+      # supervisor's --litellm-virtual-keys mode can't mint them. Reuses the
+      # compose postgres (LiteLLM namespaces its own `LiteLLM_*` tables, so it
+      # coexists with the supervisor's schema in the same database).
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-postgresql://${POSTGRES_USER:-darwin}:${POSTGRES_PASSWORD:-dev_only_password}@postgres:5432/${POSTGRES_DB:-darwin}}
+      STORE_MODEL_IN_DB: "True"
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   # -- prometheus: scrapes supervisor /metrics every 15s ---------------

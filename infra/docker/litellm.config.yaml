@@ -66,8 +66,11 @@ litellm_settings:
     password: os.environ/REDIS_PASSWORD
 
 general_settings:
-  # No master key in dev — relies on docker-compose network isolation. A
-  # real deployment puts LiteLLM behind an auth proxy (or sets
-  # master_key) and provisions per-Darwin virtual keys via the LiteLLM
-  # API.
+  # The master key is the proxy's admin credential. With STORE_MODEL_IN_DB
+  # and DATABASE_URL set (docker-compose wires both), it authenticates the
+  # platform's /key/generate calls that mint one virtual key per Darwin
+  # (doc 13) — the keys + their per-key spend live in Postgres, which is what
+  # the platform's spend reconciler reads. Without a DATABASE_URL the proxy
+  # still boots but virtual keys are not persisted (shared-master-key mode,
+  # dev only).
   master_key: os.environ/DARWIN_LITELLM_MASTER_KEY
