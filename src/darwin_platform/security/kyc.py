@@ -72,6 +72,13 @@ class KYCVerdict:
     reason: str = ""
     verified_at: float = 0.0
     expires_at: float | None = None
+    # Age gate (doc 05 minors-protection). The provider verifies date of
+    # birth as part of identity; ``is_adult`` is its 18+ verdict. Defaults
+    # True (an APPROVED identity implies adult unless the provider flags
+    # otherwise); money-moving actions pass ``require_adult=True`` so a
+    # provider that reports a minor — or a tier that didn't check age — is
+    # refused.
+    is_adult: bool = True
 
     def is_allowed(self) -> bool:
         return self.status == KYCStatus.APPROVED
@@ -85,6 +92,7 @@ class KYCVerdict:
             "reason": self.reason,
             "verified_at": self.verified_at,
             "expires_at": self.expires_at,
+            "is_adult": self.is_adult,
         }
 
 
@@ -150,6 +158,7 @@ class StubKYCProvider:
             inquiry_id=inq_id, reason=base.reason,
             verified_at=base.verified_at or self._clock(),
             expires_at=base.expires_at,
+            is_adult=base.is_adult,
         )
         self._inquiries[inq_id] = verdict
         return {
@@ -518,6 +527,7 @@ class KYCService:
                 reason=verdict.reason,
                 verified_at=verdict.verified_at or self.clock(),
                 expires_at=(verdict.verified_at or self.clock()) + self.retention_seconds,
+                is_adult=verdict.is_adult,
             )
         previous = self._verdicts.get(subject)
         self._verdicts[subject] = verdict
@@ -550,15 +560,26 @@ class KYCService:
             )
         return v
 
-    def require_allowed(self, subject: str, *, action: str = "fund") -> KYCVerdict:
+    def require_allowed(
+        self, subject: str, *, action: str = "fund", require_adult: bool = False,
+    ) -> KYCVerdict:
         """Gate entry: raises :class:`KYCError` unless the subject is
         currently APPROVED. The supervisor wraps fund/spawn/withdraw
-        calls with this so a non-KYC'd user cannot move money."""
+        calls with this so a non-KYC'd user cannot move money.
+
+        When ``require_adult`` is set (the money-moving + spawn paths), an
+        APPROVED-but-not-adult verdict is also refused (doc 05 minors
+        protection)."""
         v = self.status_for(subject)
         if not v.is_allowed():
             raise KYCError(
                 f"KYC gate refused {action!r} for {subject!r}: "
                 f"status={v.status.value} (reason: {v.reason or 'not approved'})"
+            )
+        if require_adult and not v.is_adult:
+            raise KYCError(
+                f"KYC gate refused {action!r} for {subject!r}: "
+                f"age verification failed (must be 18+)"
             )
         return v
 

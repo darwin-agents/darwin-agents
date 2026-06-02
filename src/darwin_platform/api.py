@@ -83,6 +83,18 @@ class SpawnRequest(BaseModel):
         "respond via the respond_escalation endpoint.",
     )
     parent_id: str | None = None
+    # Owner consent (doc 01 step 3 + doc 05). Captured + audit-recorded on
+    # every spawn; ENFORCED (400 without both) when the app is built with
+    # ``require_spawn_consent=True`` (production). Defaults False so dev /
+    # in-process tests are unaffected.
+    terms_accepted: bool = Field(
+        default=False,
+        description="Owner accepted the kill-switch terms of service.",
+    )
+    consent_18_plus: bool = Field(
+        default=False,
+        description="Owner attests they are 18 or older.",
+    )
 
 
 class KillRequest(BaseModel):
@@ -117,6 +129,30 @@ class FiatDepositQuoteRequest(BaseModel):
 class FiatConfirmDepositRequest(BaseModel):
     quote_id: str = Field(min_length=1)
     destination_darwin_id: str | None = None
+
+
+class FleetSpendLockRequest(BaseModel):
+    locked: bool = True
+
+
+class FleetBlockCategoryRequest(BaseModel):
+    category: str = Field(min_length=1)
+
+
+class BlockCounterpartyRequest(BaseModel):
+    address: str = Field(min_length=1)
+
+
+class KYCStartRequest(BaseModel):
+    # The user to verify. Defaults to the authenticated caller; operators may
+    # start an inquiry on behalf of another subject.
+    subject: str | None = None
+    tier: str = Field(default="standard", pattern=r"^(basic|standard|enhanced)$")
+
+
+class KYCWebhookRequest(BaseModel):
+    subject: str = Field(min_length=1)
+    inquiry_id: str = Field(min_length=1)
 
 
 class DarwinFiatPayoutRequest(BaseModel):
@@ -285,6 +321,7 @@ def build_app(
     cors_origins: list[str] | None = None,
     stripe_webhook_secret: str | None = None,
     allow_manual_credit: bool = False,
+    require_spawn_consent: bool = False,
 ) -> FastAPI:
     """Build a FastAPI app bound to ``supervisor`` (or a fresh one).
 
@@ -329,6 +366,7 @@ def build_app(
     app.state.token_store = token_store
     app.state.stripe_webhook_secret = stripe_webhook_secret
     app.state.allow_manual_credit = bool(allow_manual_credit)
+    app.state.require_spawn_consent = bool(require_spawn_consent)
 
     if cors_origins:
         from fastapi.middleware.cors import CORSMiddleware
@@ -400,6 +438,16 @@ def build_app(
         # provisioning on behalf of one — either way the OWNER scope check
         # passes (operator implies owner).
         _require_scope(ctx, OWNER)
+        # Owner consent (doc 01 step 3 + doc 05). Enforced in production
+        # (require_spawn_consent); captured + audit-recorded always.
+        if request.app.state.require_spawn_consent and not (
+            req.terms_accepted and req.consent_18_plus
+        ):
+            raise HTTPException(
+                400,
+                "spawn requires accepting the kill-switch terms "
+                "(terms_accepted) and an 18+ attestation (consent_18_plus)",
+            )
         try:
             status = await _sup(request).spawn(
                 opening_usdc=req.opening_usdc,
@@ -409,6 +457,18 @@ def build_app(
             )
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
+        # Persist the consent against the new Darwin for the audit trail.
+        try:
+            _sup(request).audit_log.record(
+                actor=_actor(ctx), action="spawn_consent",
+                darwin_id=status.darwin_id,
+                metadata={
+                    "terms_accepted": bool(req.terms_accepted),
+                    "consent_18_plus": bool(req.consent_18_plus),
+                },
+            )
+        except Exception:
+            pass
         # Grant the caller ownership of the newly minted id so subsequent
         # owner-scope calls succeed without an out-of-band grant.
         store: TokenStore | None = request.app.state.token_store
@@ -1126,6 +1186,59 @@ def build_app(
             raise HTTPException(409, str(exc))
         return quote.to_json()
 
+    # -- KYC (doc 05 / 22) -------------------------------------------------
+    def _kyc(request: Request):
+        svc = _sup(request).kyc_service
+        if svc is None:
+            raise HTTPException(503, "KYC is not configured")
+        return svc
+
+    @app.post("/platform/kyc/start")
+    async def kyc_start(
+        request: Request,
+        req: KYCStartRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Begin a KYC inquiry for the caller (or, for operators, a named
+        subject). Returns the provider inquiry id + redirect URL."""
+        _require_scope(ctx, OWNER)
+        from .security.kyc import KYCError, KYCTier
+
+        svc = _kyc(request)
+        subject = req.subject or _actor(ctx)
+        try:
+            return svc.start_inquiry(
+                subject=subject, tier=KYCTier(req.tier), actor=_actor(ctx),
+            )
+        except KYCError as exc:
+            raise HTTPException(502, str(exc))
+
+    @app.get("/platform/kyc/status")
+    async def kyc_status(
+        request: Request,
+        subject: str | None = None,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Current cached KYC verdict for the subject (default: the caller)."""
+        _require_scope(ctx, OWNER)
+        svc = _kyc(request)
+        return svc.status_for(subject or _actor(ctx)).to_json()
+
+    @app.post("/platform/kyc/webhook")
+    async def kyc_webhook(
+        request: Request,
+        req: KYCWebhookRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Provider callback / poll-consumption: refresh + cache the verdict
+        for an inquiry so the gate sees the latest status."""
+        _require_scope(ctx, OWNER)
+        svc = _kyc(request)
+        verdict = svc.refresh_status(
+            subject=req.subject, inquiry_id=req.inquiry_id, actor=_actor(ctx),
+        )
+        return verdict.to_json()
+
     @app.post("/webhooks/stripe")
     async def stripe_webhook(request: Request) -> dict[str, Any]:
         """Stripe deposit webhook. UNAUTHENTICATED at the bearer layer —
@@ -1472,6 +1585,57 @@ def build_app(
         except SupervisorError as exc:
             raise HTTPException(409, str(exc))
         return summary
+
+    # -- fleet-wide incident-response levers (doc 09) ---------------------
+    @app.post("/platform/fleet/pause")
+    async def fleet_pause(
+        request: Request, ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return await _sup(request).fleet_pause(actor=_actor(ctx))
+
+    @app.post("/platform/fleet/resume")
+    async def fleet_resume(
+        request: Request, ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return await _sup(request).fleet_resume(actor=_actor(ctx))
+
+    @app.post("/platform/fleet/spend_lock")
+    async def fleet_spend_lock(
+        request: Request, req: FleetSpendLockRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return await _sup(request).fleet_spend_lock(
+            locked=req.locked, actor=_actor(ctx),
+        )
+
+    @app.post("/platform/fleet/block_category")
+    async def fleet_block_category(
+        request: Request, req: FleetBlockCategoryRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return await _sup(request).fleet_block_category(
+                category=req.category, actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/platform/fleet/block_counterparty")
+    async def block_counterparty(
+        request: Request, req: BlockCounterpartyRequest,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).block_counterparty(
+                req.address, actor=_actor(ctx),
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
 
     # -- Path-C: Darwin-generated neuron proposals (doc 04 phase 3) -------
     @app.get("/darwins/{darwin_id}/proposals")
