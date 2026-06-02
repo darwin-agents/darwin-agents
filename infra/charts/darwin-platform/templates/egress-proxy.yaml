@@ -64,11 +64,15 @@ spec:
           args:
             - python
             - -m
-            - darwin_platform.egress_proxy
+            - darwin_platform.infra.egress_proxy
             - serve
             - --host=0.0.0.0
             - --port={{ .Values.egressProxy.port }}
             - --allowlist=/etc/egress/allowlist.json
+            {{- if .Values.egressProxy.bandwidthQuota.enabled }}
+            - --bandwidth-soft-gb={{ .Values.egressProxy.bandwidthQuota.softGb }}
+            - --bandwidth-hard-gb={{ .Values.egressProxy.bandwidthQuota.hardGb }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.egressProxy.port }}

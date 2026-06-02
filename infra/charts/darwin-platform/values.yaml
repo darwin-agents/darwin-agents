@@ -371,6 +371,12 @@ egressProxy:
     pullPolicy: IfNotPresent
   replicaCount: 2
   port: 8080
+  # Per-Darwin daily bandwidth ceiling (doc 22). Disabled by default so the
+  # single-tenant dev deployment is unaffected; enable for multi-tenant.
+  bandwidthQuota:
+    enabled: false
+    softGb: 10
+    hardGb: 20
   resources:
     requests:
       cpu: 100m
