@@ -59,16 +59,16 @@ variable "heartbeat_seconds" {
   default     = 5
 }
 
-variable "service_port" {
-  type        = number
-  description = "Port the supervisor's API service listens on."
-  default     = 8000
+variable "runtime_class" {
+  type        = string
+  description = "RuntimeClass name the K8s driver stamps on each per-Darwin orchestrator pod (chart `driver.runtimeClassName` → `--k8s-runtime-class`). `kata` (microVM, needs nested virt = bare-metal), `gvisor` (runsc, runs on standard cloud VMs), or `runc`/any installed handler. Local kind installs a runc-backed shim under this name."
+  default     = "kata"
 }
 
-variable "host_ingress" {
+variable "create_runtime_class" {
   type        = bool
-  description = "If true, install an NGINX Ingress backed by the supervisor Service so the host port mapping (kind extraPortMappings → 80) reaches the API."
-  default     = true
+  description = "If true, the chart creates the RuntimeClass resource (handler from runtimeClass.handler). Leave false when the environment installs the RuntimeClass out-of-band (kind does this via a kubectl shim; cloud nodes install the real handler)."
+  default     = false
 }
 
 variable "wallet_provider" {

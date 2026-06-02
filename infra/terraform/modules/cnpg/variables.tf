@@ -32,6 +32,12 @@ variable "storage_size" {
   default     = "2Gi"
 }
 
+variable "storage_class" {
+  type        = string
+  description = "StorageClass for the Postgres PVCs. null = the cluster's default StorageClass (kind's `standard`). Cloud envs set this to a block-storage class (e.g. hcloud-volumes)."
+  default     = null
+}
+
 variable "database_name" {
   type        = string
   description = "Initial database created on bootstrap. The platform connects to this."

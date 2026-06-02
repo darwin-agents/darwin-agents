@@ -56,9 +56,10 @@ resource "kubectl_manifest" "cluster" {
         }
       }
 
-      storage = {
-        size = var.storage_size
-      }
+      storage = merge(
+        { size = var.storage_size },
+        var.storage_class != null ? { storageClass = var.storage_class } : {},
+      )
 
       monitoring = {
         # Enable the operator's bundled exporter so kube-prometheus-stack

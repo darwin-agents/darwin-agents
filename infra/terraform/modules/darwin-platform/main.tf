@@ -113,6 +113,11 @@ resource "helm_release" "platform" {
     # K8s driver mode, stripped to the local posture.
     driver = {
       mode = "k8s"
+      # Isolation handler for per-Darwin orchestrator pods. Flows to both
+      # the chart's RuntimeClass resource (when create_runtime_class=true)
+      # and `--k8s-runtime-class` on the supervisor. kind: kata-shim;
+      # cloud: gvisor.
+      runtimeClassName = var.runtime_class
       orchestrator = {
         image = {
           repository = local.orchestrator_repository
@@ -132,9 +137,9 @@ resource "helm_release" "platform" {
     networkPolicy         = { enabled = false }
     egressProxy           = { enabled = false }
     platformDataNamespace = { create = false }
-    runtimeClass          = { create = false } # envs/local installs the kata shim
+    runtimeClass          = { create = var.create_runtime_class } # kind installs a shim out-of-band; cloud may let the chart create it
     serviceMonitor        = { enabled = false }
-    ingress               = { enabled = false } # fronted by ingress.tf instead
+    ingress               = { enabled = false } # fronted by the k8s-addons module instead
 
     # DARWIN_POD_* substrate creds, sourced from the Secret above.
     extraEnv = [
