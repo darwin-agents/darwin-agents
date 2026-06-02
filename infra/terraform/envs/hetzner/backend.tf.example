@@ -1,0 +1,41 @@
+# Remote Terraform state in Hetzner Object Storage (S3-compatible).
+#
+# Activate: `cp backend.tf.example backend.tf`, edit bucket/region/endpoint,
+# then `terraform init -migrate-state`. Left as .example so a fresh
+# `terraform init`/`validate` uses local state (no bucket needed to lint).
+#
+# Credentials come from the environment (Hetzner Object Storage S3 keys,
+# created per-project in the console) — NEVER put them in this block:
+#   export AWS_ACCESS_KEY_ID=<hetzner-objstore-access-key>
+#   export AWS_SECRET_ACCESS_KEY=<hetzner-objstore-secret-key>
+#
+# CRITICAL (Terraform >= 1.11.2): the AWS SDK changed default request
+# checksums and breaks Hetzner/Ceph S3 with "XAmzContentSHA256Mismatch".
+# skip_s3_checksum alone is NOT enough — also export:
+#   export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+#   export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+
+terraform {
+  backend "s3" {
+    bucket = "darwin-tfstate"
+    key    = "hetzner/prod/terraform.tfstate"
+    region = "nbg1" # Hetzner location code (nbg1/fsn1/hel1)
+
+    endpoints = {
+      s3 = "https://nbg1.your-objectstorage.com"
+    }
+
+    # Non-AWS S3 compatibility:
+    skip_credentials_validation = true
+    skip_region_validation      = true
+    skip_metadata_api_check     = true
+    skip_requesting_account_id  = true
+    use_path_style              = true
+
+    # S3-native state locking (Terraform >= 1.10) — no DynamoDB needed.
+    use_lockfile = true
+
+    # Works around the 1.11.2+ checksum regression (with the env vars above).
+    skip_s3_checksum = true
+  }
+}

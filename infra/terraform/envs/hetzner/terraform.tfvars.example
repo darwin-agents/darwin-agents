@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars and fill in. Secrets are better passed as
+# TF_VAR_* env vars (especially in CI) than written to this file.
+#
+#   export TF_VAR_hcloud_token=...        # Hetzner Cloud API token (RW)
+#   export TF_VAR_ssh_private_key="$(cat ~/.ssh/darwin_ed25519)"
+
+# --- required ---------------------------------------------------------------
+domain     = "api.darwinagents.com"          # A record must point at the LB IP
+acme_email = "ops@darwinagents.com"          # Let's Encrypt account contact
+
+ssh_public_key = "ssh-ed25519 AAAA... darwin@hetzner"
+# ssh_private_key — pass via TF_VAR_ssh_private_key (do not commit)
+# hcloud_token   — pass via TF_VAR_hcloud_token (do not commit)
+
+# --- cluster shape ----------------------------------------------------------
+cluster_name = "darwin"
+location     = "nbg1"     # nbg1 / fsn1 / hel1 (cax/ARM regions)
+server_type  = "cax21"    # ARM64, 4 vCPU / 8 GB
+agent_count  = 2          # 1 control-plane + this many workers
+
+# Lock the API + SSH to your IP (strongly recommended):
+# allowed_admin_cidrs = ["203.0.113.4/32"]
+
+# --- platform ---------------------------------------------------------------
+platform_image  = "ghcr.io/quantium-rock/darwin-agent/darwin-platform:latest"
+wallet_provider = "cdp"   # cdp | local-vault | web3
+
+# litellm_master_key    = "sk-..."           # or TF_VAR_litellm_master_key
+# litellm_provider_keys = { CLAUDE_API_KEY = "sk-ant-...", OPENAI_API_KEY = "sk-..." }
+
+# While validating TLS, use staging to avoid Let's Encrypt rate limits, then
+# switch back to prod:
+# acme_server = "https://acme-staging-v02.api.letsencrypt.org/directory"
