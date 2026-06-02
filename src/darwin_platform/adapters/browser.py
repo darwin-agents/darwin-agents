@@ -32,6 +32,153 @@ implementation; the Protocol is the contract.
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlencode
+
+
+def browserbase_connect_url(
+    *,
+    api_key: str | None = None,
+    url: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """Build the CDP/websocket connect URL for a Browserbase session.
+
+    browser_use connects to a remote Chrome via ``BrowserSession(cdp_url=...)``.
+    Browserbase exposes that endpoint at ``wss://connect.browserbase.com``
+    keyed by the API key (and an optional pre-created ``sessionId``). An
+    operator may also pass a fully-formed ``url`` (e.g. a self-hosted CDP
+    endpoint), which wins over the derived form.
+    """
+    if url:
+        return url
+    if not api_key:
+        raise ValueError(
+            "Browserbase connection requires an API key or an explicit CDP url"
+        )
+    params = {"apiKey": api_key}
+    if session_id:
+        params["sessionId"] = session_id
+    return "wss://connect.browserbase.com?" + urlencode(params)
+
+
+def _await_on_worker_loop(coro: Any) -> Any:
+    """Drive an awaitable to completion on a fresh event loop in a dedicated
+    worker thread.
+
+    browser_use's ``Agent.run`` is async; the genome's ``browser.operator``
+    neuron calls our synchronous ``run()`` from the supervisor's uvloop. Running
+    the coroutine inline (``asyncio.run`` / nest_asyncio) re-enters and freezes
+    that loop — the same failure mode the LiteLLM transport hit. A separate
+    thread with its own loop keeps the supervisor loop free.
+    """
+    import threading
+
+    box: dict[str, Any] = {}
+
+    def _runner() -> None:
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001 — re-raised on join
+            box["error"] = exc
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+class BrowserbaseAgentRunner:
+    """Synchronous ``.run(prompt)`` shim that drives a real ``browser_use``
+    Agent on a Browserbase CDP session.
+
+    This is the glue the ``browser_factory`` returns; :class:`BrowserUseClient`
+    treats it as the per-session agent. It exists because the real SDK shapes
+    differ from the genome's tiny surface:
+
+    - ``Agent`` takes the task + LLM at construction (no ``browserbase_*``
+      kwargs) and connects via ``browser_session`` — not a connection kwarg.
+    - ``Agent.run`` is async and takes no prompt; the task is fixed at build.
+    - ``Agent.run`` returns an ``AgentHistoryList``, not a success/data object.
+
+    Dependencies are injected so this is unit-testable without the real SDK or
+    a live browser: tests pass a fake ``agent_cls`` / ``browser_session_cls``
+    and an identity ``awaiter``.
+    """
+
+    def __init__(
+        self,
+        *,
+        connect_url: str,
+        llm: Any,
+        agent_cls: Any,
+        browser_session_cls: Any,
+        use_vision: bool = False,
+        live_view_url: str | None = None,
+        default_max_steps: int = 25,
+        awaiter: Any = _await_on_worker_loop,
+    ) -> None:
+        self._connect_url = connect_url
+        self._llm = llm
+        self._agent_cls = agent_cls
+        self._browser_session_cls = browser_session_cls
+        self._use_vision = bool(use_vision)
+        self._live_view_url = live_view_url
+        self._default_max_steps = int(default_max_steps)
+        self._awaiter = awaiter
+
+    def run(self, prompt: str, *, max_steps: int | None = None) -> dict:
+        session = self._browser_session_cls(cdp_url=self._connect_url)
+        agent = self._agent_cls(
+            task=prompt,
+            llm=self._llm,
+            browser_session=session,
+            use_vision=self._use_vision,
+        )
+        history = self._awaiter(
+            agent.run(max_steps=max_steps or self._default_max_steps)
+        )
+        return self._normalize(history)
+
+    def _normalize(self, history: Any) -> dict:
+        """AgentHistoryList → the dict shape BrowserUseClient._unpack_result
+        understands. Carries the live-view URL so a captcha block can hand the
+        session to the owner (doc 15 §human takeover)."""
+        def _call(name: str, default: Any) -> Any:
+            fn = getattr(history, name, None)
+            if callable(fn):
+                try:
+                    return fn()
+                except Exception:
+                    return default
+            return default
+
+        is_successful = _call("is_successful", None)
+        if is_successful is None:
+            ok = bool(_call("is_done", False)) and not bool(
+                _call("has_errors", False)
+            )
+        else:
+            ok = bool(is_successful)
+        errors = [e for e in (_call("errors", []) or []) if e]
+        detail = "; ".join(str(e) for e in errors)
+        data: dict = {
+            "result": _call("final_result", None),
+            "steps": _call("number_of_steps", None),
+        }
+        if self._live_view_url:
+            data["live_view_url"] = self._live_view_url
+        return {"ok": ok, "detail": detail, "data": data}
 
 
 @runtime_checkable
@@ -167,11 +314,21 @@ class BrowserUseClient:
         # 2. result["ok"] / result["error"] (test-stub dict)
         # 3. str(result) success default.
         success, detail, data = self._unpack_result(result)
+        # A live-view URL (Browserbase session debug view) lets the owner take
+        # over the live session when the run hits a captcha / human wall
+        # (doc 15 §human takeover). Thread it through the escalation outcomes.
+        live = data.get("live_view_url") if isinstance(data, dict) else None
         if not success:
             if self._is_captcha(detail):
-                return {"blocked": "captcha", "detail": detail,
-                        "cost_usdc": self._cost}
-            return {"ok": False, "detail": detail, "cost_usdc": self._cost}
+                out = {"blocked": "captcha", "detail": detail,
+                       "cost_usdc": self._cost}
+                if live:
+                    out["live_view_url"] = live
+                return out
+            out = {"ok": False, "detail": detail, "cost_usdc": self._cost}
+            if live:
+                out["live_view_url"] = live
+            return out
         return {"ok": True, "data": data, "cost_usdc": self._cost}
 
     # -- vision-mode fallback (doc 15) -----------------------------------
