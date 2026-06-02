@@ -14,7 +14,10 @@ Architecture:
 - :class:`CachedScreener` — caches results so a hot-loop of identical
   recipient addresses doesn't hammer the provider.
 - :class:`AllowAllScreener` — explicit opt-out, useful for tests.
-- :class:`ChainalysisScreener` — stub; raises until a real client is wired.
+- :class:`ChainalysisScreener` / :class:`TRMScreener` — real fail-closed HTTP
+  clients (retry transient failures, then refuse on any unresolved error).
+- :func:`build_local_screener` / :func:`parse_sanctioned_addresses` — ingest
+  OFAC SDN / EU / UK list dumps into a :class:`LocalDenylistScreener`.
 
 Wallet integration: :class:`darwin_platform.adapters.wallet.RealWallet` and
 :class:`darwin_fakes.fake_wallet.FakeWallet` both accept an optional
@@ -29,9 +32,10 @@ compliance review can replay the decision without leaking the recipient.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,16 @@ class LocalDenylistScreener:
     def _norm(s: str) -> str:
         return str(s).strip().lower()
 
+    def block(self, address: str) -> None:
+        """Add an address to the denylist at runtime — the fleet-wide
+        "hard block counterparty" incident lever (doc 09). Idempotent."""
+        a = self._norm(address)
+        if a:
+            self._deny.add(a)
+
+    def unblock(self, address: str) -> None:
+        self._deny.discard(self._norm(address))
+
     def check(self, address: str) -> ScreeningResult:
         a = self._norm(address)
         if a in self._symbolic:
@@ -111,6 +125,64 @@ class LocalDenylistScreener:
                     source="local",
                 )
         return ScreeningResult(allowed=True, source="local")
+
+
+# -- sanctions-list ingestion (OFAC SDN / EU / UK) -------------------------
+_EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")
+
+
+def _looks_like_address(token: str) -> bool:
+    """A conservative shape test for a non-EVM crypto address (BTC, Solana,
+    Stellar, etc.): a bare alphanumeric token of plausible length."""
+    t = token.strip()
+    return 26 <= len(t) <= 120 and t.isalnum()
+
+
+def parse_sanctioned_addresses(text: str) -> set[str]:
+    """Extract crypto wallet addresses from a raw sanctions-list dump.
+
+    Handles the common shapes so an operator can feed a freshly-downloaded
+    list straight in:
+    - one-address-per-line plain lists,
+    - OFAC SDN "Digital Currency Address - ETH 0x..." remark lines,
+    - any line containing EVM ``0x`` addresses.
+    ``#`` comments and blank lines are ignored. All addresses are lowercased
+    (LocalDenylistScreener normalises the same way, so casing can't bypass)."""
+    out: set[str] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        evm = _EVM_RE.findall(line)
+        if evm:
+            out.update(m.lower() for m in evm)
+            continue
+        if "digital currency address" in line.lower():
+            tok = line.split()[-1]
+            if _looks_like_address(tok):
+                out.add(tok.lower())
+            continue
+        if _looks_like_address(line):
+            out.add(line.lower())
+    return out
+
+
+def build_local_screener(
+    texts: Iterable[str],
+    *,
+    denied_prefixes: tuple[str, ...] = (),
+    extra: Iterable[str] = (),
+) -> "LocalDenylistScreener":
+    """Build a :class:`LocalDenylistScreener` by ingesting one or more raw
+    sanctions-list dumps (OFAC SDN, EU Consolidated, UK HMT — all export
+    crypto addresses). Refreshed on supervisor startup so the offline screener
+    actually screens against something rather than an empty set (doc 17)."""
+    deny: set[str] = {str(a).strip().lower() for a in extra if str(a).strip()}
+    for t in texts:
+        deny |= parse_sanctioned_addresses(t)
+    return LocalDenylistScreener(
+        denylist=deny, denied_prefixes=tuple(denied_prefixes),
+    )
 
 
 class CachedScreener:

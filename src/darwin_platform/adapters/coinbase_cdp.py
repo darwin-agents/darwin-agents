@@ -31,7 +31,67 @@ import asyncio
 import hashlib
 import re
 import threading
-from typing import Any, Protocol, runtime_checkable
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Protocol, runtime_checkable
+
+
+class CdpSpendPolicyError(Exception):
+    """A transfer was refused by the wallet-level spend policy."""
+
+
+@dataclass
+class CdpSpendPolicy:
+    """An independent spend cap enforced at the CDP wallet boundary (doc 24).
+
+    Defense-in-depth BELOW the in-process treasury policy: even if that policy
+    is bypassed or buggy, the wallet adapter itself refuses an over-cap or
+    off-allowlist transfer, so a platform bug cannot drain the real CDP
+    account. (Coinbase's server-side spend permissions are the ideal home for
+    this; this adapter-level enforcement is the portable equivalent.)"""
+
+    per_tx_usdc: float | None = None
+    per_day_usdc: float | None = None
+    allowlist: frozenset[str] = frozenset()
+    clock: Callable[[], float] = time.time
+    _spent_today: float = field(default=0.0, init=False, repr=False)
+    _day: str = field(default="", init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.allowlist = frozenset(
+            str(a).strip().lower() for a in self.allowlist if str(a).strip()
+        )
+
+    def _roll(self) -> None:
+        d = time.strftime("%Y-%m-%d", time.gmtime(self.clock()))
+        if d != self._day:
+            self._day = d
+            self._spent_today = 0.0
+
+    def authorize(self, *, to: str, amount_usdc: float) -> None:
+        """Raise :class:`CdpSpendPolicyError` if the transfer violates policy."""
+        self._roll()
+        if self.allowlist and str(to).strip().lower() not in self.allowlist:
+            raise CdpSpendPolicyError(
+                f"recipient {to!r} not on the CDP wallet allowlist"
+            )
+        if self.per_tx_usdc is not None and amount_usdc > self.per_tx_usdc:
+            raise CdpSpendPolicyError(
+                f"amount ${amount_usdc:.2f} exceeds CDP per-tx cap "
+                f"${self.per_tx_usdc:.2f}"
+            )
+        if (
+            self.per_day_usdc is not None
+            and (self._spent_today + amount_usdc) > self.per_day_usdc
+        ):
+            raise CdpSpendPolicyError(
+                f"amount ${amount_usdc:.2f} would exceed CDP daily cap "
+                f"${self.per_day_usdc:.2f} (spent ${self._spent_today:.2f})"
+            )
+
+    def record(self, amount_usdc: float) -> None:
+        self._roll()
+        self._spent_today += float(amount_usdc)
 
 
 # CDP requires account names to match this exactly: 2-36 chars, alphanumeric
@@ -81,11 +141,18 @@ class CdpChainClient:
 
     name = "coinbase-cdp"
 
-    def __init__(self, *, account: CdpAccount, network: str = "base-sepolia"):
+    def __init__(
+        self,
+        *,
+        account: CdpAccount,
+        network: str = "base-sepolia",
+        spend_policy: CdpSpendPolicy | None = None,
+    ):
         if account is None:
             raise ValueError("CdpChainClient requires a CdpAccount")
         self._account = account
         self._network = network
+        self._spend_policy = spend_policy
 
     def address(self) -> str:
         return str(self._account.address())
@@ -99,12 +166,18 @@ class CdpChainClient:
             raise ValueError("amount_usdc must be > 0")
         if not to:
             raise ValueError("transfer requires a destination address")
+        # Independent wallet-level cap (doc 24): refuse BEFORE the CDP call so
+        # a platform/treasury-policy bug cannot drain the account.
+        if self._spend_policy is not None:
+            self._spend_policy.authorize(to=to, amount_usdc=amount)
         result = self._account.transfer_usdc(
             to=to, amount_usdc=amount, memo=memo
         )
         tx_hash = _extract_tx_hash(result)
         if not tx_hash:
             raise RuntimeError("CDP transfer returned no transaction hash")
+        if self._spend_policy is not None:
+            self._spend_policy.record(amount)
         return {
             "tx_hash": tx_hash,
             "memo": memo,
@@ -245,6 +318,7 @@ def build_cdp_chain_client(
     wallet_secret: str | None = None,
     network: str = "base-sepolia",
     account_name: str = "darwin-wallet",
+    spend_policy: CdpSpendPolicy | None = None,
 ) -> CdpChainClient:
     """Construct a CDP-backed :class:`CdpChainClient` from API credentials.
 
@@ -275,4 +349,6 @@ def build_cdp_chain_client(
     real = _RealCdpAccount(
         client=client, account=account, network=network, bridge=bridge,
     )
-    return CdpChainClient(account=real, network=network)
+    return CdpChainClient(
+        account=real, network=network, spend_policy=spend_policy,
+    )
