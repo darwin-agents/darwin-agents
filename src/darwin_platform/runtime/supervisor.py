@@ -409,6 +409,7 @@ class Supervisor:
         kyc_service: KYCService | None = None,
         omnibus_wallet: OmnibusWallet | None = None,
         namespace_provisioner: NamespaceProvisioner | None = None,
+        egress_revoker: Any | None = None,
         drift_detector: DriftDetector | None = None,
         merkle_anchor_publisher: MerkleAnchorPublisher | None = None,
         maintenance_interval_seconds: float = 86400.0,
@@ -430,6 +431,12 @@ class Supervisor:
         # follow-on slice.
         self._k8s_driver = k8s_driver
         self._k8s_handles: dict[str, dict] = {}  # darwin_id → bookkeeping
+        # Egress kill-switch hook (docs 08/09/24). When set, kill + quarantine
+        # POST /revoke to the platform egress proxy so a Darwin's outbound
+        # traffic is cut at the choke-point in parallel with the in-process
+        # kill flag — the load-bearing mitigation if the orchestrator stops
+        # polling. Best-effort; never blocks the kill.
+        self._egress_revoker = egress_revoker
         # Persistent storage (doc 08: the audit log is "permanent"). When
         # ``persistence_path`` is set, swap the in-memory collections for
         # SQLite-backed ones; restart-survivable. Default unset keeps the
@@ -2585,6 +2592,30 @@ class Supervisor:
         return self._signer.public_key_pem()
 
     # -- kill (doc 08: POST /darwins/{id}/kill) ---------------------------
+    async def _cut_egress(self, darwin_id: str, *, reason: str) -> None:
+        """Cut a Darwin's egress at the platform proxy, in parallel with the
+        in-process kill flag (docs 08/09/24). Best-effort: an egress-cut
+        failure must never block or raise into kill/quarantine — the kill flag
+        is still the primary halt. Runs a sync revoker off-loop so the
+        HTTP round-trip can't stall the supervisor's event loop."""
+        revoker = self._egress_revoker
+        if revoker is None:
+            return
+        revoke = getattr(revoker, "revoke", None)
+        if revoke is None:
+            return
+        try:
+            if asyncio.iscoroutinefunction(revoke):
+                await revoke(darwin_id)
+            else:
+                await asyncio.to_thread(revoke, darwin_id)
+            self._audit.record(
+                actor="platform", action="egress_revoked", darwin_id=darwin_id,
+                metadata={"reason": reason},
+            )
+        except Exception:
+            pass
+
     async def kill(
         self,
         darwin_id: str,
@@ -2594,9 +2625,12 @@ class Supervisor:
     ) -> None:
         """Flip the platform kill flag. The genome polls it at the loop
         boundary and at every node boundary (doc 09: ≤5s latency), then runs
-        ``_halt_on_kill`` which writes the final audit record and anchors."""
+        ``_halt_on_kill`` which writes the final audit record and anchors.
+        In parallel we cut the Darwin's egress at the proxy so an
+        orchestrator that stops polling still cannot reach the network."""
         if self._is_k8s(darwin_id):
             await self._k8s_driver.kill(darwin_id, reason=reason)
+            await self._cut_egress(darwin_id, reason=reason)
             # The pod will halt itself; the driver's stop() is for full
             # namespace teardown which we defer until the operator opts
             # in (a killed Darwin's resources are still queryable for
@@ -2612,6 +2646,8 @@ class Supervisor:
             annotate_span_with_runtime(s, h.runtime)
             h.killed = True
             h.stack.kill.flip(reason)
+            # Cut egress at the proxy in parallel with the kill flag.
+            await self._cut_egress(darwin_id, reason=reason)
             self._audit.record(
                 actor=actor, action="kill", darwin_id=darwin_id,
                 metadata={"reason": reason},

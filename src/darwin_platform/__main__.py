@@ -69,6 +69,16 @@ def _is_mainnet(args: argparse.Namespace) -> bool:
     )
 
 
+def _is_production(args: argparse.Namespace) -> bool:
+    """True when the platform is running for real — an explicit
+    ``--env production`` / ``DARWIN_ENV``, or mainnet (real money implies
+    production). Used to refuse in-memory dev fakes that would silently
+    no-op a safety-critical backend, e.g. the FakeSandbox that reports
+    success without executing code (doc 14 §sandbox)."""
+    env = str(getattr(args, "env", "") or "").lower()
+    return env in ("production", "prod") or _is_mainnet(args)
+
+
 def _build_real_factories(args: argparse.Namespace) -> dict:
     """Build the optional real-provider factory kwargs for the Supervisor.
 
@@ -475,22 +485,61 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     else:
         bb_url = args.browserbase_url or os.environ.get("BROWSERBASE_URL")
         bb_key = args.browserbase_api_key or os.environ.get("BROWSERBASE_API_KEY")
+        bb_live = getattr(args, "browserbase_live_view_url", None) or (
+            os.environ.get("BROWSERBASE_LIVE_VIEW_URL")
+        )
+        bb_model = getattr(args, "browser_use_model", None) or "gpt-4o-mini"
+        # browser-use reasons with its own LLM. Reuse the platform LiteLLM proxy
+        # when configured (so browser reasoning is metered + tiered like every
+        # other call); otherwise fall back to the OpenAI default env.
+        _llm_base = getattr(args, "litellm_url", None) or os.environ.get(
+            "DARWIN_LITELLM_URL"
+        )
+        _llm_key = (
+            getattr(args, "litellm_master_key", None)
+            or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
         if bb_url or bb_key:
-            def _browser_factory(wallet, *, _url=bb_url, _key=bb_key):
-                from .adapters.browser import BrowserUseClient
+            def _browser_factory(
+                wallet, *, _url=bb_url, _key=bb_key, _live=bb_live,
+                _model=bb_model, _llm_base=_llm_base, _llm_key=_llm_key,
+            ):
+                from .adapters.browser import (
+                    BrowserUseClient,
+                    BrowserbaseAgentRunner,
+                    browserbase_connect_url,
+                )
                 try:
-                    import browser_use  # noqa: F401
+                    # Real SDK shapes: Agent(task, llm, browser_session=...),
+                    # async run(); connection is a BrowserSession(cdp_url=...).
+                    from browser_use import Agent, BrowserSession, ChatOpenAI
                 except ImportError as exc:
                     raise ImportError(
                         "Real browser requires the [browser] extra: "
                         "pip install 'darwin-dna[browser]'"
                     ) from exc
-                def _agent_factory(*, url=_url, key=_key):
-                    import browser_use as bu
-                    if key:
-                        return bu.Agent(browserbase_api_key=key)
-                    return bu.Agent(browserbase_ws_endpoint=url)
-                return BrowserUseClient(wallet=wallet, browser_factory=_agent_factory)
+                connect = browserbase_connect_url(api_key=_key, url=_url)
+                llm = ChatOpenAI(
+                    model=_model,
+                    **({"base_url": _llm_base.rstrip("/")} if _llm_base else {}),
+                    **({"api_key": _llm_key} if _llm_key else {}),
+                )
+
+                def _runner(use_vision=False):
+                    return BrowserbaseAgentRunner(
+                        connect_url=connect, llm=llm, agent_cls=Agent,
+                        browser_session_cls=BrowserSession,
+                        use_vision=use_vision, live_view_url=_live,
+                    )
+
+                return BrowserUseClient(
+                    wallet=wallet,
+                    browser_factory=lambda: _runner(use_vision=False),
+                    # Vision-mode fallback on the SAME backend (doc 15) — the
+                    # cached substrate uses this on a DOM navigation_failed.
+                    vision_factory=lambda: _runner(use_vision=True),
+                )
             factories["browser_factory"] = _browser_factory
 
     # -- sandbox (doc 14: E2BSandbox) ---------------------------------------
@@ -499,17 +548,32 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
         def _sandbox_factory(wallet, *, _key=e2b_key):
             from .adapters.sandbox import E2BSandbox
             try:
-                import e2b  # noqa: F401
+                # Code execution lives in e2b-code-interpreter; the base `e2b`
+                # package's Sandbox has no run_code (BUG: silent ok=False).
+                import e2b_code_interpreter  # noqa: F401
             except ImportError as exc:
                 raise ImportError(
                     "Real sandbox requires the [e2b] extra: "
                     "pip install 'darwin-dna[e2b]'"
                 ) from exc
             def _session_factory(*, key=_key):
-                import e2b as _e2b
-                return _e2b.Sandbox(api_key=key)
+                from e2b_code_interpreter import Sandbox
+                return Sandbox(api_key=key)
             return E2BSandbox(wallet=wallet, sandbox_factory=_session_factory)
         factories["sandbox_factory"] = _sandbox_factory
+    elif _is_production(args):
+        # doc 14 §sandbox: the in-memory FakeSandbox returns ok=True/stdout=''
+        # for ANY code without executing it — that silently defeats
+        # mutation-eval integrity and neuron isolation. Refuse to boot the dev
+        # backend in production rather than fail open.
+        print(
+            "refusing to boot in production without --e2b-api-key: the "
+            "in-memory FakeSandbox reports success without executing code, "
+            "silently defeating mutation-eval integrity and neuron isolation "
+            "(doc 14). Set --e2b-api-key / E2B_API_KEY, or run --env dev.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # -- x402 (doc 17: X402PaymentClient wrapping httpx) --------------------
     # Wire an x402 client whenever we have a real wallet — the client just
@@ -652,6 +716,18 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
 
     # -- maintenance cadence (doc 22) ------------------------------------
     kwargs["maintenance_interval_seconds"] = float(args.maintenance_interval)
+
+    # -- egress kill-switch (docs 08/09/24) ------------------------------
+    # Wire the supervisor to the platform egress proxy so kill + quarantine
+    # cut a Darwin's outbound traffic at the choke-point in parallel with the
+    # in-process kill flag.
+    egress_url = getattr(args, "egress_proxy_url", None) or os.environ.get(
+        "DARWIN_EGRESS_PROXY_URL"
+    )
+    if egress_url:
+        from .infra.egress_proxy import HttpEgressRevoker
+
+        kwargs["egress_revoker"] = HttpEgressRevoker(base_url=egress_url)
 
     # -- HSM-backed DNA signing (doc 21) --------------------------------
     transit_key = getattr(args, "signing_vault_transit_key", None)
@@ -1470,6 +1546,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--cdp-mainnet", action="store_true",
         help="DEPRECATED alias for --network mainnet (kept for back-compat).",
     )
+    serve.add_argument(
+        "--env", default=os.environ.get("DARWIN_ENV", "dev"),
+        choices=["dev", "staging", "production"],
+        help="Deployment environment. Env: DARWIN_ENV (default: dev). In "
+             "'production' (or with --network mainnet) the in-memory dev fakes "
+             "for safety-critical backends are refused — a real E2B sandbox is "
+             "required (doc 14).",
+    )
 
     vault_group = serve.add_argument_group(
         "real vault (doc 16)",
@@ -1541,6 +1625,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Browserbase API key. Env: BROWSERBASE_API_KEY",
     )
     browser_group.add_argument(
+        "--browserbase-live-view-url", default=None, metavar="URL",
+        help="Browserbase session live-view (debug) URL, surfaced to the owner "
+             "on a captcha/human-verification wall so they can take over the "
+             "live session (doc 15 §human takeover). "
+             "Env: BROWSERBASE_LIVE_VIEW_URL",
+    )
+    browser_group.add_argument(
         "--browser-use-api-key", default=None, metavar="KEY",
         help="Browser Use Cloud API key (when "
              "--browser-provider browser-use-cloud). Env: BROWSER_USE_API_KEY",
@@ -1567,6 +1658,13 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_group.add_argument(
         "--e2b-api-key", default=None, metavar="KEY",
         help="E2B API key. Env: E2B_API_KEY",
+    )
+    serve.add_argument(
+        "--egress-proxy-url", default=None, metavar="URL",
+        help="Base URL of the platform egress proxy. When set, kill + "
+             "quarantine POST /revoke so a Darwin's outbound traffic is cut "
+             "at the choke-point in parallel with the kill flag (docs 08/09/24). "
+             "Env: DARWIN_EGRESS_PROXY_URL",
     )
 
     compliance_group = serve.add_argument_group(
