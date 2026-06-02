@@ -348,6 +348,8 @@ def _make_args(**kwargs):
         vault_url=None, vault_token=None, vault_mount="secret",
         browserbase_url=None, browserbase_api_key=None,
         e2b_api_key=None,
+        # Authoritative network switch (doc 30); defaults to testnet.
+        network="testnet", cdp_mainnet=False, env="dev",
     )
     defaults.update(kwargs)
     import argparse
@@ -483,9 +485,10 @@ def test_cli_default_wallet_provider_is_cdp():
     assert args.wallet_provider == "cdp"
 
 
-def test_web3_refuses_base_mainnet_rpc():
-    """A single shared key against base-mainnet would let any spawned
-    Darwin spend the fleet treasury — refuse outright."""
+def test_web3_refuses_base_mainnet():
+    """A single shared key on mainnet would let any spawned Darwin spend the
+    fleet treasury — refuse outright. The refusal keys off the authoritative
+    ``--network mainnet`` switch (doc 30), not a brittle RPC-URL substring."""
     from darwin_platform.__main__ import _build_real_factories
 
     args = _make_args(
@@ -493,13 +496,14 @@ def test_web3_refuses_base_mainnet_rpc():
         rpc_url="https://mainnet.base.org",
         wallet_key="0xdeadbeef",
         chain_networks="base",
+        network="mainnet",
     )
     with pytest.raises(SystemExit) as exc_info:
         _build_real_factories(args)
     assert exc_info.value.code == 2
 
 
-def test_web3_refuses_solana_mainnet_rpc():
+def test_web3_refuses_solana_on_mainnet():
     from darwin_platform.__main__ import _build_real_factories
 
     args = _make_args(
@@ -507,15 +511,16 @@ def test_web3_refuses_solana_mainnet_rpc():
         solana_rpc_url="https://api.mainnet-beta.solana.com",
         solana_wallet_key="deadbeef",
         chain_networks="solana",
+        network="mainnet",
     )
     with pytest.raises(SystemExit) as exc_info:
         _build_real_factories(args)
     assert exc_info.value.code == 2
 
 
-def test_web3_refuses_stellar_public_horizon():
-    """horizon.stellar.org is Stellar mainnet — the hostname doesn't
-    contain 'mainnet' so the substring check needs the explicit branch."""
+def test_web3_refuses_stellar_on_mainnet():
+    """Stellar public horizon is mainnet — refused via the --network switch
+    (the old substring branch for horizon.stellar.org is no longer needed)."""
     from darwin_platform.__main__ import _build_real_factories
 
     args = _make_args(
@@ -523,10 +528,28 @@ def test_web3_refuses_stellar_public_horizon():
         stellar_horizon_url="https://horizon.stellar.org",
         stellar_secret="SXYZ",
         chain_networks="stellar",
+        network="mainnet",
     )
     with pytest.raises(SystemExit) as exc_info:
         _build_real_factories(args)
     assert exc_info.value.code == 2
+
+
+def test_web3_allows_mainnet_lookalike_rpc_on_testnet():
+    """Regression for the de-brittled guard: a testnet boot (--network
+    testnet, the default) is NOT refused at the factory just because the RPC
+    URL contains 'mainnet'. The testnet-config-pointed-at-mainnet-RPC mismatch
+    is caught separately by _assert_mainnet_safe() at serve boot."""
+    from darwin_platform.__main__ import _build_real_factories
+
+    args = _make_args(
+        wallet_provider="web3",
+        rpc_url="https://sepolia.example.com/mainnet-mirror",
+        wallet_key="0x" + "11" * 32,
+        chain_networks="base",
+    )
+    factories = _build_real_factories(args)
+    assert "wallet_factory" in factories
 
 
 def test_web3_accepts_testnet_rpcs():

@@ -88,7 +88,7 @@ async def test_admit_proposal_via_http():
     from darwin_platform.api import build_app
     from darwin_platform.runtime.supervisor import Supervisor
 
-    sup = Supervisor()
+    sup = Supervisor(path_c_enabled=True)  # Path-C off by default (doc 04)
     status = await sup.spawn(opening_usdc=50.0)
     did = status.darwin_id
     h = sup._darwins[did]
@@ -136,7 +136,7 @@ async def test_reject_proposal_via_http():
     from darwin_platform.api import build_app
     from darwin_platform.runtime.supervisor import Supervisor
 
-    sup = Supervisor()
+    sup = Supervisor(path_c_enabled=True)  # Path-C off by default (doc 04)
     status = await sup.spawn(opening_usdc=50.0)
     did = status.darwin_id
     h = sup._darwins[did]

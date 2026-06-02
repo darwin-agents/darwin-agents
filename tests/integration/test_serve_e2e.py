@@ -387,7 +387,19 @@ def test_serve_accepts_wiring_flags(server_factory):
     # Came up healthy with all the wiring flags applied.
     assert client.get("/healthz").json()["status"] == "ok"
 
-    # A Darwin still spawns + runs with the Phase-2 services wired.
+    # KYC is wired (--kyc-provider stub) → spawn is gated until the owner
+    # completes KYC. Drive the real /platform/kyc/* flow for the auth-disabled
+    # "anonymous" subject, then spawn succeeds.
+    inq = client.post(
+        "/platform/kyc/start", json={"subject": "anonymous"}
+    ).json()["inquiry_id"]
+    verdict = client.post(
+        "/platform/kyc/webhook",
+        json={"subject": "anonymous", "inquiry_id": inq},
+    ).json()
+    assert verdict["status"] == "approved"
+
+    # A Darwin now spawns + runs with the Phase-2 services wired.
     did = client.post("/darwins", json={"opening_usdc": 100.0}).json()[
         "darwin_id"
     ]

@@ -110,6 +110,8 @@ def test_local_vault_factory_mainnet_enables_confirmation_gating():
         "--chain-networks", "base",
         "--rpc-url", "http://localhost:8545",
         "--network", "mainnet",
+        # mainnet ⇒ production ⇒ a real sandbox is required (doc 14 guard).
+        "--e2b-api-key", "sk-test",
     ))
     wallet = _spawn_wallet(factories, vault=FakeVault())
     assert wallet.network == "base-mainnet"

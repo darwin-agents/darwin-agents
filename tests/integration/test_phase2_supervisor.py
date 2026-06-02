@@ -115,7 +115,10 @@ async def test_supervisor_provisions_tenant_namespace_on_spawn(_omnibus_chain):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_tears_down_tenant_on_kill(_omnibus_chain):
+async def test_supervisor_defers_tenant_teardown_on_kill(_omnibus_chain):
+    # doc 09 #3: kill RETAINS the namespace + organism DB for the retention
+    # window — it does NOT destroy them immediately. The destructive teardown
+    # is deferred to the reaper / operator force-teardown.
     k8s = StubK8sBackend()
     vault = StubVaultNamespaceBackend()
     db = StubOrganismDbBackend()
@@ -128,10 +131,16 @@ async def test_supervisor_tears_down_tenant_on_kill(_omnibus_chain):
     try:
         status = await sup.spawn(opening_usdc=100.0, actor="alice")
         await sup.kill(status.darwin_id, reason="test", actor="alice")
-        # All three sides got the delete call.
-        assert k8s.deletions
-        assert vault.deletions
-        assert db.dropped
+        # Nothing destroyed — data is retained.
+        assert not k8s.deletions
+        assert not vault.deletions
+        assert not db.dropped
+        tenant = sup.namespace_provisioner.get(status.darwin_id)
+        assert tenant is not None
+        assert tenant.status.value == "deceased"
+        # An operator can still force deletion (owner data-delete request).
+        sup.teardown_dead_darwin(status.darwin_id, actor="alice")
+        assert k8s.deletions and vault.deletions and db.dropped
         assert sup.namespace_provisioner.get(status.darwin_id) is None
     finally:
         await sup.shutdown(kill_running=False)
