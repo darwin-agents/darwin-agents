@@ -111,6 +111,17 @@ spec:
               containerPort: 8000
               protocol: TCP
           env:
+            # The supervisor's own namespace, via the downward API. The
+            # k8s driver stamps each per-Darwin NetworkPolicy with an
+            # ingress rule allowing the orchestrator control port ONLY from
+            # the supervisor pod in this namespace. Without POD_NAMESPACE the
+            # driver falls back to "default", so on a NetworkPolicy-enforcing
+            # CNI (kindnet, Cilium, Calico) the supervisor->orchestrator RPC
+            # is dropped and every spawn hangs "did not become ready".
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- if $usePostgres }}
             - name: DATABASE_URL
               {{- if .Values.database.existingSecret }}

@@ -20,7 +20,11 @@ type: application
 # 0.3.0 adds first-class walletProvider / heartbeatSeconds / extraArgs
 # passthroughs so the Terraform local stack can drive the chart instead
 # of re-declaring the supervisor workload.
-version: 0.3.0
+# 0.3.1 exports POD_NAMESPACE via the downward API so the k8s driver's
+# per-Darwin NetworkPolicy allows the supervisor->orchestrator RPC on a
+# NetworkPolicy-enforcing CNI (kindnet/Cilium/Calico); without it the
+# driver fell back to "default" and every spawn hung "did not become ready".
+version: 0.3.1
 
 # The supervisor image tag this chart's manifests are validated against.
 # Helm's standard `image.tag` value can override this per-release.
