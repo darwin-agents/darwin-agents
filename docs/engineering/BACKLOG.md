@@ -248,9 +248,15 @@ self-hosted k3s, DOKS, GKE, AKS — anything `kubectl` reaches. Layout:
   - `infra/terraform/modules/cnpg/` — CloudNativePG operator + a Postgres
   `Cluster` CR; outputs the connection-string Secret name.
   - `infra/terraform/modules/vault/` — HashiCorp Vault Helm release in dev mode
-  (in-memory, auto-unsealed) with a generated root token; the
-  variable surface is preserved so a future `modules/vault-prod/`
-  with raft + KMS auto-unseal is a drop-in replacement.
+  (in-memory, auto-unsealed) with a generated root token.
+  - `infra/terraform/modules/vault-prod/` — Vault HA + raft (3 replicas,
+  persistent volumes); used by `envs/hetzner` via `platform-stack`
+  `vault_mode=raft`. **Manual unseal** — no KMS auto-unseal yet.
+  - `infra/terraform/modules/platform-stack/` + `k8s-addons/` — shared
+  composition (local + cloud); ingress + optional cert-manager TLS.
+  - `infra/terraform/envs/hetzner/` — Hetzner k3s + gVisor + production
+  deploy path; CI: `.github/workflows/deploy-hetzner.yml`.
+  - `make dev` / `scripts/dev-up.sh` — kind + image load + dashboard.
   - `infra/terraform/modules/litellm/` — proxy Deployment + Service +
   ConfigMap (mounts the existing `infra/docker/litellm.config.yaml`) +
   Secret for provider keys.

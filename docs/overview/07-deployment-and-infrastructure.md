@@ -197,32 +197,48 @@ A Darwin namespace is provisioned by the supervisor on spawn and torn down on de
 
 ## Terraform layout
 
+**In the repo today** (`infra/terraform/`):
+
 ```
-infra/
-├── modules/
-│   ├── eks/
-│   ├── aurora-platform/
-│   ├── aurora-organism-cluster/
-│   ├── vault/
-│   ├── litellm-proxy/
-│   ├── egress-proxy/
-│   ├── coinbase-cdp/
-│   ├── stripe-account/
-│   ├── moonpay-account/
-│   └── observability/         # OTel collectors, Honeycomb, etc.
+infra/terraform/
 ├── envs/
-│   ├── dev/
-│   │   └── main.tf
-│   ├── staging/
-│   │   └── main.tf
-│   ├── prod-us-east/
-│   │   └── main.tf
-│   └── prod-eu-west/
-│       └── main.tf
-└── shared/                    # cross-env: DNS, signing keys, audit log anchoring
+│   ├── local/                 # kind + platform-stack (dev laptop)
+│   └── hetzner/               # k3s on Hetzner + platform-stack (prod)
+├── modules/
+│   ├── kind-cluster/          # local cluster
+│   ├── cluster-hetzner-k3s/   # Hetzner k3s + gVisor nodes
+│   ├── hcloud-bootstrap/      # Hetzner CCM + CSI
+│   ├── platform-stack/        # cnpg + vault + litellm + supervisor + ingress
+│   ├── cnpg/ · vault/ · vault-prod/ · litellm/
+│   ├── darwin-platform/       # Helm wrapper for charts/darwin-platform
+│   └── k8s-addons/            # ingress-nginx + Ingress (+ cert-manager on cloud)
+├── charts/                    # (sibling) infra/charts/darwin-platform — chart source of truth
+├── docker/                    # (sibling) Compose stack for local observability loop
+└── grafana/                   # (sibling) dashboard JSON
 ```
 
-Terraform state in S3 with DynamoDB locking. State files encrypted with KMS. Changes go through a Terraform Cloud workspace with required approval for prod.
+| Target (vision doc) | Shipped equivalent | Status |
+| ------------------- | ------------------ | ------ |
+| EKS / dev cloud | `envs/local` (kind) or `envs/hetzner` (k3s) | **Shipped** — cloud-agnostic, not AWS-specific |
+| Aurora platform DB | CloudNativePG (`modules/cnpg`) | **Shipped** |
+| ElastiCache Redis | — | **Not in TF** — Redis in Compose only; LiteLLM cache stripped in TF configs |
+| HCP / Enterprise Vault | `vault` (dev) / `vault-prod` (raft, manual unseal) | **Shipped** — no KMS auto-unseal yet |
+| LiteLLM proxy | `modules/litellm` | **Shipped** |
+| Egress proxy (phase 2) | Helm chart templates; **disabled** in current TF deploys | **Partial** |
+| `envs/staging`, `prod-us-east`, … | — | **Planned** — add sibling envs over `platform-stack` |
+| `infra/shared/` (DNS, anchors) | DNS/runbooks per env (e.g. hetzner README) | **Planned** |
+| AWS modules (`eks`, `aurora-*`, …) | — | **Deferred** — optional if AWS becomes primary host |
+
+**State:** `envs/local` uses local state; `envs/hetzner` uses Hetzner Object Storage (S3-compatible) with locking. Production deploys run via `.github/workflows/deploy-hetzner.yml` on release (GitHub Environment `hetzner-prod`).
+
+The AWS-centric tree below remains the **long-term multi-region target** if we standardise on EKS; it is not what ships in this repository yet:
+
+```
+infra/terraform/   # planned AWS shape (not implemented)
+├── modules/eks/, aurora-platform/, …
+├── envs/dev/, staging/, prod-us-east/, prod-eu-west/
+└── shared/
+```
 
 ## What we do NOT run
 

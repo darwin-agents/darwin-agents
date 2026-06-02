@@ -26,19 +26,27 @@ What's provided:
 - `modules/k8s-addons/` — the exposure layer (ingress-nginx controller +
   the platform `Ingress`), toggled by `exposure` (`kind-hostport` |
   `loadbalancer` | `none`) with optional cert-manager TLS for cloud.
+- `modules/vault-prod/` — Vault HA with integrated **raft** storage (3
+  replicas, persistent volumes). Used when `platform-stack`'s
+  `vault_mode = "raft"` (Hetzner). **Manual unseal** — no KMS
+  auto-unseal stanza; pods stay `NotReady` until an operator unseals
+  them. Init + unseal + Kubernetes auth: [`envs/hetzner/README.md`](envs/hetzner/README.md).
+- `envs/hetzner/` — production-shaped stack on Hetzner Cloud (k3s,
+  gVisor, hcloud CCM/CSI, LoadBalancer ingress, Let's Encrypt). Remote
+  state via Hetzner Object Storage; deploy from CI on release (see
+  `.github/workflows/deploy-hetzner.yml`).
 
 What's NOT provided (intentionally):
 
 - AWS / GCP / Azure cluster modules. The doc-22 EKS module was a
   deployment specialisation, not a feature. Pointing the platform
   layer at a managed K8s cluster you've provisioned out-of-band (DOKS,
-  GKE, AKS, k3s) is the supported production path; we can ship a
-  cloud-specific cluster wrapper alongside `kind-cluster/` if you
-  decide on a primary host.
-- Production-grade Vault (raft storage, auto-unseal). The local stack
-  runs Vault in dev mode (in-memory, auto-unsealed) because that's
-  what makes the laptop loop tight. A `modules/vault-prod/` with raft
-  + cloud-KMS auto-unseal is a future addition.
+  GKE, AKS, k3s) is the supported production path; add another
+  `envs/<provider>/` sibling that swaps the cluster module.
+- Vault **auto-unseal** (cloud KMS). `vault-prod` is raft + manual
+  unseal; KMS seal is a future addition if you want unattended restarts.
+- `modules/redis` for LiteLLM response cache in-cluster (Compose has
+  Redis; TF stacks omit it — see env-specific `litellm.config.yaml`).
 
 ## Prerequisites
 
@@ -121,7 +129,7 @@ host via an extraPortMapping).
 | Cluster          | 1 control-plane + 2 worker kind nodes                | `modules/kind-cluster/`    |
 | Composition      | Wires the layers below into one call                 | `modules/platform-stack/`  |
 | Postgres         | CloudNativePG operator + 1-instance Cluster CR       | `modules/cnpg/`            |
-| Secrets          | HashiCorp Vault (dev mode, in-memory)                | `modules/vault/`           |
+| Secrets          | Vault dev (`vault_mode=dev`) or raft (`vault-prod`)  | `modules/vault/` or `vault-prod/` |
 | LLM router       | LiteLLM proxy Deployment + Service + ConfigMap       | `modules/litellm/`         |
 | Platform         | `darwin-platform` supervisor (via the Helm chart)    | `modules/darwin-platform/` |
 | Exposure         | ingress-nginx + the platform `Ingress`               | `modules/k8s-addons/`      |
@@ -145,7 +153,10 @@ PVCs, services, deployments, network policies).
 
 ## State
 
-`envs/local/` uses local state (`terraform.tfstate`). A production env
-should point `terraform { backend "s3"|"gcs"|"azurerm" {…} }` at remote
-state. We deliberately did not pre-pick a backend so the choice tracks
-wherever you choose to host the cluster.
+| Env | Backend |
+| --- | ------- |
+| `envs/local/` | Local `terraform.tfstate` |
+| `envs/hetzner/` | Remote S3-compatible (Hetzner Object Storage) — see `backend.tf.example` |
+
+Other envs can use any remote backend; the Hetzner env is the reference
+for production state + locking (`use_lockfile`).
