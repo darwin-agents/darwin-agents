@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(adapters): BrowserbaseAgentRunner drives the real browser_use Agent on a Browserbase CDP session (async run on an isolated loop), with vision-mode fallback and a captcha→live-view human-takeover handoff
+- feat(infra): egress-proxy per-Darwin revocation kill-switch (`/revoke`/`/unrevoke`) cut on kill/quarantine, plus serve-entrypoint `--bandwidth-soft-gb`/`--bandwidth-hard-gb` quota wiring
+- feat(platform): `--env`/`DARWIN_ENV` and `--egress-proxy-url` flags; production refuses the in-memory FakeSandbox
 - feat(adapters): Web3ChainClient.wait_for_confirmation for mainnet ledger gating
 - ci: deploy-hetzner workflow for production releases on Hetzner k3s
 - feat(terraform): hetzner env with k3s cluster, hcloud CCM/CSI, and raft Vault
@@ -33,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): construct per-Darwin web3/local-vault Base wallets with the correct Web3ChainClient signature (was a TypeError at spawn); forward `network=`/confirmation gating
+- fix(platform): wire the real `e2b-code-interpreter` sandbox (base `e2b` has no `run_code`); refuse the no-op FakeSandbox in production
+- fix(platform): correct Browser-Use wiring to the real SDK shape (task-at-construction, async run, BrowserSession) — the default browser path could not connect
+- fix(charts): run the egress proxy from `darwin_platform.infra.egress_proxy` (was a non-existent module path → CrashLoopBackOff)
 - fix(platform): gate mainnet wallets on --network and correct Web3ChainClient wiring
 - fix(platform): re-adopt k8s darwins after supervisor restart so APIs stop 404ing
 - fix(platform): return k8s timeline events without handle-id filter
