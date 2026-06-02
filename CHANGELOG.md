@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ci: deploy-hetzner workflow for production releases on Hetzner k3s
+- feat(terraform): hetzner env with k3s cluster, hcloud CCM/CSI, and raft Vault
+- feat(terraform): vault-prod raft module and cert-manager on k8s-addons
 - feat(devx): one-command `make dev` for kind stack, image load, and dashboard
 - feat(terraform): add platform-stack and k8s-addons modules for cloud-agnostic compose
 - feat(charts): export POD_NAMESPACE via downward API (chart 0.3.1)
