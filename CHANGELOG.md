@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(compliance): sanctions-list ingestion (`build_local_screener` / `parse_sanctioned_addresses` parse OFAC SDN / EU / UK dumps) via `--sanctions-list-file`, so the offline screener screens against real addresses; independent CDP wallet-level spend policy (`CdpSpendPolicy`: per-tx / per-day caps + allowlist via `--cdp-per-tx-usdc` / `--cdp-per-day-usdc`) as defense-in-depth below the treasury policy
+- feat(platform): fleet-wide incident-response levers (doc 09) — `fleet_pause`/`fleet_resume`, `fleet_spend_lock`, `fleet_block_category`, and `block_counterparty` (runtime sanctions-denylist add), with `/platform/fleet/*` HTTP routes
+- feat(safety): content-safety classifier injection seam wired (Supervisor `content_classifier` → per-Darwin platform → publishing-neuron gate); concrete `KeywordContentClassifier` so the seam is a real filter, not the bare backstop
+- feat(security): KYC gate now enforced on the live spawn + fiat deposit/withdraw paths (was dead code); 18+ age gate (`require_adult`); `/platform/kyc/start|status|webhook` HTTP surface; spawn ToS + 18+ consent capture (enforced in production via `require_spawn_consent`)
 - feat(adapters): BrowserbaseAgentRunner drives the real browser_use Agent on a Browserbase CDP session (async run on an isolated loop), with vision-mode fallback and a captcha→live-view human-takeover handoff
 - feat(infra): egress-proxy per-Darwin revocation kill-switch (`/revoke`/`/unrevoke`) cut on kill/quarantine, plus serve-entrypoint `--bandwidth-soft-gb`/`--bandwidth-hard-gb` quota wiring
 - feat(platform): `--env`/`DARWIN_ENV` and `--egress-proxy-url` flags; production refuses the in-memory FakeSandbox
+- feat(evolution): Path-C neuron self-authoring is OFF by default (doc 04); when enabled, proposals pass through a staging quarantine + mandatory operator review (`path_c_enabled` / `path_c_require_human_review` hyperparameters) before joining the live catalog
 - feat(adapters): Web3ChainClient.wait_for_confirmation for mainnet ledger gating
 - ci: deploy-hetzner workflow for production releases on Hetzner k3s
 - feat(terraform): hetzner env with k3s cluster, hcloud CCM/CSI, and raft Vault
@@ -27,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs(engineering): correct operational-runbook hazards (signing-key rotation is an API call not a restart; `event:plan` not `intent:plan`; real LLM-tier daily-cap knobs not a nonexistent `planner_tier`; `min_recurring_failures_for_mutation` not a nonexistent recurrence window; Postgres host port 15432); add `--network`/`--env` + new flags to the configuration reference; correct the stale "stub" sanctions docstring
+- docs(engineering): bump data-model reference to schema v11 + document the 9 previously-undocumented tables (preapprovals, omnibus_state/entries, fiat_quotes, harvest_rules, resource_throttles, push_subscriptions, freelancer_registry, processed_webhook_events), bound to the schema by a new contract test
 - refactor(terraform/local): compose kind stack via platform-stack module
 - refactor(terraform): move ingress exposure into k8s-addons module
 - refactor(terraform): deploy darwin-platform supervisor via Helm chart
@@ -36,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(evolution): a child now inherits the parent's mutation-archive dead-ends at reproduction (was hardcoded to an empty set, breaking the cross-generation negative-lesson path)
+- fix(platform): dead-Darwin data now survives kill (doc 09 #3) — kill DEFERS namespace/organism-DB teardown (90-day retention), a fleet-maintenance reaper destroys only after the window, and `teardown_dead_darwin` is the operator force-delete; shutdown no longer wipes tenant namespaces
+- fix(platform): fleet maintenance now raises CRITICAL alerts (→ PagerDuty) on omnibus-reconciliation discrepancy + Merkle-anchor failure; tightened omnibus reconciliation tolerance to $0.01; open-intent reconciliation surfaces dangling payment intents on restart (`AuditLogger.open_intents`)
+- fix(treasury): route x402 settlement through the full treasury policy (one money door) instead of only a flat client-side cap; HALT the heartbeat on a treasury-engine fault (doc 28) instead of swallowing it as a recoverable crash; correct the trading.operator docstring's false treasury.spend claim
 - fix(platform): construct per-Darwin web3/local-vault Base wallets with the correct Web3ChainClient signature (was a TypeError at spawn); forward `network=`/confirmation gating
 - fix(platform): wire the real `e2b-code-interpreter` sandbox (base `e2b` has no `run_code`); refuse the no-op FakeSandbox in production
 - fix(platform): correct Browser-Use wiring to the real SDK shape (task-at-construction, async run, BrowserSession) — the default browser path could not connect
