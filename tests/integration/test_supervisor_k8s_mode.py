@@ -51,11 +51,17 @@ class _FakeK8sDriver:
 
     async def events_records(self, darwin_id: str) -> list[dict]:
         self.events_called.append(darwin_id)
+        # The orchestrator stamps records with the genome's own genesis
+        # identity, which is independent of the supervisor handle id passed
+        # here. Use a deliberately *different* id so the test proves the
+        # supervisor does NOT drop them via a darwin_id equality filter.
+        genesis_id = "019e870a-genesis-id"
+        assert genesis_id != darwin_id
         return [
             {"seq": 1, "ts": 1.0, "kind": "event:spawn",
-             "darwin_id": darwin_id, "payload": {}},
+             "darwin_id": genesis_id, "payload": {}},
             {"seq": 2, "ts": 2.0, "kind": "event:tick",
-             "darwin_id": darwin_id, "payload": {"tier": "fast"}},
+             "darwin_id": genesis_id, "payload": {"tier": "fast"}},
         ]
 
     async def list_ids(self) -> list[str]: return []

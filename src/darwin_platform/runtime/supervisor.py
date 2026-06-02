@@ -2951,11 +2951,18 @@ class Supervisor:
         # In k8s mode the audit log lives in the orchestrator pod, not in an
         # in-process handle — fetch the raw records via the driver and apply
         # the same filtering/paging below. (Mirrors how status() branches.)
+        #
+        # The orchestrator pod is single-tenant: every record it returns is
+        # this Darwin's. Its genome stamps records with its own genesis
+        # identity, which is independent of the supervisor-minted handle id
+        # (see _spawn_k8s). So the darwin_id equality filter that isolates
+        # one Darwin in the shared in-process sink would drop *every* record
+        # here — skip it and treat all pod-local records as own.
         if self._is_k8s(darwin_id):
-            all_records = await self._k8s_driver.events_records(darwin_id)
+            own = await self._k8s_driver.events_records(darwin_id)
         else:
             all_records = self._get(darwin_id).stack.audit_sink.read_all()
-        own = [r for r in all_records if r.get("darwin_id") == darwin_id]
+            own = [r for r in all_records if r.get("darwin_id") == darwin_id]
 
         def _matches(rec: dict[str, Any]) -> bool:
             if kind is not None:
