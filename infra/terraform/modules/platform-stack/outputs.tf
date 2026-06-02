@@ -14,8 +14,8 @@ output "service_account" {
 }
 
 output "vault_address" {
-  value       = module.vault.address
-  description = "In-cluster Vault address."
+  value       = local.vault_address
+  description = "In-cluster Vault address (dev or raft, per vault_mode)."
 }
 
 output "ingress_enabled" {

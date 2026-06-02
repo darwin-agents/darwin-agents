@@ -137,9 +137,12 @@ resource "helm_release" "platform" {
     networkPolicy         = { enabled = false }
     egressProxy           = { enabled = false }
     platformDataNamespace = { create = false }
-    runtimeClass          = { create = var.create_runtime_class } # kind installs a shim out-of-band; cloud may let the chart create it
-    serviceMonitor        = { enabled = false }
-    ingress               = { enabled = false } # fronted by the k8s-addons module instead
+    runtimeClass = {
+      create  = var.create_runtime_class # kind installs a shim out-of-band; cloud lets the chart create it
+      handler = var.runtime_handler      # CRI handler (gVisor: runsc; Kata: kata)
+    }
+    serviceMonitor = { enabled = false }
+    ingress        = { enabled = false } # fronted by the k8s-addons module instead
 
     # DARWIN_POD_* substrate creds, sourced from the Secret above.
     extraEnv = [

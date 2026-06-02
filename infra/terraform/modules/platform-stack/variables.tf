@@ -26,6 +26,24 @@ variable "vault_namespace" {
   default     = "vault"
 }
 
+variable "vault_mode" {
+  type        = string
+  description = "Vault deployment: 'dev' (in-memory, auto-unseal — local) or 'raft' (HA + manual unseal — prod)."
+  default     = "dev"
+
+  validation {
+    condition     = contains(["dev", "raft"], var.vault_mode)
+    error_message = "vault_mode must be 'dev' or 'raft'."
+  }
+}
+
+variable "vault_token" {
+  type        = string
+  description = "Static Vault token for the supervisor. Only used in 'dev' is auto-derived; for 'raft' leave empty and wire Kubernetes auth via the runbook."
+  sensitive   = true
+  default     = ""
+}
+
 variable "litellm_namespace" {
   type        = string
   description = "Namespace for the LiteLLM proxy."
@@ -70,6 +88,12 @@ variable "create_runtime_class" {
   type        = bool
   description = "If true, the chart creates the RuntimeClass resource. false when the env installs it out-of-band (kind shim, or cloud node bootstrap)."
   default     = false
+}
+
+variable "runtime_handler" {
+  type        = string
+  description = "CRI handler the created RuntimeClass points at (only used when create_runtime_class=true). gVisor uses 'runsc'; Kata uses 'kata'."
+  default     = "runsc"
 }
 
 # -- storage ----------------------------------------------------------------
@@ -168,4 +192,40 @@ variable "tls_secret_name" {
   type        = string
   description = "TLS Secret name for ingress_host (cert-manager fills it when cluster_issuer is set)."
   default     = ""
+}
+
+variable "lb_name" {
+  type        = string
+  description = "Name annotation for the cloud LoadBalancer (exposure=loadbalancer)."
+  default     = "darwin-ingress"
+}
+
+variable "lb_location" {
+  type        = string
+  description = "Hetzner location for the cloud LoadBalancer."
+  default     = "nbg1"
+}
+
+variable "lb_type" {
+  type        = string
+  description = "Hetzner LoadBalancer type (lb11/lb21/lb31)."
+  default     = "lb11"
+}
+
+variable "cert_manager_install" {
+  type        = bool
+  description = "Install cert-manager + a Let's-Encrypt ClusterIssuer (cloud TLS)."
+  default     = false
+}
+
+variable "acme_email" {
+  type        = string
+  description = "Contact email for the ACME (Let's Encrypt) account."
+  default     = ""
+}
+
+variable "acme_server" {
+  type        = string
+  description = "ACME directory URL (default: Let's Encrypt prod; use staging while testing)."
+  default     = "https://acme-v02.api.letsencrypt.org/directory"
 }

@@ -38,8 +38,9 @@ variable "vault_address" {
 
 variable "vault_token" {
   type        = string
-  description = "Vault root token. Sealed into a Secret the supervisor pod mounts as VAULT_TOKEN. In production this is a Kubernetes-auth-backed AppRole token rather than the root token."
+  description = "Vault token forwarded to per-Darwin pods (DARWIN_POD_VAULT_TOKEN). Empty in raft/prod mode, where the orchestrator authenticates via the Vault Kubernetes auth method instead of a static token."
   sensitive   = true
+  default     = ""
 }
 
 variable "litellm_url" {
@@ -67,8 +68,14 @@ variable "runtime_class" {
 
 variable "create_runtime_class" {
   type        = bool
-  description = "If true, the chart creates the RuntimeClass resource (handler from runtimeClass.handler). Leave false when the environment installs the RuntimeClass out-of-band (kind does this via a kubectl shim; cloud nodes install the real handler)."
+  description = "If true, the chart creates the RuntimeClass resource (handler from runtime_handler). Leave false when the environment installs the RuntimeClass out-of-band (kind does this via a kubectl shim; cloud nodes install the real handler)."
   default     = false
+}
+
+variable "runtime_handler" {
+  type        = string
+  description = "CRI handler the chart-created RuntimeClass points at (only used when create_runtime_class=true). gVisor uses 'runsc'; Kata uses 'kata'."
+  default     = "runsc"
 }
 
 variable "wallet_provider" {

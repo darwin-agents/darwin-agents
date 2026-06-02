@@ -24,10 +24,30 @@ module "cnpg" {
   storage_class      = var.storage_class
 }
 
+# Vault: dev mode (in-memory, auto-unseal) for local, OR raft (prod, manual
+# unseal) for cloud. Exactly one is instantiated per vault_mode.
 module "vault" {
   source = "../vault"
+  count  = var.vault_mode == "dev" ? 1 : 0
 
   namespace = var.vault_namespace
+}
+
+module "vault_prod" {
+  source = "../vault-prod"
+  count  = var.vault_mode == "raft" ? 1 : 0
+
+  namespace     = var.vault_namespace
+  storage_class = var.storage_class
+}
+
+locals {
+  # Address of whichever Vault is active.
+  vault_address = var.vault_mode == "raft" ? one(module.vault_prod[*].address) : one(module.vault[*].address)
+  # Dev Vault yields a root token; raft Vault is unsealed + wired to the
+  # Kubernetes auth method via the runbook, so there's no static token at
+  # apply time (vault_token stays empty unless an operator supplies one).
+  vault_token = var.vault_mode == "raft" ? var.vault_token : one(module.vault[*].root_token)
 }
 
 module "litellm" {
@@ -48,8 +68,8 @@ module "platform" {
   image_pull_policy  = var.image_pull_policy
 
   database_secret = module.cnpg.connection_secret_name
-  vault_address   = module.vault.address
-  vault_token     = module.vault.root_token
+  vault_address   = local.vault_address
+  vault_token     = local.vault_token
   litellm_url     = module.litellm.in_cluster_url
   litellm_key     = var.litellm_master_key
 
@@ -57,9 +77,10 @@ module "platform" {
   heartbeat_seconds    = var.heartbeat_seconds
   runtime_class        = var.runtime_class
   create_runtime_class = var.create_runtime_class
+  runtime_handler      = var.runtime_handler
   extra_args           = var.extra_args
 
-  depends_on = [module.cnpg, module.vault, module.litellm]
+  depends_on = [module.cnpg, module.vault, module.vault_prod, module.litellm]
 }
 
 module "addons" {
@@ -74,6 +95,16 @@ module "addons" {
   tls_enabled     = var.tls_enabled
   cluster_issuer  = var.cluster_issuer
   tls_secret_name = var.tls_secret_name
+
+  # LoadBalancer exposure (cloud).
+  lb_name     = var.lb_name
+  lb_location = var.lb_location
+  lb_type     = var.lb_type
+
+  # cert-manager (cloud TLS).
+  cert_manager_install = var.cert_manager_install
+  acme_email           = var.acme_email
+  acme_server          = var.acme_server
 
   depends_on = [module.platform]
 }
