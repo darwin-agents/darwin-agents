@@ -29,12 +29,29 @@ locals {
         publishService = { enabled = false }
       }
     }
-    # cloud: the controller sits behind a managed LoadBalancer. Needs a
-    # cloud controller manager to provision the external IP (Phase 3
-    # wires hcloud-cloud-controller-manager).
+    # cloud: the controller sits behind a managed LoadBalancer provisioned by
+    # the cloud controller manager (hcloud CCM, installed by hcloud-bootstrap).
+    # The Hetzner LB annotations + PROXY protocol preserve the client IP;
+    # use-proxy-protocol on the controller MUST match uses-proxyprotocol on
+    # the LB or nginx mis-parses requests.
     "loadbalancer" = {
       controller = {
-        service        = { type = "LoadBalancer" }
+        service = {
+          type                  = "LoadBalancer"
+          externalTrafficPolicy = "Local"
+          annotations = {
+            "load-balancer.hetzner.cloud/name"               = var.lb_name
+            "load-balancer.hetzner.cloud/location"           = var.lb_location
+            "load-balancer.hetzner.cloud/type"               = var.lb_type
+            "load-balancer.hetzner.cloud/use-private-ip"     = "true"
+            "load-balancer.hetzner.cloud/uses-proxyprotocol" = "true"
+          }
+        }
+        config = {
+          "use-proxy-protocol"         = "true"
+          "use-forwarded-headers"      = "true"
+          "compute-full-forwarded-for" = "true"
+        }
         publishService = { enabled = true }
       }
     }
@@ -119,4 +136,46 @@ resource "kubernetes_ingress_v1" "platform" {
   }
 
   depends_on = [helm_release.ingress_nginx]
+}
+
+# -- cert-manager + a Let's-Encrypt ClusterIssuer (cloud TLS) ----------------
+# Gated by var.cert_manager_install. The ClusterIssuer is applied via
+# kubectl_manifest (alekc/kubectl) so it doesn't fail plan-time validation
+# before the cert-manager CRDs exist. HTTP-01 needs the ingress_host's DNS A
+# record already pointing at the LoadBalancer IP and port 80 reachable.
+resource "helm_release" "cert_manager" {
+  count            = var.cert_manager_install ? 1 : 0
+  name             = "cert-manager"
+  repository       = "https://charts.jetstack.io"
+  chart            = "cert-manager"
+  version          = var.cert_manager_chart_version
+  namespace        = "cert-manager"
+  create_namespace = true
+  atomic           = true
+  timeout          = 600
+
+  # v1.15+: crds.enabled (NOT the deprecated installCRDs).
+  set {
+    name  = "crds.enabled"
+    value = "true"
+  }
+}
+
+resource "kubectl_manifest" "cluster_issuer" {
+  count = (var.cert_manager_install && var.cluster_issuer != "") ? 1 : 0
+  yaml_body = yamlencode({
+    apiVersion = "cert-manager.io/v1"
+    kind       = "ClusterIssuer"
+    metadata   = { name = var.cluster_issuer }
+    spec = {
+      acme = {
+        server              = var.acme_server
+        email               = var.acme_email
+        privateKeySecretRef = { name = "${var.cluster_issuer}-account-key" }
+        solvers             = [{ http01 = { ingress = { ingressClassName = var.ingress_class_name } } }]
+      }
+    }
+  })
+
+  depends_on = [helm_release.cert_manager]
 }

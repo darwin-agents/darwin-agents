@@ -91,3 +91,49 @@ variable "tls_secret_name" {
   description = "Secret holding the TLS cert/key for ingress_host. With cert-manager + cluster_issuer set, the secret is created automatically under this name; otherwise it must already exist."
   default     = ""
 }
+
+# -- LoadBalancer exposure (Hetzner) ----------------------------------------
+
+variable "lb_name" {
+  type        = string
+  description = "Name annotation for the cloud LoadBalancer (load-balancer.hetzner.cloud/name). Unique per LB."
+  default     = "darwin-ingress"
+}
+
+variable "lb_location" {
+  type        = string
+  description = "Hetzner location for the LoadBalancer (load-balancer.hetzner.cloud/location)."
+  default     = "nbg1"
+}
+
+variable "lb_type" {
+  type        = string
+  description = "Hetzner LoadBalancer type (lb11/lb21/lb31)."
+  default     = "lb11"
+}
+
+# -- cert-manager -----------------------------------------------------------
+
+variable "cert_manager_install" {
+  type        = bool
+  description = "Install cert-manager + a Let's-Encrypt ClusterIssuer (named by cluster_issuer)."
+  default     = false
+}
+
+variable "cert_manager_chart_version" {
+  type        = string
+  description = "cert-manager Helm chart version."
+  default     = "v1.20.2"
+}
+
+variable "acme_email" {
+  type        = string
+  description = "Contact email for the ACME (Let's Encrypt) account."
+  default     = ""
+}
+
+variable "acme_server" {
+  type        = string
+  description = "ACME directory URL. Default is Let's Encrypt PROD; use the staging URL while testing to avoid rate limits."
+  default     = "https://acme-v02.api.letsencrypt.org/directory"
+}
