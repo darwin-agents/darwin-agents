@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(adapters): Web3ChainClient.wait_for_confirmation for mainnet ledger gating
 - ci: deploy-hetzner workflow for production releases on Hetzner k3s
 - feat(terraform): hetzner env with k3s cluster, hcloud CCM/CSI, and raft Vault
 - feat(terraform): vault-prod raft module and cert-manager on k8s-addons
@@ -32,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): gate mainnet wallets on --network and correct Web3ChainClient wiring
 - fix(platform): re-adopt k8s darwins after supervisor restart so APIs stop 404ing
 - fix(platform): return k8s timeline events without handle-id filter
 - fix(web): probe readyz instead of healthz in connectivity banner
