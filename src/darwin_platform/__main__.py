@@ -119,21 +119,35 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
         cdp_network = (
             "base-mainnet" if _is_mainnet(args) else "base-sepolia"
         )
+        cdp_per_tx = getattr(args, "cdp_per_tx_usdc", None)
+        cdp_per_day = getattr(args, "cdp_per_day_usdc", None)
 
         def _cdp_wallet_factory(
             darwin_id, clock, vault, *, _id=cdp_id, _secret=cdp_secret,
             _ws=cdp_wallet_secret, _net=cdp_network,
+            _per_tx=cdp_per_tx, _per_day=cdp_per_day,
         ):
             # vault is unused — CDP holds the key in its TEE; nothing to seal.
-            from .adapters.coinbase_cdp import build_cdp_chain_client
+            from .adapters.coinbase_cdp import (
+                CdpSpendPolicy,
+                build_cdp_chain_client,
+            )
             from .adapters.wallet import RealWallet
 
+            # Independent wallet-level spend cap (doc 24) — defense-in-depth
+            # below the in-process treasury policy so a platform bug can't
+            # drain the real CDP account.
+            policy = None
+            if _per_tx is not None or _per_day is not None:
+                policy = CdpSpendPolicy(
+                    per_tx_usdc=_per_tx, per_day_usdc=_per_day, clock=clock,
+                )
             # Per-Darwin CDP account: each spawn gets its own TEE-held wallet.
             # ``get_or_create_account`` is idempotent on the name, so resume
             # re-binds to the same on-chain account.
             chain = build_cdp_chain_client(
                 api_key_id=_id, api_key_secret=_secret,
-                wallet_secret=_ws, network=_net,
+                wallet_secret=_ws, network=_net, spend_policy=policy,
                 account_name=f"darwin-{darwin_id}",
             )
             return RealWallet(
@@ -581,7 +595,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # httpx is already on the [platform] extra allowlist.
     if "wallet_factory" in factories:
         def _x402_factory(wallet):
-            from .adapters.x402 import X402PaymentClient
+            from .adapters.x402 import X402PaymentClient, build_treasury_gate
             try:
                 import httpx
             except ImportError as exc:
@@ -589,7 +603,12 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                     "x402 client requires httpx: "
                     "pip install 'darwin-dna[platform]'"
                 ) from exc
-            return X402PaymentClient(http=httpx.Client(), wallet=wallet)
+            # One money door (doc 05): gate x402 settlement through the full
+            # treasury policy, not just the client-side cap.
+            return X402PaymentClient(
+                http=httpx.Client(), wallet=wallet,
+                treasury_gate=build_treasury_gate(wallet),
+            )
         factories["x402_factory"] = _x402_factory
 
     # -- LLM gateway (doc 13: LiteLLMTransport → real proxy) ---------------
@@ -967,21 +986,36 @@ def _build_sanctions(args: argparse.Namespace):
         return CachedScreener(TRMScreener(api_key=api_key))
     # provider == "local" (default)
     denylist_path = getattr(args, "sanctions_denylist", None)
-    if not denylist_path:
+    # Auto-ingest raw sanctions-list dumps (OFAC SDN / EU / UK) on startup so
+    # the offline screener screens against real addresses, not an empty set.
+    list_files = list(getattr(args, "sanctions_list_file", None) or [])
+    extra: set[str] = set()
+    prefixes: tuple[str, ...] = ()
+    if denylist_path:
+        try:
+            data = json.loads(Path(denylist_path).expanduser().read_text())
+        except Exception as exc:  # pragma: no cover
+            print(
+                f"failed to read sanctions denylist {denylist_path}: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        extra = set(data.get("denylist", []))
+        prefixes = tuple(data.get("denied_prefixes", []))
+    if not denylist_path and not list_files:
         return None
-    from .payments.sanctions import LocalDenylistScreener
-    try:
-        data = json.loads(Path(denylist_path).expanduser().read_text())
-    except Exception as exc:  # pragma: no cover
-        print(
-            f"failed to read sanctions denylist {denylist_path}: {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    return LocalDenylistScreener(
-        denylist=set(data.get("denylist", [])),
-        denied_prefixes=tuple(data.get("denied_prefixes", [])),
-    )
+    from .payments.sanctions import build_local_screener
+
+    texts: list[str] = []
+    for path in list_files:
+        try:
+            texts.append(Path(path).expanduser().read_text())
+        except Exception as exc:  # pragma: no cover
+            print(
+                f"failed to read sanctions list {path}: {exc}", file=sys.stderr,
+            )
+            sys.exit(2)
+    return build_local_screener(texts, denied_prefixes=prefixes, extra=extra)
 
 
 def _build_notification_sink(args: argparse.Namespace):
@@ -1354,6 +1388,9 @@ def _serve(args: argparse.Namespace) -> int:
             or os.environ.get("STRIPE_WEBHOOK_SECRET")
         ),
         allow_manual_credit=bool(getattr(args, "allow_manual_credit", False)),
+        # doc 01/05: in production, spawns must carry owner consent (kill-switch
+        # terms + 18+). Captured always; enforced in production.
+        require_spawn_consent=_is_production(args),
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -1546,6 +1583,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--cdp-mainnet", action="store_true",
         help="DEPRECATED alias for --network mainnet (kept for back-compat).",
     )
+    wallet_group.add_argument(
+        "--cdp-per-tx-usdc", type=float, default=None, metavar="USD",
+        help="Independent per-transaction USDC cap enforced at the CDP wallet "
+             "adapter (doc 24 defense-in-depth, below the treasury policy).",
+    )
+    wallet_group.add_argument(
+        "--cdp-per-day-usdc", type=float, default=None, metavar="USD",
+        help="Independent per-day USDC cap enforced at the CDP wallet adapter.",
+    )
     serve.add_argument(
         "--env", default=os.environ.get("DARWIN_ENV", "dev"),
         choices=["dev", "staging", "production"],
@@ -1680,6 +1726,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Path to a JSON file: "
             '{"denylist": ["0xdead..."], "denied_prefixes": ["0xff"]}. '
             "Loaded into a LocalDenylistScreener at startup."
+        ),
+    )
+    compliance_group.add_argument(
+        "--sanctions-list-file", action="append", default=None, metavar="PATH",
+        help=(
+            "Path to a raw sanctions-list dump (OFAC SDN / EU Consolidated / "
+            "UK HMT) of crypto addresses. Repeatable. Ingested + merged into "
+            "the LocalDenylistScreener at startup so the offline screener "
+            "screens against real addresses, not an empty set."
         ),
     )
     compliance_group.add_argument(
