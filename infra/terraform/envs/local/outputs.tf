@@ -9,7 +9,7 @@ output "platform_url" {
 }
 
 output "vault_address" {
-  value       = module.vault.address
+  value       = module.platform_stack.vault_address
   description = "In-cluster Vault address (only reachable from inside the cluster; use kubectl port-forward to reach from your laptop)."
 }
 

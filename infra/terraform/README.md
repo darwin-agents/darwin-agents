@@ -16,6 +16,16 @@ What's provided:
   `kubernetes` + `helm` + `kubectl` Terraform providers pointed at an
   existing cluster, so they drop into any new env. The kind cluster
   module is the only one that requires the `tehcyx/kind` provider.
+- `modules/platform-stack/` — the **cloud-agnostic composition**: it
+  wires `cnpg` + `vault` + `litellm` + `darwin-platform` + `k8s-addons`
+  into one call, parameterised by provider knobs (image, `runtime_class`,
+  `storage_class`, `exposure`, TLS, wallet provider, …). An env supplies
+  a cluster + configured providers and calls this module once. Adding a
+  provider = a new `envs/<provider>/` that swaps the cluster module and
+  passes cloud knobs; **nothing in `platform-stack` changes**.
+- `modules/k8s-addons/` — the exposure layer (ingress-nginx controller +
+  the platform `Ingress`), toggled by `exposure` (`kind-hostport` |
+  `loadbalancer` | `none`) with optional cert-manager TLS for cloud.
 
 What's NOT provided (intentionally):
 
@@ -83,24 +93,27 @@ host via an extraPortMapping).
 
 ## What gets installed
 
-| Layer            | Resource                                             | Module                    |
-| ---------------- | ---------------------------------------------------- | ------------------------- |
-| Cluster          | 1 control-plane + 2 worker kind nodes                | `modules/kind-cluster/`   |
-| Postgres         | CloudNativePG operator + 1-instance Cluster CR       | `modules/cnpg/`           |
-| Secrets          | HashiCorp Vault (dev mode, in-memory)                | `modules/vault/`          |
-| LLM router       | LiteLLM proxy Deployment + Service + ConfigMap       | `modules/litellm/`        |
-| Platform         | `darwin-platform` supervisor (via the Helm chart)    | `modules/darwin-platform/`|
+| Layer            | Resource                                             | Module                     |
+| ---------------- | ---------------------------------------------------- | -------------------------- |
+| Cluster          | 1 control-plane + 2 worker kind nodes                | `modules/kind-cluster/`    |
+| Composition      | Wires the layers below into one call                 | `modules/platform-stack/`  |
+| Postgres         | CloudNativePG operator + 1-instance Cluster CR       | `modules/cnpg/`            |
+| Secrets          | HashiCorp Vault (dev mode, in-memory)                | `modules/vault/`           |
+| LLM router       | LiteLLM proxy Deployment + Service + ConfigMap       | `modules/litellm/`         |
+| Platform         | `darwin-platform` supervisor (via the Helm chart)    | `modules/darwin-platform/` |
+| Exposure         | ingress-nginx + the platform `Ingress`               | `modules/k8s-addons/`      |
 
 `modules/darwin-platform/` is a thin wrapper that installs the
 `infra/charts/darwin-platform` Helm chart (the single source of truth
 for the supervisor's Deployment, Service, ServiceAccount, and K8s-driver
 RBAC) and wires its values to the CNPG / Vault / LiteLLM module outputs.
-It keeps two things in Terraform that the chart deliberately doesn't
+It keeps one thing in Terraform that the chart deliberately doesn't
 model: the `DARWIN_POD_*` Secret (substrate creds the driver mounts onto
-spawned pods) and the NGINX Ingress fronting the API on the kind host
-port. The local stack runs the chart's k8s driver mode with the
-production extras stripped (no egress proxy / per-Darwin NetworkPolicies
-/ LanceDB sidecar).
+spawned pods). The API is fronted by `modules/k8s-addons/` (the NGINX
+Ingress), kept separate so the exposure strategy is a per-env knob. The
+local stack runs the chart's k8s driver mode with the production extras
+stripped (no egress proxy / per-Darwin NetworkPolicies / LanceDB
+sidecar).
 
 The supervisor's K8s driver creates one namespace per Darwin (per doc
 08) — the chart grants it the cluster-scoped RBAC needed to do that
