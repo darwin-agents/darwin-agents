@@ -37,6 +37,10 @@ class ProvisioningError(Exception):
 class TenantNamespaceStatus(str, Enum):
     PENDING = "pending"
     READY = "ready"
+    # The Darwin was killed but its data is RETAINED until teardown_due_ts
+    # (doc 09 commitment #3: data survives ≥90 days post-death so the owner
+    # can inspect it / a re-spawn can inherit accounts + databases).
+    DECEASED = "deceased"
     TEARDOWN = "teardown"
     ERROR = "error"
 
@@ -60,6 +64,10 @@ class TenantNamespace:
     organism_db_connection_ref: str  # vault path where the DSN lives
     status: TenantNamespaceStatus = TenantNamespaceStatus.PENDING
     created_at: float = 0.0
+    # When set (status == DECEASED), the namespace + organism DB are retained
+    # until this wall-clock time; the reaper only then runs the destructive
+    # teardown (doc 09 #3).
+    teardown_due_ts: float | None = None
     last_error: str = ""
     wallet_addresses: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -389,6 +397,40 @@ class NamespaceProvisioner:
             "wallet_addresses": dict(wallet_addresses),
         })
         return tenant
+
+    def schedule_teardown(
+        self,
+        *,
+        darwin_id: str,
+        due_ts: float,
+        actor: str = "platform.supervisor",
+    ) -> None:
+        """Mark a killed Darwin's namespace for DEFERRED teardown.
+
+        Counterpart to the destructive :meth:`teardown`: on kill we keep the
+        organism DB + vault namespace intact and only record when they may be
+        reaped, honouring doc 09 commitment #3 ("data survives ≥90 days
+        post-death" — so the owner can inspect it and a re-spawn can inherit
+        accounts/databases). Idempotent."""
+        tenant = self._tenants.get(darwin_id)
+        if tenant is None:
+            return
+        tenant.status = TenantNamespaceStatus.DECEASED
+        tenant.teardown_due_ts = float(due_ts)
+        self._audit("tenant_teardown_scheduled", actor, {
+            "darwin_id": darwin_id, "teardown_due_ts": float(due_ts),
+        })
+
+    def due_for_teardown(self, now: float) -> list[str]:
+        """Darwin ids whose retention window has elapsed and are ready to be
+        reaped. The supervisor's fleet-maintenance pass calls this, then
+        :meth:`teardown` for each."""
+        return [
+            did for did, t in self._tenants.items()
+            if t.status == TenantNamespaceStatus.DECEASED
+            and t.teardown_due_ts is not None
+            and now >= t.teardown_due_ts
+        ]
 
     def teardown(
         self,
