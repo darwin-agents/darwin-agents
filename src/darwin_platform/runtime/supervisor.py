@@ -841,6 +841,15 @@ class Supervisor:
                 # A bad row must not block the startup path; the audit
                 # log captures the failure for ops review.
                 pass
+        # K8s mode: re-adopt per-Darwin namespaces still running from a
+        # previous incarnation. Without this _k8s_handles starts empty after
+        # a restart, so every prior Darwin 404s while its orchestrator pod
+        # keeps running (and spending). Best-effort, leader-only.
+        if self._leader.is_leader and self._k8s_driver is not None:
+            try:
+                await self._reconcile_k8s()
+            except Exception:
+                pass
         # Background reconciler: when leadership flips, cancel any
         # running drive tasks (we lost the lock and shouldn't keep
         # writing). On gain, we don't auto-resume previously-spawned
@@ -3393,6 +3402,52 @@ class Supervisor:
             days_elapsed=snapshot.days_elapsed,
             open_escalations=0,
         )
+
+    async def _reconcile_k8s(self) -> None:
+        """Rebuild ``_k8s_handles`` from Darwins the driver re-adopts after a
+        restart (the per-Darwin namespaces are still running). Restores the
+        snapshot cache + lineage edge so status/events/lifecycle route again.
+        Best-effort: a Darwin that can't be snapshotted is still adopted (its
+        snapshot refreshes on the next status read)."""
+        if self._k8s_driver is None:
+            return
+        adopted = await self._k8s_driver.reconcile()
+        for rec in adopted or []:
+            did = rec.get("darwin_id")
+            if not did or did in self._k8s_handles:
+                continue
+            spawned_at = rec.get("spawned_at") or self._clock()
+            parent_id = rec.get("parent_id")
+            try:
+                snapshot = await self._k8s_driver.snapshot(did)
+            except Exception:
+                snapshot = None
+            self._k8s_handles[did] = {
+                "spawned_at": spawned_at,
+                "parent_id": parent_id,
+                "snapshot": snapshot,
+            }
+            if parent_id:
+                try:
+                    self._lineage_registry.add(
+                        LineageEdge(
+                            parent_id=parent_id,
+                            child_id=did,
+                            spawned_at=spawned_at,
+                            budget_usdc=float(rec.get("opening_usdc") or 0.0),
+                        )
+                    )
+                except Exception:
+                    pass
+            try:
+                self._audit.record(
+                    actor="system",
+                    action="reconcile_adopt",
+                    darwin_id=did,
+                    metadata={"driver": "k8s", "parent_id": parent_id},
+                )
+            except Exception:
+                pass
 
     def _is_k8s(self, darwin_id: str) -> bool:
         return self._k8s_driver is not None and darwin_id in self._k8s_handles

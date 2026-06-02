@@ -115,6 +115,16 @@ class DarwinDriver(Protocol):
         supervisor cross-references this with its own bookkeeping at
         startup to reconcile state."""
 
+    async def reconcile(self) -> list[dict]:
+        """Re-adopt Darwins still running from a previous supervisor
+        incarnation. A restart loses the driver's in-memory handles; this
+        rediscovers running Darwins (the K8s driver lists per-Darwin
+        namespaces and reads back each control token) and rebuilds handles so
+        lifecycle/snapshot/events route correctly. Returns one dict per
+        re-adopted Darwin (``darwin_id`` plus any recoverable bookkeeping:
+        ``spawned_at``, ``parent_id``, ``opening_usdc``). The in-process
+        driver has nothing durable to re-adopt and returns ``[]``."""
+
     async def events_records(self, darwin_id: str) -> list[dict]:
         """Raw audit-log records for the Darwin. The Darwin's hash-chained
         audit log lives wherever it runs (the orchestrator pod for the K8s

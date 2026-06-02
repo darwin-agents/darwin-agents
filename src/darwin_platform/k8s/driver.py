@@ -21,6 +21,7 @@ on the ``kubernetes`` package at import time.
 from __future__ import annotations
 
 import asyncio
+import base64
 import secrets
 import time
 from dataclasses import dataclass
@@ -34,11 +35,21 @@ from ..runtime.driver import (
 )
 from .manifests import (
     CONTROL_API_PORT,
+    NAMESPACE_LABEL_DARWIN_ID,
+    NAMESPACE_LABEL_MANAGED_BY,
     DarwinManifestBundle,
     DarwinPodConfig,
+    _ANN_OPENING_USDC,
+    _ANN_PARENT_ID,
+    _ANN_SPAWNED_AT,
     build_bundle,
     namespace_name,
 )
+
+# The per-Darwin control-token Secret (name + key) the driver reads back
+# during reconcile() — must match build_secret() in manifests.py.
+_CONTROL_SECRET_NAME = "darwin-control"
+_CONTROL_SECRET_KEY = "control_token"
 
 
 @runtime_checkable
@@ -58,6 +69,7 @@ class KubernetesApi(Protocol):
     def create_namespaced_network_policy(self, namespace: str, body: dict) -> None: ...
     def delete_namespace(self, name: str) -> None: ...
     def list_namespaces_by_label(self, label_selector: str) -> list[dict]: ...
+    def read_namespaced_secret(self, name: str, namespace: str) -> dict: ...
     def read_namespaced_deployment_status(
         self, name: str, namespace: str,
     ) -> dict: ...
@@ -86,6 +98,16 @@ def _new_control_token() -> str:
     """160 bits of entropy. Long enough that brute-forcing the per-pod
     token over the cluster network is not a concern even at high RPS."""
     return secrets.token_urlsafe(20)
+
+
+def _parse_float(value: Any) -> float | None:
+    """Best-effort float parse for namespace annotations (which are strings)."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -256,7 +278,69 @@ class K8sDarwinDriver:
     async def list_ids(self) -> list[str]:
         return list(self._handles)
 
+    async def reconcile(self) -> list[dict]:
+        """Re-adopt darwins still running in the cluster after a supervisor
+        restart. The driver's in-memory ``_handles`` is lost on restart; this
+        lists the ``darwin-*`` namespaces by the managed-by label, reads each
+        one's control token back from its ``darwin-control`` Secret, and
+        rebuilds a handle so lifecycle/snapshot/events route correctly again.
+
+        Returns one dict per newly-adopted Darwin (``darwin_id``,
+        ``spawned_at``, ``parent_id``, ``opening_usdc`` — recovered from the
+        namespace annotations) so the supervisor can rebuild its own
+        bookkeeping + lineage. Best-effort: a namespace whose token can't be
+        read is left orphaned for an operator rather than half-adopted.
+        """
+        selector = f"{NAMESPACE_LABEL_MANAGED_BY}=darwin-platform"
+        try:
+            namespaces = self._api.list_namespaces_by_label(selector)
+        except Exception as exc:
+            raise DriverError(f"failed to list darwin namespaces: {exc}") from exc
+
+        adopted: list[dict] = []
+        for ns in namespaces or []:
+            meta = ns.get("metadata", {}) if isinstance(ns, dict) else {}
+            name = meta.get("name") or ""
+            labels = meta.get("labels") or {}
+            annotations = meta.get("annotations") or {}
+            darwin_id = labels.get(NAMESPACE_LABEL_DARWIN_ID)
+            if not darwin_id or not name or darwin_id in self._handles:
+                continue
+            token = self._read_control_token(name)
+            if token is None:
+                continue  # can't drive it without the token — leave for ops
+            spawned_at = _parse_float(annotations.get(_ANN_SPAWNED_AT))
+            self._handles[darwin_id] = _K8sHandle(
+                darwin_id=darwin_id,
+                namespace=name,
+                control_token=token,
+                spawned_at=spawned_at if spawned_at is not None else self._clock(),
+            )
+            adopted.append({
+                "darwin_id": darwin_id,
+                "spawned_at": spawned_at,
+                "parent_id": annotations.get(_ANN_PARENT_ID) or None,
+                "opening_usdc": _parse_float(annotations.get(_ANN_OPENING_USDC)),
+            })
+        return adopted
+
     # -- internals -------------------------------------------------------
+    def _read_control_token(self, namespace: str) -> str | None:
+        """Read + base64-decode the per-Darwin control token from its
+        ``darwin-control`` Secret. None on any failure (missing secret/key)."""
+        try:
+            secret = self._api.read_namespaced_secret(_CONTROL_SECRET_NAME, namespace)
+        except Exception:
+            return None
+        data = secret.get("data") if isinstance(secret, dict) else None
+        raw = (data or {}).get(_CONTROL_SECRET_KEY)
+        if not raw:
+            return None
+        try:
+            return base64.b64decode(raw).decode("utf-8")
+        except Exception:
+            return None
+
     def _require(self, darwin_id: str) -> _K8sHandle:
         h = self._handles.get(darwin_id)
         if h is None:
@@ -383,6 +467,9 @@ class _KubernetesClientAdapter:
     def list_namespaces_by_label(self, label_selector: str) -> list[dict]:
         resp = self._core.list_namespace(label_selector=label_selector)
         return [ns.to_dict() for ns in resp.items]
+
+    def read_namespaced_secret(self, name: str, namespace: str) -> dict:
+        return self._core.read_namespaced_secret(name=name, namespace=namespace).to_dict()
 
     def read_namespaced_deployment_status(
         self, name: str, namespace: str,
