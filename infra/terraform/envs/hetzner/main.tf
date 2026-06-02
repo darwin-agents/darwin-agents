@@ -99,6 +99,7 @@ module "platform_stack" {
   litellm_master_key    = var.litellm_master_key
   litellm_provider_keys = var.litellm_provider_keys
   litellm_config_yaml   = file("${path.module}/litellm.config.yaml")
+  litellm_database_url  = var.litellm_database_url
 
   # LoadBalancer exposure + Let's-Encrypt TLS on the real domain.
   exposure             = "loadbalancer"

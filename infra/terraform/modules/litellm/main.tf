@@ -53,6 +53,10 @@ resource "kubernetes_secret" "env" {
     {
       DARWIN_LITELLM_MASTER_KEY = var.master_key
     },
+    # DATABASE_URL backs the virtual-key + spend tables (doc 13). Only set
+    # when provided so a DB-less dev install still boots. LiteLLM reads this
+    # env var directly and runs its Prisma migrations on startup.
+    var.database_url != "" ? { DATABASE_URL = var.database_url } : {},
     var.provider_keys,
   )
 }
@@ -98,6 +102,19 @@ resource "kubernetes_deployment" "this" {
           env_from {
             secret_ref {
               name = kubernetes_secret.env.metadata[0].name
+            }
+          }
+
+          # Persist virtual keys + model config in Postgres (doc 13). Only
+          # meaningful with DATABASE_URL set; STORE_MODEL_IN_DB tells the
+          # proxy to read/write keys + the spend table there rather than
+          # holding them in memory (which would lose every Darwin's key on a
+          # proxy restart and leave nothing for the platform to reconcile).
+          dynamic "env" {
+            for_each = var.database_url != "" ? [1] : []
+            content {
+              name  = "STORE_MODEL_IN_DB"
+              value = "True"
             }
           }
 

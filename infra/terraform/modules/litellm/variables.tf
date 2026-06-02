@@ -34,3 +34,10 @@ variable "config_yaml" {
   description = "Optional override for the LiteLLM proxy config. Default is the model_list from infra/docker/litellm.config.yaml (read at apply time)."
   default     = null
 }
+
+variable "database_url" {
+  type        = string
+  description = "Postgres connection URL backing LiteLLM's virtual-key + per-key spend tables (doc 13). REQUIRED for per-Darwin virtual keys: without a database the proxy cannot persist keys generated via /key/generate, so the platform's --litellm-virtual-keys mode has nowhere to mint them and no spend table to reconcile against. Empty = no DB (dev only; shared-master-key mode). The platform already runs CloudNativePG; create a `litellm` database there and pass its connection URL."
+  sensitive   = true
+  default     = ""
+}

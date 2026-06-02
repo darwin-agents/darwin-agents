@@ -81,6 +81,13 @@ variable "litellm_provider_keys" {
   default     = {}
 }
 
+variable "litellm_database_url" {
+  type        = string
+  description = "Postgres URL backing LiteLLM virtual keys + spend (doc 13). Required for per-Darwin virtual keys; point at a `litellm` database on the CNPG cluster. Empty = shared-master-key mode."
+  sensitive   = true
+  default     = ""
+}
+
 variable "acme_server" {
   type        = string
   description = "ACME directory. Default Let's Encrypt PROD; switch to staging (https://acme-staging-v02.api.letsencrypt.org/directory) while validating to avoid rate limits."

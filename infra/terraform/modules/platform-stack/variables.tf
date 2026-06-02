@@ -136,6 +136,13 @@ variable "litellm_config_yaml" {
   description = "Full LiteLLM config.yaml content (the env reads the file and passes the string so this module stays filesystem-agnostic)."
 }
 
+variable "litellm_database_url" {
+  type        = string
+  description = "Postgres URL backing LiteLLM's virtual-key + spend tables (doc 13). REQUIRED for per-Darwin virtual keys (the supervisor's --litellm-virtual-keys mode). Empty = no DB, shared-master-key mode (dev only). Point at a `litellm` database on the platform's CloudNativePG cluster."
+  sensitive   = true
+  default     = ""
+}
+
 # -- supervisor runtime -----------------------------------------------------
 
 variable "wallet_provider" {

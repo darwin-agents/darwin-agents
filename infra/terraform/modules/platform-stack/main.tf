@@ -57,6 +57,7 @@ module "litellm" {
   master_key    = var.litellm_master_key
   provider_keys = var.litellm_provider_keys
   config_yaml   = var.litellm_config_yaml
+  database_url  = var.litellm_database_url
 }
 
 module "platform" {
