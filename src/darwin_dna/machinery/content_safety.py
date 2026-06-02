@@ -75,6 +75,41 @@ _BACKSTOP_DENYLIST: dict[str, str] = {
 }
 
 
+class KeywordContentClassifier:
+    """A concrete :class:`ContentClassifier` the platform can wire into the
+    injection seam (Supervisor ``content_classifier``) without an LLM.
+
+    It is deliberately more than the gate's tiny hard-coded backstop: operators
+    pass a ``categories`` map of ``category -> phrases`` tuned to their policy
+    and risk surface (and can update it without a redeploy). Production
+    deployers may instead inject an LLM-backed classifier with the same
+    ``classify(text, *, kind) -> ContentVerdict`` surface; this gives a real,
+    testable default so the seam isn't a no-op (doc 10)."""
+
+    def __init__(self, categories: dict[str, Iterable[str]] | None = None):
+        self._phrases: dict[str, str] = {}
+        for category, phrases in (categories or {}).items():
+            for p in phrases:
+                cleaned = str(p).strip().lower()
+                if cleaned:
+                    self._phrases[cleaned] = category
+
+    def classify(self, text: str, *, kind: str) -> ContentVerdict:
+        hay = (text or "").lower()
+        hits = sorted({cat for phrase, cat in self._phrases.items()
+                       if phrase in hay})
+        if hits:
+            return ContentVerdict(
+                allowed=False,
+                categories=tuple(hits),
+                detail=f"keyword classifier flagged: {', '.join(hits)}",
+                via="classifier",
+            )
+        return ContentVerdict(
+            allowed=True, detail="keyword classifier: no match", via="classifier",
+        )
+
+
 class ContentSafetyGate:
     """Screens outbound content. Construct per invocation with whatever
     classifier the neuron was handed (or ``None``)."""
