@@ -80,12 +80,35 @@ out to `kind create cluster`) will fail.
 
 ## Quickstart — local
 
+The turnkey path is the repo-root **`make dev`** — one command builds the
+supervisor image, creates the kind cluster, loads the image, applies the whole
+stack, and starts the dashboard on `localhost:3000`:
+
+```bash
+make dev            # kind + full stack + dashboard (idempotent; re-run to pick up code changes)
+make dev-kubeconfig # echoes the KUBECONFIG export for your shell
+make dev-down       # tears the stack down + deletes the kind cluster + stops the dashboard
+```
+
+`make dev` wraps the three things a bare `terraform apply` can't do on its own:
+build + `kind load` the image *before* the supervisor release waits on it,
+refresh the Helm repo cache, and start only the dashboard container
+(`--no-deps`) so Compose doesn't boot a second supervisor on `:8000`. See
+`scripts/dev-up.sh`.
+
+To drive the Terraform env directly (no image build / dashboard):
+
 ```bash
 make -C infra/terraform up           # brings everything online (~3-5 min cold start)
 make -C infra/terraform kubeconfig   # echoes KUBECONFIG export for your shell
 make -C infra/terraform logs SVC=darwin-platform
 make -C infra/terraform down         # tears the stack down + deletes the kind cluster
 ```
+
+> Direct `make -C infra/terraform up` on a *fresh* cluster needs the image
+> loaded first (`docker build -f infra/docker/Dockerfile -t darwin-platform:dev .`
+> then `kind load docker-image darwin-platform:dev --name darwin`) or the
+> supervisor release hangs on `ImagePullBackOff`. `make dev` does this for you.
 
 The platform's REST API is reachable at `http://localhost:8000` after
 `make up` finishes (kind maps port 80 inside the cluster to 8000 on the

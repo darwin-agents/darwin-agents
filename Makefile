@@ -242,6 +242,22 @@ helm-template: ## Render chart with default values to /tmp/darwin-default.yaml
 build-image: ## Build supervisor image (infra/docker/Dockerfile)
 	docker build -f infra/docker/Dockerfile -t darwin-platform:local .
 
+# --- Local k8s dev (kind, single command) -------------------------------------
+# `make dev` is the turnkey local loop: it builds the supervisor image, brings
+# up a kind cluster, loads the image, applies the full cloud-agnostic stack
+# (Postgres + Vault + LiteLLM + supervisor + ingress via Terraform), and starts
+# the dashboard on :3000 — all idempotent and re-runnable. See scripts/dev-up.sh.
+
+.PHONY: dev dev-down dev-kubeconfig
+dev: ## One command: kind + full platform stack + dashboard (localhost:3000)
+	scripts/dev-up.sh
+
+dev-down: ## Tear down the local kind stack + dashboard
+	scripts/dev-down.sh
+
+dev-kubeconfig: ## Print KUBECONFIG export for the local kind cluster
+	@echo "export KUBECONFIG=$(abspath infra/terraform/envs/local/.kubeconfig)"
+
 # --- Web dashboard (Next.js) --------------------------------------------------
 
 WEB_DIR := web
