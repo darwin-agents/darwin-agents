@@ -231,12 +231,79 @@ class BandwidthQuota:
         }
 
 
+# ---------------------------------------------------------------------------
+# Per-Darwin egress revocation (docs/engineering/08, 09 §kill path, 24)
+# ---------------------------------------------------------------------------
+class RevocationRegistry:
+    """Per-Darwin outbound kill-switch.
+
+    When the supervisor kills or quarantines a Darwin it revokes the Darwin
+    here; the proxy then refuses ALL of that Darwin's outbound traffic
+    regardless of the allowlist. This is the *parallel egress cut* that bounds
+    a Darwin which has stopped polling its own kill flag — the load-bearing
+    mitigation behind the "<5s effective halt" claim (docs 08/09/24). Without
+    it, an unresponsive orchestrator could keep reaching the network until its
+    next in-process poll.
+    """
+
+    def __init__(self) -> None:
+        self._revoked: set[str] = set()
+
+    def revoke(self, darwin_id: str) -> None:
+        if darwin_id:
+            self._revoked.add(darwin_id)
+
+    def restore(self, darwin_id: str) -> None:
+        self._revoked.discard(darwin_id)
+
+    def is_revoked(self, darwin_id: str | None) -> bool:
+        return bool(darwin_id) and darwin_id in self._revoked
+
+    def snapshot(self) -> list[str]:
+        return sorted(self._revoked)
+
+
+class HttpEgressRevoker:
+    """Supervisor-side client for the egress proxy's kill-switch.
+
+    ``Supervisor`` calls ``revoke(darwin_id)`` on kill/quarantine; this POSTs
+    ``/revoke`` to the platform egress proxy so the Darwin's outbound traffic
+    is cut at the choke-point. Synchronous + short-timeout — the supervisor
+    runs it off its event loop and never blocks the kill on it.
+    """
+
+    def __init__(self, *, base_url: str, timeout_s: float = 3.0) -> None:
+        self._base = base_url.rstrip("/")
+        self._timeout = float(timeout_s)
+
+    def revoke(self, darwin_id: str) -> None:
+        import httpx
+
+        resp = httpx.post(
+            f"{self._base}/revoke",
+            json={"darwin_id": darwin_id},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+
+    def restore(self, darwin_id: str) -> None:
+        import httpx
+
+        resp = httpx.post(
+            f"{self._base}/unrevoke",
+            json={"darwin_id": darwin_id},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+
+
 def _build_app(
     allowlist: Allowlist,
     audit: _Audit,
     *,
     clock=time.time,
     bandwidth_quota: BandwidthQuota | None = None,
+    revocations: "RevocationRegistry | None" = None,
 ):
     try:
         from fastapi import Body, FastAPI, Header, HTTPException
@@ -251,10 +318,40 @@ def _build_app(
     # deployment continues to work — only Phase 2 multi-tenant mode
     # constructs the proxy with a quota.
     quota = bandwidth_quota
+    revoked = revocations
 
     @app.get("/healthz")
     async def healthz() -> dict:
         return {"ok": True}
+
+    @app.post("/revoke")
+    async def revoke(body: dict = Body(...)) -> dict:
+        """Cut a Darwin's egress immediately (kill / quarantine). Idempotent."""
+        if revoked is None:
+            raise HTTPException(404, "revocation not enabled")
+        did = str(body.get("darwin_id", "")).strip()
+        if not did:
+            raise HTTPException(400, "darwin_id required")
+        revoked.revoke(did)
+        return {"revoked": did}
+
+    @app.post("/unrevoke")
+    async def unrevoke(body: dict = Body(...)) -> dict:
+        """Restore a Darwin's egress (e.g. quarantine cleared). Idempotent."""
+        if revoked is None:
+            raise HTTPException(404, "revocation not enabled")
+        did = str(body.get("darwin_id", "")).strip()
+        if not did:
+            raise HTTPException(400, "darwin_id required")
+        revoked.restore(did)
+        return {"unrevoked": did}
+
+    @app.get("/revoked")
+    async def revoked_list() -> dict:
+        return {
+            "enabled": revoked is not None,
+            "revoked": revoked.snapshot() if revoked is not None else [],
+        }
 
     @app.get("/access-log")
     async def access_log(limit: int = 200) -> list[dict[str, Any]]:
@@ -288,6 +385,17 @@ def _build_app(
         url = str(body.get("url", ""))
         if not method or not url:
             raise HTTPException(400, "method + url are required")
+        # Egress kill-switch: a revoked (killed/quarantined) Darwin is cut off
+        # at the choke-point regardless of the allowlist, in parallel with the
+        # in-process kill flag (docs 08/09/24).
+        if revoked is not None and revoked.is_revoked(x_darwin_id):
+            audit.append(AccessLogEntry(
+                ts=clock(), darwin_id=x_darwin_id, method=method, url=url,
+                status=0, bytes_in=0, bytes_out=0,
+                denied_reason="darwin revoked (killed/quarantined)",
+                matched_rule=None,
+            ))
+            raise HTTPException(403, "darwin revoked: egress cut by kill/quarantine")
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
         host = parsed.hostname or ""
@@ -383,6 +491,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--allowlist", required=True, type=Path,
         help="Path to JSON allowlist (see module docstring for shape).",
     )
+    serve.add_argument(
+        "--bandwidth-soft-gb", default=0.0, type=float,
+        help="Per-Darwin daily soft bandwidth ceiling (GB). 0 disables the "
+             "quota. Doc 22 default: 10. The soft cap fires a WARN; the hard "
+             "cap (--bandwidth-hard-gb) refuses with HTTP 429.",
+    )
+    serve.add_argument(
+        "--bandwidth-hard-gb", default=0.0, type=float,
+        help="Per-Darwin daily hard bandwidth ceiling (GB). 0 derives 2× the "
+             "soft cap. Doc 22 default: 20 (2× burst).",
+    )
     serve.add_argument("--log-level", default="info")
     return p
 
@@ -396,7 +515,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     allowlist = Allowlist.from_path(args.allowlist)
     audit = _Audit()
-    app = _build_app(allowlist, audit)
+    # Bandwidth quota: enabled when a soft cap is configured (the serve
+    # entrypoint previously never constructed one, so the per-Darwin cap was
+    # unreachable in production — doc 22).
+    quota: BandwidthQuota | None = None
+    if args.bandwidth_soft_gb and args.bandwidth_soft_gb > 0:
+        gib = 1024 * 1024 * 1024
+        soft = int(args.bandwidth_soft_gb * gib)
+        hard = int(
+            (args.bandwidth_hard_gb or args.bandwidth_soft_gb * 2) * gib
+        )
+        quota = BandwidthQuota(
+            soft_bytes_per_day=soft, hard_bytes_per_day=max(hard, soft),
+        )
+    # The egress kill-switch is always available when the proxy runs — the
+    # supervisor POSTs /revoke on kill/quarantine.
+    revocations = RevocationRegistry()
+    app = _build_app(
+        allowlist, audit, bandwidth_quota=quota, revocations=revocations,
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
