@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+${node_common}
+
+# --- join k3s as an agent over the PRIVATE control-plane IP --------------------
+curl -sfL https://get.k3s.io | \
+  K3S_URL=https://${cp_private_ip}:6443 \
+  K3S_TOKEN='${k3s_token}' \
+  INSTALL_K3S_CHANNEL=${k3s_channel} sh -s - agent \
+  --kubelet-arg=cloud-provider=external \
+  --flannel-iface="$PRIV_IFACE" \
+  --node-ip="$PRIV_IP" \
+  --node-external-ip="$PUBLIC_IP"

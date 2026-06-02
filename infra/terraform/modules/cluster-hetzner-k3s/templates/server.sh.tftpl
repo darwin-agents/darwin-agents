@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+${node_common}
+
+# --- install k3s control-plane (external cloud provider posture) --------------
+# --disable-cloud-controller + --kubelet-arg cloud-provider=external hand node
+# lifecycle to the Hetzner CCM (installed as an addon). traefik/servicelb are
+# disabled in favour of ingress-nginx + the hcloud LoadBalancer. Pod traffic
+# rides the private NIC via --flannel-iface; the public IP/domain go in
+# --tls-san so the kubeconfig works remotely.
+curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL=${k3s_channel} sh -s - server \
+  --cluster-init \
+  --token='${k3s_token}' \
+  --disable-cloud-controller \
+  --kubelet-arg=cloud-provider=external \
+  --disable=traefik \
+  --disable=servicelb \
+  --disable=local-storage \
+  --flannel-iface="$PRIV_IFACE" \
+  --node-ip="$PRIV_IP" \
+  --advertise-address="$PRIV_IP" \
+  --node-external-ip="$PUBLIC_IP" \
+  --cluster-cidr=${cluster_cidr} \
+  --tls-san="$PUBLIC_IP" \
+%{ if domain != "" }  --tls-san=${domain} \
+%{ endif }  --write-kubeconfig-mode=0644

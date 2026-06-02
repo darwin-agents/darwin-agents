@@ -1,0 +1,50 @@
+# --- shared node bootstrap: detect private NIC + install gVisor (runsc) -------
+# Injected verbatim into the control-plane and agent cloud-init scripts.
+# Terraform interpolates only $${...}-free ${gvisor_release}; bash $VARS and
+# $(...) are passed through untouched.
+
+# Detect the PRIVATE NIC by its 10.x address rather than hardcoding a name
+# (it is enp7s0 on cax21 today but has varied across Hetzner images — see
+# kube-hetzner #1928). Wait for the private network to come up.
+PRIV_IFACE=""
+for _ in $(seq 1 30); do
+  PRIV_IFACE=$(ip -o -4 addr show | awk '$2 != "lo" && $4 ~ /^10\./ {sub(/\/.*/,"",$4); print $2; exit}')
+  [ -n "$PRIV_IFACE" ] && break
+  sleep 2
+done
+PRIV_IP=$(ip -o -4 addr show dev "$PRIV_IFACE" | awk '{sub(/\/.*/,"",$4); print $4; exit}')
+PUBLIC_IP=$(curl -fsS --max-time 10 https://ipv4.icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+
+# --- install gVisor runsc + containerd shim (arm64/aarch64) -------------------
+# Pin a dated release for reproducibility. ARCH resolves to aarch64 on cax.
+GVISOR_RELEASE="${gvisor_release}"
+ARCH="$(uname -m)"
+GVISOR_URL="https://storage.googleapis.com/gvisor/releases/release/$GVISOR_RELEASE/$ARCH"
+gv_tmp="$(mktemp -d)"; cd "$gv_tmp"
+curl -fsSL -O "$GVISOR_URL/runsc" -O "$GVISOR_URL/runsc.sha512" \
+  -O "$GVISOR_URL/containerd-shim-runsc-v1" -O "$GVISOR_URL/containerd-shim-runsc-v1.sha512"
+sha512sum -c runsc.sha512
+sha512sum -c containerd-shim-runsc-v1.sha512
+chmod a+rx runsc containerd-shim-runsc-v1
+install -m 0755 runsc /usr/local/bin/runsc
+install -m 0755 containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
+cd /; rm -rf "$gv_tmp"
+
+# --- k3s containerd template (containerd 2.x => config-v3.toml.tmpl) ----------
+# Extends the bundled base so k3s defaults (CNI, snapshotter) survive upgrades.
+install -d /var/lib/rancher/k3s/agent/etc/containerd
+cat > /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl <<'CONTAINERD_TMPL'
+{{ template "base" . }}
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+  runtime_type = "io.containerd.runsc.v1"
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc.options]
+  TypeUrl  = "io.containerd.runsc.v1.options"
+  ConfigPath = "/var/lib/rancher/k3s/agent/etc/containerd/runsc.toml"
+CONTAINERD_TMPL
+
+# Pin the gVisor platform to systrap (correct inside a VM with no nested virt).
+cat > /var/lib/rancher/k3s/agent/etc/containerd/runsc.toml <<'RUNSC_TOML'
+[runsc_config]
+  platform = "systrap"
+RUNSC_TOML
