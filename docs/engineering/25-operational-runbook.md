@@ -29,7 +29,7 @@ cp ../../.env.example .env   # add LLM provider keys (.env.example: repo root)
 docker compose up --build
 ```
 
-Services: supervisor (:8000), postgres (:5432), litellm (:4000), prometheus (:9090), jaeger (:16686).
+Services: supervisor (:8000), postgres (host :15432 → container :5432; host 5432 is left free for a local Postgres), litellm (:4000), prometheus (:9090), jaeger (:16686).
 
 See [`infra/docker/README.md`](../../infra/docker/README.md) for full documentation.
 
@@ -122,7 +122,7 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 
 **Response:**
 1. Pause the Darwin: `POST /darwins/{id}/pause`.
-2. Review the planner outputs in the audit log: look for the `intent:plan` records.
+2. Review the planner outputs in the audit log: look for the `event:plan` records (the plan node logs via `log_event("plan", ...)`).
 3. Edit `src/darwin_dna/orchestrator_skeleton/prompts/planner_system.txt` with tighter examples and structured output schema.
 4. Restart with the updated prompt (new deploy → fresh boot from checkpoint).
 
@@ -140,7 +140,7 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 
 **Response:**
 1. Check which tier is burning money: filter audit records by `intent:*` kind and look at `cost_usdc` in outcomes.
-2. If the planner is calling reasoning-tier too often: adjust `Hyperparameters.planner_tier` to `fast` temporarily.
+2. If the planner is calling reasoning-tier too often: lower `Hyperparameters.tier_reasoning_max_daily_calls` (and `tier_coding_max_daily_calls`) so the router caps the expensive tiers and falls back to `fast`. (There is no `planner_tier` knob — the LLM router enforces per-tier daily caps.)
 3. If mutation proposals are burning coding-tier: raise `Hyperparameters.min_dispatches_before_mutation` so the Darwin earns first.
 4. If browser sessions are expensive: check `browser_cache.py` promotion stats — is the cache working?
 
@@ -158,7 +158,7 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 
 **Response:**
 1. Review the failure classes: are they genuine recurring issues or normal variance?
-2. If variance: tighten the recurrence definition in `Hyperparameters` — require same error *code* (not just same error message) and a longer observation window (e.g., 24h instead of 8h).
+2. If variance: raise `Hyperparameters.min_recurring_failures_for_mutation` so more occurrences of the *same error class* are required before the mutation gate opens. (Recurrence is already keyed on the error *class/code*, not the message; there is no time-window knob.)
 3. If genuine failures but non-fixable: add the failure class to `dead_ends` in the mutation archive so the Darwin stops re-proposing.
 
 **Verification:** Mutation proposal rate drops to < 1/day. The Darwin's heartbeat time is spent on earning, not coding.
@@ -453,14 +453,17 @@ Same loop but `POST /darwins/{id}/kill`. Irreversible. Use only when the fleet i
 ### Signing key rotation
 
 ```bash
-# The supervisor generates a new key on startup when persistence has none.
-# To rotate: retire the current key, restart the supervisor.
+# NOTE: a restart does NOT rotate the key — with persistence the supervisor
+# reloads the SAME key on boot (that's the point of persistence). Rotation is
+# an explicit, audited API call; it requires --db so the retired key is
+# recorded (platform_retired_keys) for the drain window.
 
 # 1. Note the current public key:
 curl -s http://localhost:8000/platform/signing/public_key
 
-# 2. Restart the supervisor (it will generate a new key):
-docker compose restart supervisor
+# 2. Rotate (retires the current key into the drain window, mints a new one):
+curl -s -X POST http://localhost:8000/platform/signing/rotate \
+  -H "Authorization: Bearer $OPERATOR_TOKEN"
 
 # 3. Verify the new key is different:
 curl -s http://localhost:8000/platform/signing/public_key

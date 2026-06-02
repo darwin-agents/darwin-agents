@@ -20,6 +20,12 @@ darwin-platform signing-key  # Print the platform's signing public key (PEM)
 | `--log-level` | — | `info` | Uvicorn log level: `critical`, `error`, `warning`, `info`, `debug`, `trace`. |
 | `--leader-election` | — | off | Enable HA via Postgres advisory locks. Requires `--db` to be a Postgres DSN. |
 | `--leader-lock-key` | — | supervisor default | Override the lock BIGINT to isolate multiple platforms sharing one Postgres. |
+| `--network` | — | `testnet` | **The single authoritative money switch (doc 30).** `mainnet` selects the mainnet USDC contract + chain id, enables on-chain confirmation gating, refuses the shared-key `web3` wallet, and (with `--env`) implies production. Everything that needs the network keys off this — never an RPC-substring guess. |
+| `--env` | `DARWIN_ENV` | `dev` | Deployment environment: `dev` \| `staging` \| `production`. In `production` (or with `--network mainnet`) the in-memory dev fakes are refused (e.g. a missing `--e2b-api-key` fails closed, doc 14) and spawn requires owner consent. |
+| `--egress-proxy-url` | `DARWIN_EGRESS_PROXY_URL` | `None` | Base URL of the platform egress proxy. When set, kill + quarantine POST `/revoke` so a Darwin's outbound traffic is cut at the choke-point in parallel with the kill flag (docs 08/09/24). |
+| `--sanctions-list-file` | — | `None` | Repeatable. Raw OFAC SDN / EU / UK list dump of crypto addresses, ingested + merged into the offline `LocalDenylistScreener` at startup. |
+| `--cdp-per-tx-usdc` / `--cdp-per-day-usdc` | — | `None` | Independent per-transaction / per-day USDC caps enforced at the CDP wallet adapter (doc 24 defense-in-depth, below the treasury policy). |
+| `--browserbase-live-view-url` | `BROWSERBASE_LIVE_VIEW_URL` | `None` | Browserbase session live-view URL surfaced to the owner on a captcha wall for human takeover (doc 15). |
 
 ## `serve` — real wallet (doc 17)
 

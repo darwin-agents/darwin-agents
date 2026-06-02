@@ -11,7 +11,12 @@ Two classes of data exist, as specified in [`07-isolation-and-multi-tenancy.md`]
 
 The schema lives in [`src/darwin_platform/runtime/persistence.py`](../../src/darwin_platform/runtime/persistence.py) as a template string substituting type flavors per backend (`REAL` for SQLite, `DOUBLE PRECISION` for Postgres; `INTEGER PRIMARY KEY AUTOINCREMENT` vs. `BIGSERIAL PRIMARY KEY`).
 
-Current schema version: **2** (tracked in the `schema_version` table).
+Current schema version: **11** (tracked in the `schema_version` table).
+
+> This reference is bound to the code by a contract test
+> (`tests/integration/test_schema_doc_contract.py`): every table the schema
+> creates must be documented here, or the test fails. That is what keeps this
+> doc from drifting behind the migrations (as it previously did at v2).
 
 ### Entity-relationship diagram
 
@@ -280,6 +285,38 @@ The platform's HSM stand-in. One active key (id=1), retired keys kept for a drai
 #### `schema_version`
 
 Single-row table tracking the current schema version. Migrations run sequentially from persisted version to `CURRENT_SCHEMA_VERSION` on open.
+
+#### `darwin_preapprovals`
+
+Owner-granted spend pre-approvals (doc 17 §"paying a human"): per-Darwin rules that auto-allow spends matching a counterparty/category/amount envelope without escalating. Dropped on kill so a re-spawn doesn't inherit stale grants.
+
+#### `freelancer_registry`
+
+Owner-curated registry of approved human freelancers / counterparties a Darwin may pay, with per-counterparty limits.
+
+#### `push_subscriptions`
+
+Web Push (PWA) subscriptions for owner escalation notifications: endpoint + keys per owner, used by the WebPush notification sink.
+
+#### `omnibus_state` / `omnibus_entries`
+
+The platform omnibus wallet (doc 05): `omnibus_state` holds per-user running USDC credit balances (Stripe deposits + dead-Darwin sweeps); `omnibus_entries` is the append-only movement ledger reconciled on-chain by fleet maintenance.
+
+#### `harvest_rules`
+
+Per-Darwin profit-harvest schedules (doc 05): when/what fraction of surplus is swept to the owner's omnibus balance.
+
+#### `resource_throttles`
+
+Owner/operator runtime resource caps (doc 09 level-2): per-Darwin `{sandbox|browser|egress}` daily-call ceilings, applied by the resource throttle.
+
+#### `fiat_quotes`
+
+Fiat on/off-ramp quotes (doc 17): a quote issued for a deposit/withdraw, referenced on confirm so the amount/fee is pinned.
+
+#### `processed_webhook_events`
+
+Idempotency ledger for inbound provider webhooks (Stripe, KYC): a processed event id is recorded so a retried webhook is a no-op (exactly-once crediting).
 
 ## Darwin lifecycle state machine
 
