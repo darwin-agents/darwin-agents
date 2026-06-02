@@ -279,6 +279,10 @@ serviceAccount:
 # persistence + leader election.
 podDisruptionBudget:
   enabled: false
+  # Typical HA: minAvailable: 1 with replicaCount > 1 + leaderElection.
+  # Do not enable with replicaCount=1 — it blocks all voluntary drains.
+  minAvailable: 1
+  # maxUnavailable: 1   # alternative to minAvailable; set one, not both
 
 # -- Supervisor runtime flags ----------------------------------------------
 # Direct passthroughs to `darwin-platform serve`. Each is optional; an
