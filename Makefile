@@ -7,7 +7,7 @@ SHELL := /bin/bash
 UV              := uv
 RUFF_PATHS      := src tests tools
 DB              ?= var/state.db
-COMPOSE         := docker compose -f infra/docker/docker-compose.yml
+COMPOSE         := docker compose -f infra/docker/docker-compose.yml --env-file .env
 HELM_CHART      := infra/charts/darwin-platform
 POSTGRES_DSN    ?= postgresql://darwin:test@127.0.0.1:5432/darwin
 # Origins allowed to call the platform from a browser. Space-separated.
@@ -131,9 +131,9 @@ real-spawn: ## Spawn one Darwin against the running platform (uses first token)
 # --- Docker Compose stack -----------------------------------------------------
 
 .PHONY: docker-env docker-up docker-down docker-logs docker-build docker-ps
-docker-env: ## Copy .env.example → infra/docker/.env
-	@test -f infra/docker/.env || cp .env.example infra/docker/.env
-	@echo "Edit infra/docker/.env for LLM provider keys (optional)."
+docker-env: ## Ensure repo-root .env exists for the Compose stack
+	@test -f .env || cp .env.example .env
+	@echo "Edit .env for LLM provider keys (optional)."
 
 docker-up: docker-env ## Build and start supervisor + Postgres + LiteLLM + metrics
 	$(COMPOSE) up --build -d

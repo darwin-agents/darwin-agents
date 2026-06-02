@@ -3,7 +3,7 @@
 # Maps the genome's capability tiers (fast / reasoning / coding / etc.) to
 # real provider models. The supervisor's LiteLLMTransport sends requests
 # tier-by-tier; LiteLLM resolves the chain and routes to the cheapest /
-# fastest healthy upstream. Provider API keys come from ./infra/docker/.env.
+# fastest healthy upstream. Provider API keys come from the repo-root .env.
 #
 # This is a STARTING config — the model_list entries should be tuned to
 # the platform's actual contracts. The price_table is what LiteLLM uses

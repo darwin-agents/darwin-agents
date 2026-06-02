@@ -257,7 +257,7 @@ Prints a live ledger, neuron dispatch log, and fitness trajectory.
 Dashboard on `:3000`, Supervisor on `:8000`, Postgres, LiteLLM proxy, Prometheus on `:9090`, Jaeger on `:16686`:
 
 ```bash
-make docker-up      # copies .env.example → infra/docker/.env if missing, then compose up
+make docker-up      # copies .env.example → .env if missing, then compose up
 ```
 
 Full instructions: [`infra/docker/README.md`](infra/docker/README.md)

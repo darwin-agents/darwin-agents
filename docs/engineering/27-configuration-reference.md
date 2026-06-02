@@ -247,7 +247,8 @@ Configured in `src/darwin_platform/observability/monitoring.py`. Currently code 
 
 ## Docker Compose environment
 
-The `infra/docker/.env` file configures the compose stack:
+The repo-root `.env` file configures the compose stack (loaded via
+`--env-file .env` in `make docker-up` — there is no `infra/docker/.env`):
 
 | Variable | Service | Purpose |
 | -------- | ------- | ------- |

@@ -18,25 +18,27 @@ and tracing.
 
 ## Quickstart
 
-All `docker compose` commands run from this `infra/docker/` directory (that is
-where `docker-compose.yml` lives, and Compose auto-loads `./.env` from
-there).
+The compose file lives here but reads its `.env` from the **repo root** —
+there is no `infra/docker/.env`. The simplest path is `make docker-up`
+from the repo root; it passes `--env-file .env` automatically.
 
 ```bash
-cd infra/docker
+# From the repo root:
 
 # 1. (Optional) Seed provider API keys so LiteLLM works.
-#    .env.example lives at the repo root — the single source of truth.
-cp ../../.env.example .env
+#    .env.example is the single source of truth.
+cp .env.example .env
 $EDITOR .env
 
 # 2. (Optional) Enable bearer auth on the supervisor.
-cp tokens.example.json tokens.json
+cp infra/docker/tokens.example.json infra/docker/tokens.json
 # Then uncomment the tokens.json mount + --auth-tokens lines in
-# docker-compose.yml.
+# infra/docker/docker-compose.yml.
 
-# 3. Start the stack (from repo root: make docker-up does steps 1–3).
-docker compose up --build
+# 3. Start the stack.
+make docker-up
+# …or the raw command (still from repo root):
+# docker compose -f infra/docker/docker-compose.yml --env-file .env up --build
 
 # 4. Verify.
 curl -s http://localhost:8000/healthz | jq
@@ -97,7 +99,7 @@ The supervisor supports two backends, both restart-survivable:
 - **Postgres:** uncomment the `--db=postgresql://...` line in
   `docker-compose.yml` to point the supervisor at the bundled
   `postgres` service. The default credentials are dev-only —
-  override via `infra/docker/.env`.
+  override via the repo-root `.env`.
 
 Audit log + tokens + billing + lineage + escalation tickets + monitor
 alerts persist in either mode.

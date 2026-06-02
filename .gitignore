@@ -72,7 +72,6 @@ dmypy.json
 
 
 # --- Local dev artefacts (docker-compose state, real tokens) ---
-infra/docker/.env
 infra/docker/tokens.json
 !infra/docker/tokens.example.json
 tokens.json
