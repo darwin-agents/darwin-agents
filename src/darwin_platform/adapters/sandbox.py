@@ -128,23 +128,28 @@ class E2BSandbox:
                 timeout=timeout_seconds,
             ) if hasattr(sandbox, "run_code") else sandbox(code)
         except Exception as exc:
-            try:
-                if hasattr(sandbox, "close"):
-                    sandbox.close()
-            except Exception:
-                pass
+            self._teardown(sandbox)
             return {
                 "ok": False, "exit_code": -1, "stdout": "", "stderr": str(exc),
                 "cost_usdc": self._cost,
             }
 
-        try:
-            if hasattr(sandbox, "close"):
-                sandbox.close()
-        except Exception:
-            pass
-
+        self._teardown(sandbox)
         return self._unpack_result(result)
+
+    @staticmethod
+    def _teardown(sandbox: Any) -> None:
+        """Best-effort microVM teardown. e2b-code-interpreter's Sandbox
+        exposes ``kill()``; older / stub sandboxes use ``close()``. Try
+        whichever exists; never let cleanup raise into the caller."""
+        for name in ("close", "kill"):
+            fn = getattr(sandbox, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                return
 
     def _unpack_result(self, result: Any) -> dict:
         """Normalise the SDK's response shape. e2b's CodeInterpreter
