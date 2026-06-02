@@ -83,6 +83,17 @@ jobs:
           grep -q "tokens.json:" /tmp/inline.yaml \
             || { echo "Secret missing tokens.json key"; exit 1; }
 
+      - name: helm template (PodDisruptionBudget)
+        run: |
+          helm template darwin infra/charts/darwin-platform \
+            --set replicaCount=2 \
+            --set leaderElection.enabled=true \
+            --set database.url=postgresql://darwin:darwin@postgres:5432/darwin \
+            --set podDisruptionBudget.enabled=true \
+            > /tmp/pdb.yaml
+          grep -q "^kind: PodDisruptionBudget$" /tmp/pdb.yaml \
+            || { echo "missing PodDisruptionBudget when podDisruptionBudget.enabled=true"; exit 1; }
+
       - name: helm template (postgres mode)
         run: |
           # Exercise the Postgres-mode rendering: PVC is omitted, the
