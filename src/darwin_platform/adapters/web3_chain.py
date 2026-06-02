@@ -171,6 +171,59 @@ class Web3ChainClient:
             hex_hash = "0x" + hex_hash
         return {"tx_hash": hex_hash, "memo": memo}
 
+    def wait_for_confirmation(
+        self,
+        tx_hash: str,
+        *,
+        timeout_s: float = 60.0,
+        min_confirmations: int = 1,
+    ) -> dict:
+        """Block until ``tx_hash`` reaches ``min_confirmations`` block-depth.
+
+        Satisfies :class:`ConfirmingChainClient` so :class:`RealWallet` does
+        not credit its ledger before the transfer is final on mainnet
+        (docs/engineering/30 §mainnet safety). Raises on a reverted receipt or
+        if the depth isn't reached within ``timeout_s`` — the caller treats
+        either as "do not credit", so a reorged-out tx is never booked.
+        """
+        import time
+
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        want = max(1, int(min_confirmations))
+        poll = min(2.0, max(0.2, float(timeout_s) / 30.0))
+        while True:
+            receipt = None
+            try:
+                receipt = self._w3.eth.get_transaction_receipt(tx_hash)
+            except Exception:
+                receipt = None  # not mined yet
+            if receipt is not None:
+                status = getattr(receipt, "status", None)
+                if status is None and isinstance(receipt, dict):
+                    status = receipt.get("status")
+                if status is not None and int(status) != 1:
+                    raise RuntimeError(
+                        f"transfer {tx_hash} reverted on-chain"
+                    )
+                block_no = getattr(receipt, "blockNumber", None)
+                if block_no is None and isinstance(receipt, dict):
+                    block_no = receipt.get("blockNumber")
+                if block_no is not None:
+                    depth = int(self._w3.eth.block_number) - int(block_no) + 1
+                    if depth >= want:
+                        return {
+                            "tx_hash": tx_hash,
+                            "block_number": int(block_no),
+                            "confirmations": int(depth),
+                            "status": 1,
+                        }
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"transfer {tx_hash} not confirmed to {want} block(s) "
+                    f"within {timeout_s}s"
+                )
+            time.sleep(poll)
+
     # -- internals --------------------------------------------------------
     def _usdc_decimals(self) -> int:
         if self._decimals is None:
