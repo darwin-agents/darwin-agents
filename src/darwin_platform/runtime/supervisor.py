@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from darwin_dna.evolution import DarwinRuntime, boot
+from darwin_dna.hyperparameters import DEFAULT_HYPERPARAMETERS
 from darwin_fakes import FakeStack, make_child_platform
 from darwin_fakes.fake_platform import SigningService
 
@@ -410,6 +411,10 @@ class Supervisor:
         omnibus_wallet: OmnibusWallet | None = None,
         namespace_provisioner: NamespaceProvisioner | None = None,
         egress_revoker: Any | None = None,
+        dead_darwin_retention_seconds: float = 90.0 * 86400.0,
+        content_classifier: Any | None = None,
+        path_c_enabled: bool = False,
+        path_c_require_human_review: bool = True,
         drift_detector: DriftDetector | None = None,
         merkle_anchor_publisher: MerkleAnchorPublisher | None = None,
         maintenance_interval_seconds: float = 86400.0,
@@ -437,6 +442,14 @@ class Supervisor:
         # kill flag — the load-bearing mitigation if the orchestrator stops
         # polling. Best-effort; never blocks the kill.
         self._egress_revoker = egress_revoker
+        # Path-C neuron self-authoring (doc 04). OFF by default fleet-wide;
+        # when enabled, spawned + reproduced Darwins carry the admission gate
+        # and (unless the operator opts out) require operator review before a
+        # learned neuron joins a live catalog. Threaded into boot() as hp.
+        self._darwin_hp = DEFAULT_HYPERPARAMETERS.model_copy(update={
+            "path_c_enabled": bool(path_c_enabled),
+            "path_c_require_human_review": bool(path_c_require_human_review),
+        })
         # Persistent storage (doc 08: the audit log is "permanent"). When
         # ``persistence_path`` is set, swap the in-memory collections for
         # SQLite-backed ones; restart-survivable. Default unset keeps the
@@ -503,6 +516,15 @@ class Supervisor:
         # (optional) sink. ``auto_pause_on_critical`` is opt-in: a tight
         # quota could otherwise auto-pause the fleet on a misconfiguration.
         # Persistent variant restores the alert history on restart.
+        # Kept so fleet-maintenance can raise CRITICAL alerts (omnibus
+        # reconciliation discrepancy / Merkle anchor failure are P0 per
+        # docs 05/29) through the same sink the detectors use → PagerDuty.
+        self._alert_sink = alert_sink
+        # Darwins we've already paged about dangling payment intents. A fresh
+        # supervisor (restart) starts empty, so the first maintenance pass
+        # after restart surfaces any intent left open by a crash mid-payment;
+        # we don't re-page every cycle while it stays open.
+        self._open_intent_alerted: set[str] = set()
         if self._persistence is not None:
             self._monitor = self._persistence.monitor(
                 quotas=quotas, sink=alert_sink, clock=clock,
@@ -587,6 +609,15 @@ class Supervisor:
         self._namespace_provisioner: NamespaceProvisioner | None = (
             namespace_provisioner
         )
+        # doc 09 #3: a dead Darwin's namespace + organism DB are retained this
+        # long before the fleet-maintenance reaper destroys them.
+        self._dead_darwin_retention_seconds = float(
+            dead_darwin_retention_seconds
+        )
+        # Platform-side outbound content-safety classifier (doc 10), injected
+        # into each spawned/reproduced Darwin's platform so publishing neurons
+        # run a real filter rather than only the deterministic backstop.
+        self._content_classifier = content_classifier
         self._drift_detector: DriftDetector | None = drift_detector
         self._merkle_anchor: MerkleAnchorPublisher | None = (
             merkle_anchor_publisher
@@ -1000,6 +1031,11 @@ class Supervisor:
             raise SupervisorError("supervisor is closed")
         await self.ensure_leader_started()
         self._require_leader()
+        # KYC gate (doc 05): we will not provide service to a user we cannot
+        # KYC. Genesis spawns are gated on the requesting owner; resumes of an
+        # already-living Darwin are not re-gated. No-op when KYC is unconfigured.
+        if _resume_id is None:
+            self._kyc_gate(actor, action="spawn")
         # K8s mode (doc-08 production): hand off to the driver, which
         # provisions a per-Darwin namespace + orchestrator pod under
         # ``runtimeClassName: kata``. The in-process path below is
@@ -1179,7 +1215,15 @@ class Supervisor:
             # final darwin_id; deferred to the post-boot block below.) the supervisor schedules the gaps
             # between heartbeats itself with asyncio.sleep, so the event loop
             # never blocks on time.sleep even with many Darwins on one loop.
-            runtime = boot(stack.platform(), sleep=lambda _: None)
+            _platform = stack.platform()
+            # Inject the platform-side content-safety classifier (doc 10) so
+            # publishing neurons run a real filter, not just the deterministic
+            # substring backstop. No-op when unconfigured.
+            if self._content_classifier is not None:
+                _platform.content_classifier = self._content_classifier
+            runtime = boot(
+                _platform, sleep=lambda _: None, hp=self._darwin_hp,
+            )
             # Wrap the browser substrate with cache/promotion (doc 15).
             # The wrapper proxies `run(steps) -> dict`, records every
             # session, promotes signatures with N successes to a cached
@@ -2566,6 +2610,107 @@ class Supervisor:
             )
             return {"disabled_categories": sorted(h.disabled_categories)}
 
+    # -- fleet-wide incident-response levers (doc 09) ----------------------
+    def _live_ids(self) -> list[str]:
+        return [
+            did for did, h in self._darwins.items()
+            if not h.killed and h.runtime.state.alive
+        ]
+
+    async def fleet_pause(
+        self, *, reason: str = "fleet pause", actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Pause every live Darwin at once — the fleet-wide kill-switch's
+        softer sibling for incident response (doc 09)."""
+        paused: list[str] = []
+        for did in self._live_ids():
+            try:
+                await self.pause(did, reason=reason, actor=actor)
+                paused.append(did)
+            except Exception:  # noqa: BLE001 — best-effort across the fleet
+                pass
+        self._audit.record(
+            actor=actor, action="fleet_pause", darwin_id=None,
+            metadata={"reason": reason, "count": len(paused)},
+        )
+        return {"paused": paused}
+
+    async def fleet_resume(self, *, actor: str = "anonymous") -> dict[str, Any]:
+        resumed: list[str] = []
+        for did in list(self._darwins):
+            try:
+                await self.resume(did, actor=actor)
+                resumed.append(did)
+            except Exception:  # noqa: BLE001
+                pass
+        self._audit.record(
+            actor=actor, action="fleet_resume", darwin_id=None,
+            metadata={"count": len(resumed)},
+        )
+        return {"resumed": resumed}
+
+    async def fleet_spend_lock(
+        self, *, locked: bool, reason: str = "fleet spend-lock",
+        actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Spend-lock (or unlock) every live Darwin — freeze all outbound
+        payments fleet-wide without killing the organisms (doc 09)."""
+        affected: list[str] = []
+        for did in self._live_ids():
+            try:
+                await self.set_spend_lock(
+                    did, locked=locked, reason=reason, actor=actor,
+                )
+                affected.append(did)
+            except Exception:  # noqa: BLE001
+                pass
+        self._audit.record(
+            actor=actor,
+            action="fleet_spend_lock" if locked else "fleet_spend_unlock",
+            darwin_id=None, metadata={"count": len(affected)},
+        )
+        return {"spend_locked" if locked else "spend_unlocked": affected}
+
+    async def fleet_block_category(
+        self, *, category: str, actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Disable a business category across the whole fleet (additive) — park
+        a whole line of work everywhere at once (doc 09)."""
+        cat = str(category).strip()
+        if not cat:
+            raise SupervisorError("category is required")
+        affected: list[str] = []
+        for did in self._live_ids():
+            h = self._darwins[did]
+            h.disabled_categories = set(h.disabled_categories) | {cat}
+            affected.append(did)
+        self._audit.record(
+            actor=actor, action="fleet_block_category", darwin_id=None,
+            metadata={"category": cat, "count": len(affected)},
+        )
+        return {"category": cat, "blocked_on": affected}
+
+    def block_counterparty(
+        self, address: str, *, actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Hard-block a counterparty address fleet-wide (doc 09): add it to the
+        sanctions screener so every Darwin's wallet refuses it. Requires a
+        local screener that supports runtime blocking (the OFAC-ingested
+        LocalDenylistScreener); remote-provider deployments block at the
+        provider console instead."""
+        blocker = getattr(self._sanctions, "block", None)
+        if not callable(blocker):
+            raise SupervisorError(
+                "the configured sanctions screener does not support runtime "
+                "counterparty blocking; block at the provider"
+            )
+        blocker(address)
+        self._audit.record(
+            actor=actor, action="block_counterparty", darwin_id=None,
+            metadata={"address": address},
+        )
+        return {"blocked": address}
+
     def get_owner_controls(self, darwin_id: str) -> dict[str, Any]:
         """The current owner-control state for a Darwin (doc 09)."""
         h = self._get(darwin_id)
@@ -2657,14 +2802,19 @@ class Supervisor:
                     self._lifecycle.mark_killed(darwin_id, reason=reason)
                 except Exception:
                     pass
-            # Tear down the tenant namespace (K8s + Vault + organism DB +
-            # any minted wallet keypair) — counterpart to provision() in
-            # _spawn. Best-effort: a teardown failure is audit-logged by
-            # the provisioner itself; we never block kill on it.
+            # DEFER teardown (doc 09 #3): a killed Darwin's namespace + organism
+            # DB are RETAINED for the retention window so the owner can inspect
+            # the data and a re-spawn can inherit accounts/databases. We only
+            # SCHEDULE teardown here; the fleet-maintenance reaper destroys the
+            # resources once the window elapses (or an operator force-tears-down
+            # via teardown_dead_darwin). Best-effort; never blocks kill.
             if self._namespace_provisioner is not None:
                 try:
-                    self._namespace_provisioner.teardown(
-                        darwin_id=darwin_id, actor=actor,
+                    self._namespace_provisioner.schedule_teardown(
+                        darwin_id=darwin_id,
+                        due_ts=float(self._clock())
+                        + self._dead_darwin_retention_seconds,
+                        actor=actor,
                     )
                 except Exception:
                     pass
@@ -3286,17 +3436,11 @@ class Supervisor:
             if kill_running and not h.killed and h.runtime.state.alive:
                 h.killed = True
                 h.stack.kill.flip("supervisor shutdown")
-        # Tear down per-Darwin tenant namespaces alongside shutdown. Each
-        # teardown is independent and best-effort — a failure on one must
-        # not block the others or block the overall shutdown.
-        if self._namespace_provisioner is not None:
-            for did in list(self._darwins):
-                try:
-                    self._namespace_provisioner.teardown(
-                        darwin_id=did, actor="supervisor.shutdown",
-                    )
-                except Exception:
-                    pass
+        # NOTE: per-Darwin tenant namespaces are NOT torn down on shutdown.
+        # Shutdown is not death — a restart re-adopts living Darwins, and dead
+        # ones are retained for the 90-day window (doc 09 #3) and reaped by
+        # fleet maintenance once their teardown_due_ts elapses. Destroying
+        # namespaces here would wipe data that persistence exists to preserve.
         # Let each drive task observe the kill and exit.
         tasks = [h.task for h in self._darwins.values() if h.task is not None]
         for t in tasks:
@@ -3639,6 +3783,12 @@ class Supervisor:
                     action="merkle_anchor_failed",
                     metadata={"reason": str(exc)[:200]},
                 )
+                # P0 (doc 29): a failed anchor breaks the tamper-evidence
+                # chain — page on-call, don't just audit-log it.
+                self._fleet_alert(
+                    "merkle_anchor_failed",
+                    {"reason": str(exc)[:200], "day": day_label},
+                )
         if self._omnibus_wallet is not None:
             try:
                 result = self.reconcile_omnibus()
@@ -3655,12 +3805,104 @@ class Supervisor:
                             "note": result.note,
                         },
                     )
+                    if not result.ok:
+                        # P0 (doc 05): the books don't balance against the
+                        # on-chain omnibus balance — real money may be
+                        # missing. Page on-call.
+                        self._fleet_alert(
+                            "omnibus_reconcile_discrepancy",
+                            {
+                                "discrepancy_usdc": result.discrepancy_usdc,
+                                "note": result.note,
+                            },
+                        )
             except Exception as exc:  # noqa: BLE001
                 self._audit.record(
                     actor="platform.maintenance",
                     action="omnibus_reconcile_failed",
                     metadata={"reason": str(exc)[:200]},
                 )
+                self._fleet_alert(
+                    "omnibus_reconcile_failed", {"reason": str(exc)[:200]},
+                )
+        # Open-intent reconciliation: a crash between an on-chain transfer and
+        # its log_outcome leaves a dangling payment intent. Surface it (once
+        # per darwin, so a restart pages but steady-state doesn't spam).
+        for did, h in list(self._darwins.items()):
+            audit = getattr(getattr(h, "runtime", None), "audit", None)
+            opener = getattr(audit, "open_intents", None)
+            if not callable(opener):
+                continue
+            try:
+                open_ = opener()
+            except Exception:
+                continue
+            if open_ and did not in self._open_intent_alerted:
+                self._open_intent_alerted.add(did)
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="open_intents_unreconciled",
+                    darwin_id=did,
+                    metadata={"count": len(open_)},
+                )
+                self._fleet_alert(
+                    "open_intents_unreconciled",
+                    {"darwin_id": did, "count": len(open_)},
+                )
+            elif not open_:
+                self._open_intent_alerted.discard(did)
+        # Dead-Darwin reaper (doc 09 #3): destroy the namespaces of Darwins
+        # whose 90-day retention window has elapsed. Until then their data is
+        # retained for owner inspection + re-spawn inheritance.
+        if self._namespace_provisioner is not None:
+            due = getattr(self._namespace_provisioner, "due_for_teardown", None)
+            if callable(due):
+                try:
+                    for did in due(now):
+                        self._namespace_provisioner.teardown(
+                            darwin_id=did, actor="platform.reaper",
+                        )
+                        self._audit.record(
+                            actor="platform.reaper",
+                            action="dead_darwin_reaped",
+                            darwin_id=did,
+                            metadata={"reason": "retention window elapsed"},
+                        )
+                except Exception:  # noqa: BLE001 — reaping is best-effort
+                    pass
+
+    def teardown_dead_darwin(
+        self, darwin_id: str, *, actor: str = "anonymous",
+    ) -> dict:
+        """Operator force-teardown of a dead Darwin's retained namespace
+        before its retention window elapses (doc 09: the owner may delete
+        their data on request)."""
+        if self._namespace_provisioner is None:
+            raise SupervisorError("no namespace provisioner configured")
+        self._namespace_provisioner.teardown(darwin_id=darwin_id, actor=actor)
+        self._audit.record(
+            actor=actor, action="teardown_dead_darwin", darwin_id=darwin_id,
+            metadata={"forced": True},
+        )
+        return {"torn_down": darwin_id}
+
+    def _fleet_alert(self, kind: str, detail: dict) -> None:
+        """Emit a CRITICAL fleet-level alert through the configured sink
+        (→ PagerDuty in production). Best-effort: a sink failure must not
+        break the maintenance pass."""
+        if self._alert_sink is None:
+            return
+        try:
+            self._alert_sink.emit(Alert(
+                darwin_id="__fleet__",
+                kind=kind,
+                severity=Severity.CRITICAL,
+                suggested_level=5,
+                detail=detail,
+                ts=float(self._clock()),
+            ))
+        except Exception:
+            pass
 
     @staticmethod
     def _log_drive_done(task: "asyncio.Task") -> None:
@@ -4146,6 +4388,23 @@ class Supervisor:
                           "scopes": list(seen_scopes)},
             )
 
+    def _kyc_gate(self, subject: str, *, action: str) -> None:
+        """Refuse a money-moving / spawn action by a user we cannot KYC
+        (doc 05: "we will not provide service to users we cannot KYC").
+        Also enforces the 18+ age gate. No-op when no KYC service is
+        configured (dev / tests). KYCError surfaces as SupervisorError so the
+        HTTP layer maps it to a clean 4xx."""
+        if self._kyc_service is None:
+            return
+        from ..security.kyc import KYCError
+
+        try:
+            self._kyc_service.require_allowed(
+                subject, action=action, require_adult=True,
+            )
+        except KYCError as exc:
+            raise SupervisorError(str(exc)) from exc
+
     # -- fiat ramp (doc 17) ------------------------------------------------
     def fiat_deposit_quote(
         self,
@@ -4157,6 +4416,7 @@ class Supervisor:
     ) -> FiatQuote:
         if self._fiat_ramp is None:
             raise SupervisorError("fiat ramp is not configured")
+        self._kyc_gate(actor, action="fiat_deposit_quote")
         if (
             destination_darwin_id is not None
             and destination_darwin_id not in self._darwins
@@ -4253,6 +4513,7 @@ class Supervisor:
     ) -> FiatDepositReceipt:
         if self._fiat_ramp is None:
             raise SupervisorError("fiat ramp is not configured")
+        self._kyc_gate(actor, action="fiat_confirm_deposit")
         if (
             destination_darwin_id is not None
             and destination_darwin_id not in self._darwins
@@ -4847,6 +5108,7 @@ class Supervisor:
         operators use this AFTER a successful harvest."""
         if self._fiat_ramp is None:
             raise SupervisorError("fiat ramp is not configured")
+        self._kyc_gate(actor, action="fiat_withdraw")
         try:
             receipt = self._fiat_ramp.withdraw(
                 amount_usdc=amount_usdc, destination=destination,
@@ -4917,6 +5179,9 @@ class Supervisor:
             raise UnknownDarwin(darwin_id)
         h = self._darwins[darwin_id]
         gate = h.runtime.neuron_admission
+        if gate is None:
+            # Path-C disabled (doc 04 default): no gate, nothing to list.
+            return {"pending": [], "admitted": []}
         return {
             "pending": [p.to_json() for p in gate.pending()],
             "admitted": [
@@ -4956,6 +5221,10 @@ class Supervisor:
         if darwin_id not in self._darwins:
             raise UnknownDarwin(darwin_id)
         h = self._darwins[darwin_id]
+        if h.runtime.neuron_admission is None:
+            raise SupervisorError(
+                "Path-C is disabled; enable path_c_enabled to manage proposals"
+            )
         h.runtime.neuron_admission.reject(name, reason=reason)
         self._audit.record(
             actor=actor,
@@ -5351,7 +5620,11 @@ class Supervisor:
                     opening_usdc=float(record["budget_usdc"]),
                     clock=self._clock,
                 )
-                child_runtime = boot(child_platform, sleep=lambda _: None)
+                if self._content_classifier is not None:
+                    child_platform.content_classifier = self._content_classifier
+                child_runtime = boot(
+                    child_platform, sleep=lambda _: None, hp=self._darwin_hp,
+                )
                 # Inherit fleet-wide sanctions screener (doc 17) for the
                 # child too — otherwise a freshly spawned generation could
                 # transact unscreened until the operator re-installs it.
