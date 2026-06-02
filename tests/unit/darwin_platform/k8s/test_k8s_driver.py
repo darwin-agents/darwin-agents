@@ -16,10 +16,18 @@ class _RecordingApi:
     """Captures every call the driver makes so the test can assert
     ordering and contents."""
 
-    def __init__(self, *, fail_on: set[str] | None = None):
+    def __init__(
+        self,
+        *,
+        fail_on: set[str] | None = None,
+        namespaces: list[dict] | None = None,
+        secrets: dict[tuple[str, str], dict] | None = None,
+    ):
         self.created: list[tuple[str, str, dict]] = []  # (kind, ns, body)
         self.deleted_namespaces: list[str] = []
         self._fail_on = fail_on or set()
+        self._namespaces = namespaces or []
+        self._secrets = secrets or {}
 
     def _maybe_fail(self, kind: str):
         if kind in self._fail_on:
@@ -57,7 +65,13 @@ class _RecordingApi:
         self.deleted_namespaces.append(name)
 
     def list_namespaces_by_label(self, label_selector):
-        return []
+        return list(self._namespaces)
+
+    def read_namespaced_secret(self, name, namespace):
+        try:
+            return self._secrets[(name, namespace)]
+        except KeyError:
+            raise RuntimeError(f"secret {name} not found in {namespace}")
 
     def read_namespaced_deployment_status(self, name, namespace):
         return {"status": {"availableReplicas": 1, "readyReplicas": 1}}
@@ -288,6 +302,76 @@ async def test_k8s_spawn_consistent_wallet_provider_across_darwins():
         )
         args = orchestrator["args"]
         assert args[args.index("--wallet-provider") + 1] == "local-vault"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_readopts_existing_namespaces():
+    """After a restart the driver's in-memory handles are gone. reconcile()
+    lists the darwin-* namespaces, reads each control token back from its
+    Secret, and rebuilds a usable handle (snapshot routes again)."""
+    import base64
+
+    ns = {
+        "metadata": {
+            "name": "darwin-d-9",
+            "labels": {
+                "darwin.io/managed-by": "darwin-platform",
+                "darwin.io/darwin-id": "d-9",
+            },
+            "annotations": {
+                "darwin.io/spawned-at": "1700.5",
+                "darwin.io/parent-id": "d-parent",
+                "darwin.io/opening-usdc": "42.0",
+            },
+        },
+    }
+    secret = {"data": {"control_token": base64.b64encode(b"tok-9").decode("ascii")}}
+    api = _RecordingApi(
+        namespaces=[ns],
+        secrets={("darwin-control", "darwin-d-9"): secret},
+    )
+    control = _RecordingControl(become_ready_after=1)
+    driver = K8sDarwinDriver(
+        api=api, control_client=control,
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+
+    adopted = await driver.reconcile()
+    assert len(adopted) == 1
+    assert adopted[0]["darwin_id"] == "d-9"
+    assert adopted[0]["parent_id"] == "d-parent"
+    assert adopted[0]["spawned_at"] == 1700.5
+    assert adopted[0]["opening_usdc"] == 42.0
+
+    # The rebuilt handle is usable — snapshot routes through the control client.
+    snap = await driver.snapshot("d-9")
+    assert snap.darwin_id == "d-9"
+    assert "d-9" in await driver.list_ids()
+
+    # Idempotent: a second reconcile re-adopts nothing already known.
+    assert await driver.reconcile() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_namespace_without_token():
+    """A namespace whose control Secret can't be read is left orphaned for an
+    operator, not half-adopted."""
+    ns = {
+        "metadata": {
+            "name": "darwin-d-x",
+            "labels": {
+                "darwin.io/managed-by": "darwin-platform",
+                "darwin.io/darwin-id": "d-x",
+            },
+        },
+    }
+    api = _RecordingApi(namespaces=[ns], secrets={})  # no secret → unreadable
+    driver = K8sDarwinDriver(
+        api=api, control_client=_RecordingControl(),
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=1.0,
+    )
+    assert await driver.reconcile() == []
+    assert await driver.list_ids() == []
 
 
 @pytest.mark.asyncio

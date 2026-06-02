@@ -22,6 +22,7 @@ class _FakeK8sDriver:
         self.forced: list[str] = []
         self.snapshots_called: list[str] = []
         self.events_called: list[str] = []
+        self.reconcile_result: list[dict] = []
 
     async def start(self, spec: DarwinSpec) -> DarwinSnapshot:
         self.started.append(spec)
@@ -65,6 +66,9 @@ class _FakeK8sDriver:
         ]
 
     async def list_ids(self) -> list[str]: return []
+
+    async def reconcile(self) -> list[dict]:
+        return list(self.reconcile_result)
 
 
 @pytest.mark.asyncio
@@ -137,6 +141,31 @@ async def test_events_route_through_driver_in_k8s_mode():
     only_fast = await sup.events(did, tier="fast")
     assert len(only_fast["events"]) == 1
     assert only_fast["events"][0]["kind"] == "event:tick"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_readopts_k8s_darwins_on_restart():
+    """A fresh supervisor (in-memory _k8s_handles empty) re-adopts darwins the
+    driver still sees running, so they route as k8s + answer status again —
+    instead of 404ing while their orchestrators keep spending."""
+    driver = _FakeK8sDriver()
+    driver.reconcile_result = [
+        {"darwin_id": "d-resumed", "spawned_at": 100.0,
+         "parent_id": "d-parent", "opening_usdc": 50.0},
+    ]
+    sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
+
+    # Before reconcile the supervisor knows nothing about it.
+    assert "d-resumed" not in sup.list_ids()
+
+    await sup._reconcile_k8s()
+
+    # After reconcile it routes as a k8s darwin and status works.
+    assert "d-resumed" in sup.list_ids()
+    assert sup._is_k8s("d-resumed")
+    status = await sup.status("d-resumed")
+    assert status.darwin_id == "d-resumed"
+    assert "d-resumed" in driver.snapshots_called
 
 
 @pytest.mark.asyncio
