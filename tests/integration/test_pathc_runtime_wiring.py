@@ -5,11 +5,16 @@ from __future__ import annotations
 import pytest
 
 from darwin_dna.evolution import boot
+from darwin_dna.hyperparameters import Hyperparameters
 from darwin_dna.machinery.neuron_proposal import (
     NeuronProposal,
     NeuronProposalError,
 )
 from darwin_fakes import make_platform
+
+# Path-C is OFF by default (doc 04); these tests exercise the operator-admit
+# mechanism, so they enable it.
+_PATHC = Hyperparameters(path_c_enabled=True)
 
 
 def _proposal(name="learned.summary"):
@@ -26,14 +31,14 @@ def _proposal(name="learned.summary"):
 @pytest.mark.asyncio
 async def test_runtime_has_admission_gate():
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC)
     assert runtime.neuron_admission is not None
 
 
 @pytest.mark.asyncio
 async def test_admit_proposal_adds_to_catalog():
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC)
     before = set(runtime.catalog)
     p = _proposal()
     runtime.neuron_admission.submit(
@@ -47,7 +52,7 @@ async def test_admit_proposal_adds_to_catalog():
 @pytest.mark.asyncio
 async def test_admit_unknown_proposal_refused():
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC)
     with pytest.raises(NeuronProposalError):
         runtime.admit_neuron_proposal("learned.never_submitted")
 
@@ -55,7 +60,7 @@ async def test_admit_unknown_proposal_refused():
 @pytest.mark.asyncio
 async def test_admit_event_lands_in_audit():
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC)
     p = _proposal()
     runtime.neuron_admission.submit(
         p, existing_catalog=runtime.catalog,
@@ -72,7 +77,7 @@ async def test_admit_event_lands_in_audit():
 @pytest.mark.asyncio
 async def test_admission_refused_audit_when_unknown():
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC)
     with pytest.raises(NeuronProposalError):
         runtime.admit_neuron_proposal("learned.ghost")
     records = stack.audit_sink.read_all()

@@ -84,7 +84,35 @@ def _admit_proposal(proposal_dict: dict, ctx) -> str | None:
             {"name": proposal.name, "reason": str(exc)},
         )
         return None
-    # Use the runtime helper if available — that's the path that
+    # Mandatory human review (doc 04 phase 3, default ON): a submitted
+    # proposal sits in the gate's staging quarantine and is NOT merged into
+    # the live catalog until an operator approves it (via the platform's
+    # admit endpoint). File a review escalation and stop here — do NOT
+    # auto-admit against live traffic.
+    if getattr(ctx, "path_c_require_human_review", True):
+        poster = getattr(getattr(ctx, "escalation", None), "post", None)
+        if callable(poster):
+            try:
+                poster({
+                    "darwin_id": getattr(ctx, "darwin_id", None),
+                    "ticket": f"pathc-review-{proposal.name}",
+                    "ticket_class": "approval",
+                    "kind": "neuron_admission_review",
+                    "detail": {
+                        "name": proposal.name,
+                        "rationale": proposal.rationale,
+                        "capability_tags": sorted(proposal.capability_tags),
+                    },
+                })
+            except Exception:
+                pass
+        ctx.audit.log_event(
+            "neuron_proposal.pending_review",
+            {"name": proposal.name},
+        )
+        return None  # staged, not admitted — awaits operator approval
+    # Auto-admit (operator opted out of human review):
+    # use the runtime helper if available — that's the path that
     # also re-runs the catalog loader's contract check + updates
     # ctx.catalog in place.
     admit_via_runtime = getattr(ctx, "admit_neuron_proposal_helper", None)

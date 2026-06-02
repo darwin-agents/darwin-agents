@@ -76,6 +76,11 @@ class OrchestratorContext:
     # Path-C leave this as None and the apply step skips the admit.
     neuron_admission: Any = None
     admit_neuron_proposal_helper: Callable[[str], None] | None = None
+    # Path-C human-in-the-loop gate (doc 04 phase 3). When True (default), an
+    # eval-favoured proposal is only SUBMITTED to the gate's staging quarantine
+    # and an operator-review escalation is filed — it is NOT merged into the
+    # live catalog until an operator approves. False = auto-admit (opt-in).
+    path_c_require_human_review: bool = True
 
 
 # The graph topology, exactly the doc's diagram. Each entry:

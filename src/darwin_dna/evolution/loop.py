@@ -80,6 +80,7 @@ class Platform:
         x402_client=None,
         sandbox=None,
         episodic_memory=None,
+        content_classifier=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -121,6 +122,11 @@ class Platform:
         # cannot live in the DNA itself (model lock-in P6, heavy dep P9), so
         # this is the seam they enter through.
         self.episodic_memory = episodic_memory
+        # Outbound content-safety classifier (doc 10). When provided, the
+        # loop injects it into publishing neurons' NeuronContext so the
+        # ContentSafetyGate runs a real classifier instead of only its
+        # deterministic substring backstop. Optional — None keeps the backstop.
+        self.content_classifier = content_classifier
 
 
 class DarwinRuntime:
@@ -189,8 +195,16 @@ class DarwinRuntime:
         # neurons are merged into the catalog so the next dispatch
         # can route to them. Bounded by ``NeuronAdmissionGate.max_admitted``
         # so a Darwin can't flood its catalog.
-        from ..machinery.neuron_proposal import NeuronAdmissionGate
-        self.neuron_admission = NeuronAdmissionGate()
+        # OFF by default (doc 04: "we will not enable Path C in the initial
+        # launch"). When disabled, the gate is None and apply_mutation never
+        # admits a Darwin-authored neuron at all. When enabled, admitted
+        # proposals still pass through a staging quarantine + operator review
+        # (see ``path_c_require_human_review``) before joining the live catalog.
+        if getattr(hp, "path_c_enabled", False):
+            from ..machinery.neuron_proposal import NeuronAdmissionGate
+            self.neuron_admission = NeuronAdmissionGate()
+        else:
+            self.neuron_admission = None
         self.strategy = founding_strategy()
         self._anchored_day: str | None = None
 
@@ -242,6 +256,9 @@ class DarwinRuntime:
         # context bundle into the runtime (doc 04 phase 3).
         ctx.neuron_admission = self.neuron_admission
         ctx.admit_neuron_proposal_helper = self.admit_neuron_proposal
+        ctx.path_c_require_human_review = getattr(
+            self._hp, "path_c_require_human_review", True
+        )
         # Kept for introspection/tests. The soma swaps strategy/catalog
         # *through the context*, never by rebinding runtime attributes (those
         # are not what the graph reads).
@@ -419,6 +436,17 @@ class DarwinRuntime:
         from ..machinery.neuron_loader import load_catalog
         from ..machinery.neuron_proposal import NeuronProposalError
 
+        if self.neuron_admission is None:
+            # Path-C is disabled (doc 04 default): there is no gate, so an
+            # operator admit request is refused cleanly rather than raising
+            # an AttributeError on None.
+            self.audit.log_event(
+                "neuron_proposal.admission_refused",
+                {"name": name, "reason": "path-c disabled"},
+            )
+            raise NeuronProposalError(
+                "Path-C is disabled; enable path_c_enabled to admit neurons"
+            )
         try:
             neuron = self.neuron_admission.admit(name)
         except NeuronProposalError as exc:
@@ -478,7 +506,11 @@ class DarwinRuntime:
             inherited_layer_blobs=self._p.layer_blobs,
             inherited_layer_names=self._p.layer_names,
             generation_recurring_failures=dict(self.state.recurring_failures),
-            dead_ends=set(),
+            # Inherit the parent's accumulated dead-ends (negative lessons) so
+            # the child doesn't re-explore mutation classes the lineage already
+            # proved fruitless (doc 06). Was hardcoded to set() — the
+            # cross-generation negative-lesson path.
+            dead_ends=set(self.archive.dead_ends()),
             successful_strategy_id=self.strategy.spec.id,
             profit_usdc=profit,
             staged_semantic=staged_semantic,

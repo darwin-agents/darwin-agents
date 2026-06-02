@@ -5,10 +5,19 @@ from __future__ import annotations
 import pytest
 
 from darwin_dna.evolution import boot
+from darwin_dna.hyperparameters import Hyperparameters
 from darwin_dna.orchestrator_skeleton.nodes.propose_mutation import (
     _validate_and_normalise_proposal,
 )
 from darwin_fakes import make_platform
+
+# Path-C is OFF by default (doc 04). Tests that exercise admission must opt in.
+_PATHC_AUTO = Hyperparameters(
+    path_c_enabled=True, path_c_require_human_review=False,
+)
+_PATHC_REVIEW = Hyperparameters(
+    path_c_enabled=True, path_c_require_human_review=True,
+)
 
 
 class _Audit:
@@ -79,7 +88,8 @@ async def test_runtime_context_carries_admission_gate():
     """The OrchestratorContext exposes the admission gate so
     apply_mutation can submit + admit proposals."""
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC_AUTO)
+    assert runtime.neuron_admission is not None  # Path-C enabled → real gate
     assert runtime._ctx.neuron_admission is runtime.neuron_admission
     # Bound methods compare by callable equality, not identity.
     assert (
@@ -90,12 +100,13 @@ async def test_runtime_context_carries_admission_gate():
 
 @pytest.mark.asyncio
 async def test_apply_mutation_admits_proposal_when_present():
-    """If a proposal is in state.plan, apply_mutation submits + admits
-    via the runtime helper, growing the catalog by one neuron."""
+    """With Path-C enabled and human review OFF (auto-admit opt-in), a
+    proposal in state.plan submits + admits via the runtime helper, growing
+    the catalog by one neuron."""
     from darwin_dna.orchestrator_skeleton.nodes.apply_mutation import run
 
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC_AUTO)
     pre_size = len(runtime.catalog)
 
     proposal = {
@@ -130,7 +141,7 @@ async def test_apply_mutation_skips_invalid_proposal():
     from darwin_dna.orchestrator_skeleton.nodes.apply_mutation import run
 
     _, stack = make_platform()
-    runtime = boot(stack.platform())
+    runtime = boot(stack.platform(), hp=_PATHC_AUTO)
     pre_size = len(runtime.catalog)
     bad_proposal = {
         "name": "payments.facilitator_evil",  # impersonation name
@@ -151,3 +162,61 @@ async def test_apply_mutation_skips_invalid_proposal():
     run(state, runtime._ctx)
     # Catalog unchanged.
     assert len(runtime.catalog) == pre_size
+
+
+def _valid_proposal():
+    return {
+        "name": "learned.greet",
+        "rationale": "respond to greeting tickets",
+        "capability_tags": ["web.read"],
+        "steps": ["http GET https://api.support.example/greet"],
+        "est_cost_usdc_p50": 0.001,
+        "est_cost_usdc_p95": 0.01,
+    }
+
+
+class _ProposalState:
+    recurring_failures = {"x": 5}
+    mutation_gate_open = True
+    route = ""
+
+    def __init__(self, proposal):
+        self.recurring_failures = {"x": 5}
+        self.plan = {"failure_class": "x", "neuron_proposal": proposal}
+
+
+@pytest.mark.asyncio
+async def test_path_c_disabled_by_default_never_admits():
+    """doc 04: Path-C is OFF by default. The admission gate is None and a
+    valid proposal is NOT admitted (and the catalog does not grow)."""
+    from darwin_dna.orchestrator_skeleton.nodes.apply_mutation import run
+
+    _, stack = make_platform()
+    runtime = boot(stack.platform())  # default hp → Path-C off
+    assert runtime.neuron_admission is None
+    pre_size = len(runtime.catalog)
+    run(_ProposalState(_valid_proposal()), runtime._ctx)
+    assert len(runtime.catalog) == pre_size
+
+
+@pytest.mark.asyncio
+async def test_path_c_human_review_stages_without_admitting():
+    """With Path-C enabled but human review ON (the default when enabled), a
+    valid proposal is SUBMITTED to the staging quarantine and a review
+    escalation is filed — but it is NOT merged into the live catalog until an
+    operator approves."""
+    from darwin_dna.orchestrator_skeleton.nodes.apply_mutation import run
+
+    _, stack = make_platform()
+    runtime = boot(stack.platform(), hp=_PATHC_REVIEW)
+    pre_size = len(runtime.catalog)
+    run(_ProposalState(_valid_proposal()), runtime._ctx)
+    # Not admitted to the live catalog...
+    assert len(runtime.catalog) == pre_size
+    assert "learned.greet" not in runtime.catalog
+    # ...but staged in the gate, awaiting operator approval.
+    pending = [p.name for p in runtime.neuron_admission.pending()]
+    assert "learned.greet" in pending
+    # An operator can then approve it via the existing admit helper.
+    runtime.admit_neuron_proposal("learned.greet")
+    assert "learned.greet" in runtime.catalog

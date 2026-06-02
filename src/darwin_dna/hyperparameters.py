@@ -58,6 +58,15 @@ class Hyperparameters(BaseModel):
     min_dispatches_before_mutation: int = 100  # don't refactor a newborn
     min_recurring_failures_for_mutation: int = 3  # same error *class*, not msg
 
+    # --- Path-C neuron self-authoring (doc 04 phase 3) ---------------------
+    # OFF by default: doc 04 commits to "we will not enable Path C in the
+    # initial launch". When enabled, an admitted proposal still goes through a
+    # staging quarantine + mandatory operator review before it can join the
+    # live catalog (path_c_require_human_review), unless an operator explicitly
+    # opts into auto-admission.
+    path_c_enabled: bool = False
+    path_c_require_human_review: bool = True
+
     # --- Reproduction ------------------------------------------------------
     min_profit_for_reproduction_usdc: float = 25.0  # parent must be ≥ +$25
     profit_transfer_fraction: float = 0.5  # child gets 50% of surplus

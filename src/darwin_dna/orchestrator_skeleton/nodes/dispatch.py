@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ..._untrusted import contains_fence_markers, wrap_untrusted
 from ...machinery.audit_logger import AuditError
+from ...machinery.treasury_policy import TreasuryEngineError
 
 
 def _select(catalog, required_tags, recency):
@@ -105,6 +106,17 @@ async def run(state, ctx):
     except AuditError:
         # P7 "no log, no action": if the audit logger failed we must HALT,
         # not treat it as a recoverable neuron crash. Propagate.
+        raise
+    except TreasuryEngineError as exc:
+        # doc 28: a fault inside the treasury policy engine is a HALT example,
+        # not a recoverable neuron crash. If the thing that decides whether
+        # money may move is broken, the organism must STOP rather than fall
+        # through to "neuron_crashed → CONTINUE" and keep acting. Propagate
+        # exactly like AuditError.
+        ctx.audit.log_event(
+            "dispatch.treasury_engine_fault",
+            {"neuron": neuron.name, "error": str(exc)},
+        )
         raise
     except EscalationNeeded as esc:
         # A neuron explicitly *raised* "I'm blocked" — the exception twin of
