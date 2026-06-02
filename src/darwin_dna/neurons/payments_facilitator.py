@@ -17,6 +17,7 @@ from typing import Protocol, runtime_checkable
 from ..constitution import SpendIntent
 from ..machinery.treasury_policy import (
     StrategyEnvelope,
+    TreasuryEngineError,
     TreasuryState,
     Verdict,
     evaluate,
@@ -161,7 +162,18 @@ class PaymentsFacilitator(BaseNeuron):
             "payment.intent",
             {"intent": intent.model_dump(), "balance": state.balance_usdc},
         )
-        decision = evaluate(intent, state)
+        # The policy engine is pure and must not throw — a refused spend is a
+        # clean Verdict, not an exception. If it DOES throw, the engine that
+        # decides whether money may move is itself broken: HALT (doc 28),
+        # don't let the generic dispatch handler swallow it as a recoverable
+        # "neuron crashed → CONTINUE" and keep acting.
+        try:
+            decision = evaluate(intent, state)
+        except Exception as exc:
+            context.audit.log_outcome(
+                audit_id, "fail", {"error": f"treasury engine fault: {exc}"}
+            )
+            raise TreasuryEngineError(str(exc)) from exc
         context.audit.log_event(
             "payment.policy_decision",
             {"audit_id": audit_id, "decision": decision.model_dump()},

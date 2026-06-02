@@ -230,6 +230,29 @@ class AuditLogger:
         with self._lock:
             self._commit(f"event:{kind}", payload)
 
+    def open_intents(self) -> list[dict[str, Any]]:
+        """Intent records (``intent:*``) with no matching ``outcome``.
+
+        ``log_intent`` then act then ``log_outcome`` is the write-before-act
+        primitive that protects the one irreversible operation (an on-chain
+        transfer). A crash between the act and ``log_outcome`` leaves a
+        dangling intent — this surfaces those so the operator reconciles them
+        on restart (rather than the dangling payment going unnoticed)."""
+        with self._lock:
+            rows = self._sink.read_all()
+        closed: set[str] = set()
+        intents: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            kind = str(r.get("kind", ""))
+            if kind.startswith("intent:"):
+                iid = f"{r['seq']}:{r['hash'][:16]}"
+                intents[iid] = r
+            elif kind == "outcome":
+                iid = (r.get("payload") or {}).get("intent_id")
+                if iid:
+                    closed.add(str(iid))
+        return [rec for iid, rec in intents.items() if iid not in closed]
+
     # -- tamper-evidence anchoring -----------------------------------------
     def _snapshot(self) -> tuple[list[str], int]:
         with self._lock:

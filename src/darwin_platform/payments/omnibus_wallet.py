@@ -200,7 +200,10 @@ class OmnibusWallet:
         *,
         clock: Callable[[], float] = time.time,
         sanctions: Any | None = None,
-        reconciliation_tolerance_usdc: float = 1.0,
+        # Match the genome ledger's $0.01 reconciliation tolerance (doc 05).
+        # A looser $1.00 default would let a real-money discrepancy up to a
+        # dollar read as ok=True before the discrepancy alert fires.
+        reconciliation_tolerance_usdc: float = 0.01,
     ) -> None:
         if not isinstance(chain, OmnibusChainClient):
             raise TypeError("OmnibusWallet requires an OmnibusChainClient")

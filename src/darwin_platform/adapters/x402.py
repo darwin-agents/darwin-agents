@@ -100,11 +100,20 @@ class X402PaymentClient:
         max_payment_usdc: float = 5.0,
         max_retries: int = 1,
         header_names: dict[str, str] | None = None,
+        treasury_gate: Any | None = None,
     ) -> None:
         self._http = http
         self._wallet = wallet
         self._max = float(max_payment_usdc)
         self._max_retries = max(0, int(max_retries))
+        # Treasury policy gate (docs/engineering/05 §"one money door"). When
+        # set, every x402 settlement is run through the full policy stack
+        # (per-action / per-day / per-lifetime caps, soft caps, escalation)
+        # BEFORE the wallet signs — not just the flat client-side cap. The
+        # callable is ``gate(amount_usdc: float, counterparty: str) -> None``
+        # and RAISES when the spend is refused or requires escalation. The
+        # client-side ``max_payment_usdc`` stays as a hard backstop.
+        self._treasury_gate = treasury_gate
         names = {
             "amount": self.HDR_AMOUNT,
             "address": self.HDR_ADDRESS,
@@ -166,6 +175,21 @@ class X402PaymentClient:
                 f"${self._max:.4f}"
             )
 
+        # One money door (doc 05): run the spend through the treasury policy
+        # engine before the wallet signs, so per-action / per-day / lifetime
+        # caps + escalation apply to x402 settlement just like a direct
+        # payment — not merely the flat client-side cap above.
+        if self._treasury_gate is not None:
+            try:
+                self._treasury_gate(amount, address)
+            except X402Error:
+                raise
+            except Exception as exc:
+                raise X402Error(
+                    f"x402 treasury policy refused ${amount:.4f} to "
+                    f"{address}: {exc}"
+                ) from exc
+
         try:
             tx = self._wallet.pay(
                 to=address, amount_usdc=amount,
@@ -186,6 +210,59 @@ class X402PaymentClient:
         if nonce is not None:
             merged_headers[self._h["nonce"]] = str(nonce)
         kwargs["headers"] = merged_headers
+
+
+def build_treasury_gate(wallet: Any, *, category: str = "ops.api"):
+    """Build a treasury-policy gate for :class:`X402PaymentClient`.
+
+    The returned ``gate(amount_usdc, counterparty)`` evaluates each x402
+    settlement through the SAME policy engine ``payments.facilitator`` uses
+    (per-action / per-day / per-lifetime caps, owner soft caps, pre-approvals),
+    reading live state from ``wallet``, and RAISES :class:`X402Error` on a
+    REFUSE/ESCALATE verdict so the settlement aborts. This restores the
+    "one money door" invariant (doc 05) for pay-as-you-go HTTP spend, which
+    previously only had a flat client-side cap. Optional wallet capabilities
+    (soft caps, pre-approvals) degrade gracefully when absent.
+    """
+
+    def _read(name: str, default: Any) -> Any:
+        fn = getattr(wallet, name, None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                return default
+        return default
+
+    def _gate(amount_usdc: float, counterparty: str) -> None:
+        from darwin_dna.constitution import SpendIntent
+        from darwin_dna.machinery.treasury_policy import (
+            TreasuryState,
+            Verdict,
+            evaluate,
+        )
+
+        state = TreasuryState(
+            balance_usdc=float(_read("balance_usdc", 0.0)),
+            spent_today_usdc=float(_read("spent_today_usdc", 0.0)),
+            spent_lifetime_usdc=float(_read("spent_lifetime_usdc", 0.0)),
+            recent_spend_usdc=tuple(_read("recent_spend_usdc", ()) or ()),
+            soft_caps=_read("owner_soft_caps", None),
+            pre_approvals=tuple(_read("owner_preapprovals", ()) or ()),
+        )
+        intent = SpendIntent(
+            amount_usdc=float(amount_usdc),
+            counterparty=counterparty,
+            counterparty_category="unknown",
+            category=category,
+        )
+        decision = evaluate(intent, state)
+        if decision.verdict is not Verdict.ALLOW:
+            raise X402Error(
+                f"treasury policy {decision.verdict.value}: {decision.reason}"
+            )
+
+    return _gate
 
 
 # -- response shape helpers (tolerant of httpx + stubs) -------------------

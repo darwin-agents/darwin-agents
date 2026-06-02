@@ -38,6 +38,16 @@ from ..constitution.escalation_rules import ESCALATION_PER_ACTION_REVIEW_USDC
 from ..hyperparameters import HARD_CAPS, HardCaps
 
 
+class TreasuryEngineError(Exception):
+    """A fault *inside* the treasury policy engine itself (not a refused
+    spend — that is a clean :class:`Verdict`). Per doc 28 this is a literal
+    HALT example: if the engine that decides whether money may move is
+    itself broken, the organism must STOP, not fall through to a generic
+    "neuron crashed → CONTINUE" and keep acting on a safety-critical fault.
+    The dispatch node re-raises this (like :class:`AuditError`) so it halts
+    the heartbeat rather than being swallowed."""
+
+
 class Verdict(str, Enum):
     ALLOW = "allow"
     REFUSE = "refuse"  # not permitted; the spend dies here

@@ -1,10 +1,18 @@
 """trading.operator — trades financial / crypto markets (docs/engineering/04).
 
 The neuron that places buy/sell orders against a configured exchange.
-This is the **highest-risk** neuron in the catalog — its
-``capability_tags`` include ``treasury.spend`` so the doc-05 policy
-engine ALWAYS gates each order through the same per-action /
-per-day / per-lifetime caps used for other outbound payments.
+This is the **highest-risk** neuron in the catalog.
+
+Money-movement safety: orders are placed via ``ctx.http`` (the x402-capable
+client). Any settlement the exchange charges over x402 is gated by the
+treasury policy engine at the x402 money door (see
+:func:`darwin_platform.adapters.x402.build_treasury_gate`) — the same
+per-action / per-day / per-lifetime caps used for direct payments. The neuron
+itself holds no wallet and never signs (doc 04 isolation): the sole
+``treasury.write`` neuron is ``payments.facilitator``. (Funded-exchange-account
+notional, where the exchange custodies the balance rather than charging over
+x402, is bounded by the exchange-side risk engine; routing that notional
+through the facilitator is a tracked follow-up.)
 
 Layer 0 ships the contract + the order-shape; production deployers
 wire a specific exchange via ctx.http with the right authentication

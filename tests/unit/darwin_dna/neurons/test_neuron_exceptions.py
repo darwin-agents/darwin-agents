@@ -159,6 +159,25 @@ async def test_dispatch_treats_neuron_error_as_non_fatal_failure():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_halts_on_treasury_engine_fault():
+    # doc 28: a fault INSIDE the treasury policy engine is a HALT example,
+    # not a recoverable neuron crash. It must propagate out of dispatch (so
+    # the heartbeat halts) rather than being swallowed as neuron_crashed →
+    # CONTINUE, which would keep the organism acting on a money-safety fault.
+    from darwin_dna.machinery.treasury_policy import TreasuryEngineError
+
+    neuron = _RaisingNeuron("payer", TreasuryEngineError("policy engine bug"))
+    ctx, events, _episodic, _posted = _ctx(neuron)
+    state = _state("payer")
+
+    with pytest.raises(TreasuryEngineError):
+        await dispatch.run(state, ctx)
+    assert any(k == "dispatch.treasury_engine_fault" for k, _ in events)
+    # NOT recorded as a recoverable crash.
+    assert state.recurring_failures.get("neuron_crashed") is None
+
+
+@pytest.mark.asyncio
 async def test_dispatch_still_catches_a_plain_exception_as_a_crash():
     # Regression: a neuron raising a generic error keeps the old path.
     neuron = _RaisingNeuron("raiser", ValueError("unexpected"))
