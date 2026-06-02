@@ -29,6 +29,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 from dataclasses import dataclass, field
@@ -418,6 +419,9 @@ class Supervisor:
         drift_detector: DriftDetector | None = None,
         merkle_anchor_publisher: MerkleAnchorPublisher | None = None,
         maintenance_interval_seconds: float = 86400.0,
+        llm_key_minter: Any | None = None,
+        llm_spend_reconciler: Any | None = None,
+        llm_virtual_key_options: dict[str, Any] | None = None,
     ) -> None:
         # Loop pacing: between heartbeats the supervisor's drive task awaits
         # for this long. Default tiny — tests run as fast as the event loop;
@@ -647,6 +651,25 @@ class Supervisor:
         # Darwin gets a real adapter instead of the deterministic FakeLLM.
         # Default unset keeps the 90-day sim's reproducibility.
         self._llm_factory: Callable[..., Any] | None = llm_transport_factory
+        # Per-Darwin LiteLLM virtual keys (doc 13). When a minter is wired, a
+        # fresh virtual key is generated at spawn (scoped to the Darwin's id,
+        # budget, and tiers) instead of every Darwin sharing the platform
+        # master key — the docs-vs-impl audit's CRITICAL "shared master key"
+        # finding. The key is sealed in the Darwin's vault and revoked on
+        # death. The reconciler (optional) cross-checks the proxy's per-key
+        # spend table against each Darwin's in-process LLM debits every
+        # maintenance cycle. ``_llm_virtual_keys`` maps darwin_id -> key for
+        # the reconciler + the kill-time revoke.
+        self._llm_key_minter: Any | None = llm_key_minter
+        self._llm_spend_reconciler: Any | None = llm_spend_reconciler
+        self._llm_virtual_key_options: dict[str, Any] = dict(
+            llm_virtual_key_options or {}
+        )
+        self._llm_virtual_keys: dict[str, str] = {}
+        # Vault path under which a Darwin's virtual key is sealed (doc 13:
+        # "stored in the Darwin's vault"). One well-known key so a restart can
+        # recover it for inspection without re-minting.
+        self._llm_virtual_key_vault_path = "litellm/virtual_key"
         # Optional real-provider factories (docs 14–17). All are None by
         # default so the supervisor keeps using the in-memory fakes, which is
         # correct for tests and the 90-day sim. Set them via the CLI flags
@@ -1104,11 +1127,6 @@ class Supervisor:
                 self._namespace_provisioner.provision(
                     darwin_id=darwin_id_now, actor=actor,
                 )
-            if self._llm_factory is not None:
-                # Replace the default FakeLLM with the real adapter. The
-                # wallet is already bound; the factory only needs a clock
-                # for its own time concerns (timeouts, day rollovers).
-                stack.llm = self._llm_factory(stack.wallet, self._clock)
             # Real vault backend: replace in-memory FakeVault with a
             # HashiCorp Vault-backed adapter (doc 16 RealVaultBackend +
             # HvacVaultClient). Per-Darwin namespace isolation lives in the
@@ -1138,6 +1156,20 @@ class Supervisor:
             if self._wallet_factory is not None:
                 stack.wallet = self._wallet_factory(
                     darwin_id_now, self._clock, stack.vault,
+                )
+            # Real-LLM transport (doc 13). Wired AFTER the vault + wallet
+            # factories so the transport bills the *live* wallet (not the
+            # stage-1 FakeWallet) and a minted virtual key seals into the
+            # *real* vault. When a key minter is configured, each Darwin gets
+            # its own LiteLLM virtual key (scoped to its id + budget) instead
+            # of sharing the platform master key — the docs-vs-impl audit's
+            # CRITICAL shared-master-key finding.
+            if self._llm_factory is not None:
+                virtual_key = self._mint_llm_virtual_key(
+                    darwin_id_now, stack.vault, actor,
+                )
+                stack.llm = self._invoke_llm_factory(
+                    stack.wallet, darwin_id_now, stack.vault, virtual_key,
                 )
             # Rehydrate persisted pre-approval rules (doc 17). A restart
             # would otherwise wipe the owner's "Upwork under $50" intent
@@ -2776,6 +2808,9 @@ class Supervisor:
         if self._is_k8s(darwin_id):
             await self._k8s_driver.kill(darwin_id, reason=reason)
             await self._cut_egress(darwin_id, reason=reason)
+            # Revoke the per-Darwin LiteLLM virtual key (doc 13) so a pod that
+            # stops polling the kill flag still can't reach the LLM gateway.
+            self._revoke_llm_virtual_key(darwin_id)
             # The pod will halt itself; the driver's stop() is for full
             # namespace teardown which we defer until the operator opts
             # in (a killed Darwin's resources are still queryable for
@@ -2793,6 +2828,9 @@ class Supervisor:
             h.stack.kill.flip(reason)
             # Cut egress at the proxy in parallel with the kill flag.
             await self._cut_egress(darwin_id, reason=reason)
+            # Revoke the per-Darwin LiteLLM virtual key (doc 13) so the dead
+            # Darwin's credential stops working immediately.
+            self._revoke_llm_virtual_key(darwin_id)
             self._audit.record(
                 actor=actor, action="kill", darwin_id=darwin_id,
                 metadata={"reason": reason},
@@ -3668,6 +3706,204 @@ class Supervisor:
         # authoritative one and handles the inactive case + persistence.
         return self._lineage_registry.ancestry_of(darwin_id)
 
+    # -- LiteLLM virtual keys (doc 13) -----------------------------------
+    def _mint_llm_virtual_key(
+        self, darwin_id: str, vault: Any, actor: str | None,
+    ) -> str | None:
+        """Mint (or recover) this Darwin's LiteLLM virtual key.
+
+        With no minter wired this returns ``None`` and the transport falls
+        back to the shared master key (dev / sim). With a minter:
+
+        - On a fresh spawn, generates a key scoped to ``darwin_id`` (+ the
+          configured budget / rate limits), records it for reconciliation +
+          kill-time revoke, and seals it into the Darwin's vault.
+        - On a restart that already sealed a key, recovers it from the vault
+          rather than minting a duplicate.
+
+        A mint failure is fatal to the spawn: silently falling back to the
+        shared master key would re-introduce the exact cross-Darwin
+        attribution hole this closes. The caller's spawn error path tears the
+        FakeStack down.
+        """
+        if self._llm_key_minter is None:
+            return None
+        existing = self._llm_virtual_keys.get(darwin_id)
+        if existing:
+            return existing
+        # Recover a previously-sealed key on restart (idempotent spawn).
+        sealed = self._read_vault(vault, self._llm_virtual_key_vault_path)
+        if sealed:
+            self._llm_virtual_keys[darwin_id] = sealed
+            return sealed
+        try:
+            minted = self._llm_key_minter.generate_key(
+                darwin_id=darwin_id, **self._llm_virtual_key_options,
+            )
+        except Exception as exc:  # noqa: BLE001 - audited + re-raised
+            self._audit.record(
+                actor=actor or "platform.spawn",
+                action="llm_virtual_key_mint_failed",
+                darwin_id=darwin_id,
+                metadata={"reason": str(exc)[:200]},
+            )
+            raise
+        key = str(minted.get("key") or "")
+        if not key:
+            raise RuntimeError("LiteLLM key minter returned no key")
+        self._llm_virtual_keys[darwin_id] = key
+        # Seal into the Darwin's vault (doc 13). Best-effort: a vault that
+        # rejects the write doesn't fail the spawn — the in-memory registry
+        # still drives reconciliation + revoke for this process lifetime.
+        try:
+            put = getattr(vault, "put", None)
+            if callable(put):
+                put(self._llm_virtual_key_vault_path, key)
+        except Exception:  # noqa: BLE001
+            pass
+        self._audit.record(
+            actor=actor or "platform.spawn",
+            action="llm_virtual_key_minted",
+            darwin_id=darwin_id,
+            metadata={"key_alias": f"darwin-{darwin_id}"},
+        )
+        return key
+
+    @staticmethod
+    def _read_vault(vault: Any, path: str) -> str | None:
+        getter = getattr(vault, "get", None)
+        if not callable(getter):
+            return None
+        try:
+            value = getter(path)
+        except Exception:  # noqa: BLE001
+            return None
+        return str(value) if value else None
+
+    def _invoke_llm_factory(
+        self, wallet: Any, darwin_id: str, vault: Any, virtual_key: str | None,
+    ) -> Any:
+        """Call the LLM transport factory, passing only the keyword arguments
+        its signature accepts. Older / test factories take ``(wallet, clock)``;
+        the real factory additionally accepts ``darwin_id`` (for per-request
+        metadata), ``virtual_key`` (the minted per-Darwin credential), and
+        ``vault``. Signature inspection keeps both shapes working without a
+        flag day."""
+        kwargs: dict[str, Any] = {}
+        try:
+            params = inspect.signature(self._llm_factory).parameters
+        except (TypeError, ValueError):  # builtins / C-callables
+            params = {}
+        if "darwin_id" in params:
+            kwargs["darwin_id"] = darwin_id
+        if "virtual_key" in params:
+            kwargs["virtual_key"] = virtual_key
+        if "vault" in params:
+            kwargs["vault"] = vault
+        return self._llm_factory(wallet, self._clock, **kwargs)
+
+    def _revoke_llm_virtual_key(self, darwin_id: str) -> None:
+        """Revoke a dead Darwin's virtual key on the proxy so the credential
+        stops working immediately. Best-effort + audited; never raises into
+        the kill path."""
+        key = self._llm_virtual_keys.pop(darwin_id, None)
+        if not key or self._llm_key_minter is None:
+            return
+        deleter = getattr(self._llm_key_minter, "delete_key", None)
+        if not callable(deleter):
+            return
+        try:
+            deleter(key)
+            self._audit.record(
+                actor="platform.kill",
+                action="llm_virtual_key_revoked",
+                darwin_id=darwin_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._audit.record(
+                actor="platform.kill",
+                action="llm_virtual_key_revoke_failed",
+                darwin_id=darwin_id,
+                metadata={"reason": str(exc)[:200]},
+            )
+
+    def _reconcile_llm_spend(self, now: float) -> None:
+        """Cross-check each live Darwin's proxy-side LLM spend against its
+        in-process LLM debits (doc 13 §Observability). Drift beyond the
+        reconciler's tolerance is audited + paged — the wallet debit stays
+        the authoritative ledger posting, this is the agreement check. Never
+        raises; one Darwin's failure doesn't skip the rest."""
+        reconciler = self._llm_spend_reconciler
+        if reconciler is None or not self._llm_virtual_keys:
+            return
+        from darwin_platform.adapters.litellm_admin import ledger_llm_spend_usdc
+
+        for did, key in list(self._llm_virtual_keys.items()):
+            handle = self._darwins.get(did)
+            if handle is None:
+                continue
+            try:
+                wallet = handle.stack.wallet
+                ledger_spend = ledger_llm_spend_usdc(wallet.movements())
+                report = reconciler.reconcile_key(
+                    darwin_id=did,
+                    virtual_key=key,
+                    ledger_spend_usdc=ledger_spend,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="llm_spend_reconcile_failed",
+                    darwin_id=did,
+                    metadata={"reason": str(exc)[:200]},
+                )
+                continue
+            if report.error is not None:
+                # Proxy unreachable — availability concern, audit only.
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="llm_spend_reconcile_unavailable",
+                    darwin_id=did,
+                    metadata={"reason": report.error},
+                )
+                continue
+            if report.within_tolerance:
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="llm_spend_reconciled",
+                    darwin_id=did,
+                    metadata={
+                        "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
+                        "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
+                        "drift_usdc": round(report.drift_usdc, 6),
+                    },
+                )
+            else:
+                # The proxy's metered spend and the wallet's LLM debits
+                # disagree beyond tolerance — money may be mis-attributed.
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="llm_spend_drift",
+                    darwin_id=did,
+                    metadata={
+                        "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
+                        "expected_ledger_usdc": round(
+                            report.expected_ledger_usdc, 6,
+                        ),
+                        "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
+                        "drift_usdc": round(report.drift_usdc, 6),
+                    },
+                )
+                self._fleet_alert(
+                    "llm_spend_drift",
+                    {
+                        "darwin_id": did,
+                        "drift_usdc": round(report.drift_usdc, 6),
+                        "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
+                        "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
+                    },
+                )
+
     # -- Phase 2 maintenance cadence (doc 22) ----------------------------
     def _run_maintenance(self, handle: _Handle) -> None:
         """Wall-clock-paced maintenance, invoked every drive cycle. The
@@ -3851,6 +4087,18 @@ class Supervisor:
                 )
             elif not open_:
                 self._open_intent_alerted.discard(did)
+        # LiteLLM per-key spend reconciliation (doc 13 §Observability): cross
+        # -check the proxy's spend table against each Darwin's in-process LLM
+        # debits, paging on drift. Independently guarded — a reconciler hiccup
+        # must not skip the reaper below.
+        try:
+            self._reconcile_llm_spend(now)
+        except Exception as exc:  # noqa: BLE001
+            self._audit.record(
+                actor="platform.maintenance",
+                action="llm_spend_reconcile_failed",
+                metadata={"reason": str(exc)[:200]},
+            )
         # Dead-Darwin reaper (doc 09 #3): destroy the namespaces of Darwins
         # whose 90-day retention window has elapsed. Until then their data is
         # retained for owner inspection + re-spawn inheritance.

@@ -155,6 +155,55 @@ def test_litellm_factory_builds_transport():
     assert isinstance(transport, LiteLLMTransport)
 
 
+def test_virtual_keys_absent_without_flag():
+    svc = _build_platform_services(
+        _serve_args("--litellm-url", "http://litellm:4000")
+    )
+    assert "llm_key_minter" not in svc
+    assert "llm_spend_reconciler" not in svc
+
+
+def test_virtual_keys_wired_with_flag():
+    from darwin_platform.adapters import (
+        LiteLLMAdminClient,
+        LiteLLMSpendReconciler,
+    )
+
+    svc = _build_platform_services(
+        _serve_args(
+            "--litellm-url", "http://litellm:4000",
+            "--litellm-master-key", "sk-admin",
+            "--litellm-virtual-keys",
+            "--litellm-virtual-key-budget-usdc", "30",
+            "--litellm-spend-tolerance-usdc", "0.02",
+        )
+    )
+    assert isinstance(svc["llm_key_minter"], LiteLLMAdminClient)
+    reconciler = svc["llm_spend_reconciler"]
+    assert isinstance(reconciler, LiteLLMSpendReconciler)
+    assert reconciler.tolerance_usdc == 0.02
+    assert svc["llm_virtual_key_options"] == {"max_budget": 30.0}
+
+
+def test_virtual_keys_require_litellm_url():
+    with pytest.raises(SystemExit):
+        _build_platform_services(
+            _serve_args("--litellm-virtual-keys", "--litellm-master-key", "k")
+        )
+
+
+def test_virtual_keys_factory_accepts_darwin_id_and_key():
+    import inspect
+
+    factories = _build_real_factories(
+        _serve_args("--litellm-url", "http://litellm:4000")
+    )
+    params = inspect.signature(factories["llm_transport_factory"]).parameters
+    # The factory must accept the per-Darwin args the supervisor threads in.
+    assert "darwin_id" in params
+    assert "virtual_key" in params
+
+
 # ---------------------------------------------------------------------------
 # Drive-loop maintenance cadence
 # ---------------------------------------------------------------------------

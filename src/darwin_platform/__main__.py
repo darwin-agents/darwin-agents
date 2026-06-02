@@ -627,7 +627,10 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             or "dev_only_master_key"
         )
 
-        def _llm_factory(wallet, clock, *, _url=litellm_url, _key=master_key):
+        def _llm_factory(
+            wallet, clock, *, darwin_id=None, virtual_key=None,
+            _url=litellm_url, _key=master_key,
+        ):
             import functools
 
             from .adapters.litellm_transport import LiteLLMTransport, TierMapping
@@ -638,13 +641,19 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                     "LiteLLM transport requires the [llm] extra: "
                     "pip install 'darwin-dna[llm]'"
                 ) from exc
+            # Authenticate as the Darwin's own virtual key when the supervisor
+            # minted one (doc 13); otherwise fall back to the shared master
+            # key (dev / sim). The proxy attributes spend to whichever key
+            # signs the call, so a per-Darwin key is what gives per-Darwin
+            # budgets + a spend table to reconcile against.
+            api_key = virtual_key or _key
             # Bind the proxy onto the NATIVE-ASYNC client. The transport
             # drives this on an isolated worker-loop and never the
             # supervisor's running loop — the synchronous litellm.completion
             # re-enters the running loop (nest_asyncio) and on uvloop freezes
             # the drive loop after one heartbeat (BUG-drive-loop-tick1-freeze).
             acompletion = functools.partial(
-                litellm.acompletion, api_base=_url.rstrip("/"), api_key=_key,
+                litellm.acompletion, api_base=_url.rstrip("/"), api_key=api_key,
             )
             # image_gen maps onto the fast tier — the bundled proxy config
             # has no image model; the genome's image path is rare and
@@ -661,6 +670,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 tier_mappings=tier_mappings,
                 litellm_acompletion=acompletion,
                 litellm_completion_cost=litellm.completion_cost,
+                darwin_id=darwin_id,
             )
 
         factories["llm_transport_factory"] = _llm_factory
@@ -952,6 +962,60 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
                 or os.environ.get("TWILIO_PHONE_NUMBER")
             ),
         )
+
+    # -- LiteLLM per-Darwin virtual keys (doc 13) ------------------------
+    # When enabled, mint one virtual key per Darwin via the proxy's admin API
+    # instead of sharing the master key (docs-vs-impl audit's CRITICAL
+    # shared-master-key finding). The master key becomes the admin credential
+    # only; each Darwin authenticates as its own key, which the proxy meters
+    # into a per-key spend table the reconciler cross-checks against the
+    # ledger.
+    _vk_enabled = getattr(args, "litellm_virtual_keys", False) or (
+        os.environ.get("DARWIN_LITELLM_VIRTUAL_KEYS", "").lower()
+        in ("1", "true", "yes")
+    )
+    if _vk_enabled:
+        vk_url = getattr(args, "litellm_url", None) or os.environ.get(
+            "DARWIN_LITELLM_URL"
+        )
+        vk_master = (
+            getattr(args, "litellm_master_key", None)
+            or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
+        )
+        if not vk_url:
+            print(
+                "--litellm-virtual-keys requires --litellm-url (the proxy "
+                "whose /key/generate admin API mints per-Darwin keys).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not vk_master:
+            print(
+                "--litellm-virtual-keys requires a master key "
+                "(--litellm-master-key / DARWIN_LITELLM_MASTER_KEY) to "
+                "authenticate against the proxy's admin API.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from .adapters.litellm_admin import (
+            LiteLLMAdminClient,
+            LiteLLMSpendReconciler,
+        )
+
+        minter = LiteLLMAdminClient(base_url=vk_url, master_key=vk_master)
+        kwargs["llm_key_minter"] = minter
+        # Markup must match LiteLLMTransport's (default 0.10) so the
+        # reconciler grosses proxy cost up correctly before differencing.
+        kwargs["llm_spend_reconciler"] = LiteLLMSpendReconciler(
+            admin_client=minter,
+            markup_rate=0.10,
+            tolerance_usdc=float(
+                getattr(args, "litellm_spend_tolerance_usdc", 0.05)
+            ),
+        )
+        budget = getattr(args, "litellm_virtual_key_budget_usdc", None)
+        if budget is not None:
+            kwargs["llm_virtual_key_options"] = {"max_budget": float(budget)}
 
     return kwargs
 
@@ -1806,6 +1870,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="LiteLLM proxy master key (default: dev_only_master_key, "
              "matching infra/docker/litellm.config.yaml). "
              "Env: DARWIN_LITELLM_MASTER_KEY",
+    )
+    llm_group.add_argument(
+        "--litellm-virtual-keys", action="store_true",
+        help="Mint a per-Darwin LiteLLM virtual key at spawn (via the "
+             "proxy's /key/generate admin API) instead of every Darwin "
+             "sharing the master key (doc 13). Requires --litellm-url; the "
+             "master key is used only as the admin credential. Each key is "
+             "scoped to the darwin_id, sealed in the Darwin's vault, and "
+             "revoked on death; the proxy's per-key spend table is "
+             "reconciled against each Darwin's ledger every maintenance "
+             "cycle. Env: DARWIN_LITELLM_VIRTUAL_KEYS=1",
+    )
+    llm_group.add_argument(
+        "--litellm-virtual-key-budget-usdc", default=None, type=float,
+        metavar="USDC",
+        help="Optional hard per-key spend ceiling (max_budget) applied to "
+             "each minted virtual key. The proxy returns 429 once a key "
+             "exceeds it. Omit for no proxy-side ceiling (the wallet's own "
+             "caps still apply).",
+    )
+    llm_group.add_argument(
+        "--litellm-spend-tolerance-usdc", default=0.05, type=float,
+        metavar="USDC",
+        help="Drift tolerance for the LiteLLM spend reconciler (default "
+             "0.05). Proxy-vs-ledger drift beyond this pages on-call.",
     )
 
     # -- Phase 1: evolution wiring (doc 21) ------------------------------
