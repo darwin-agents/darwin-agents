@@ -2948,8 +2948,13 @@ class Supervisor:
         ``payload.neuron_id`` or the conventional ``intent:neuron.X`` kind,
         ``tier`` from ``payload.tier``) compose with any pagination mode.
         """
-        h = self._get(darwin_id)
-        all_records = h.stack.audit_sink.read_all()
+        # In k8s mode the audit log lives in the orchestrator pod, not in an
+        # in-process handle — fetch the raw records via the driver and apply
+        # the same filtering/paging below. (Mirrors how status() branches.)
+        if self._is_k8s(darwin_id):
+            all_records = await self._k8s_driver.events_records(darwin_id)
+        else:
+            all_records = self._get(darwin_id).stack.audit_sink.read_all()
         own = [r for r in all_records if r.get("darwin_id") == darwin_id]
 
         def _matches(rec: dict[str, Any]) -> bool:
@@ -3276,7 +3281,12 @@ class Supervisor:
         since: float | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        self._get(darwin_id)
+        # Existence check that works for both drivers. The Monitor is
+        # supervisor-side; for k8s darwins it may hold no alerts yet (alert
+        # propagation from the orchestrator is a follow-up) — so this returns
+        # [] rather than 404ing the dashboard's alerts panel.
+        if not self._is_k8s(darwin_id):
+            self._get(darwin_id)
         rows = self._monitor.alerts_for(
             darwin_id, min_severity=min_severity, since=since, limit=limit
         )

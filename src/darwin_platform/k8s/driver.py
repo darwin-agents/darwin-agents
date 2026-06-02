@@ -72,6 +72,7 @@ class ControlClient(Protocol):
     async def snapshot(
         self, base_url: str, token: str, darwin_id: str,
     ) -> dict: ...
+    async def get(self, base_url: str, token: str, path: str) -> dict: ...
     async def post(
         self,
         base_url: str,
@@ -233,6 +234,24 @@ class K8sDarwinDriver:
         snap = self._snapshot_from_dict(darwin_id, data)
         handle.last_snapshot = snap
         return snap
+
+    async def events_records(self, darwin_id: str) -> list[dict]:
+        """Raw audit-log records from the orchestrator pod's control API.
+
+        The supervisor applies all filtering/paging — this just proxies the
+        pod-local audit log so the timeline works in k8s mode.
+        """
+        handle = self._require(darwin_id)
+        try:
+            data = await self._control.get(
+                self._base_url(handle), handle.control_token, "/events",
+            )
+        except Exception as exc:
+            raise DriverError(
+                f"failed to read events for {darwin_id!r}: {exc}"
+            ) from exc
+        records = data.get("records") if isinstance(data, dict) else None
+        return list(records or [])
 
     async def list_ids(self) -> list[str]:
         return list(self._handles)
@@ -409,6 +428,17 @@ class _HttpxControlClient:
             )
         resp.raise_for_status()
         return resp.json()
+
+    async def get(self, base_url: str, token: str, path: str) -> dict:
+        async with self._client() as c:
+            resp = await c.get(
+                f"{base_url}{path}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        resp.raise_for_status()
+        if resp.headers.get("content-type", "").startswith("application/json"):
+            return resp.json()
+        return {}
 
     async def post(
         self,

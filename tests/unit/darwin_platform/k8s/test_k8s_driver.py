@@ -85,6 +85,15 @@ class _RecordingControl:
         self.calls.append((path, base_url))
         return {}
 
+    async def get(self, base_url, token, path):
+        self.calls.append((path, base_url))
+        if path == "/events":
+            return {"records": [
+                {"seq": 1, "ts": 1.0, "kind": "event:test",
+                 "darwin_id": "d-1", "payload": {}},
+            ]}
+        return {}
+
 
 @pytest.mark.asyncio
 async def test_start_creates_every_resource_in_order():
@@ -279,3 +288,19 @@ async def test_k8s_spawn_consistent_wallet_provider_across_darwins():
         )
         args = orchestrator["args"]
         assert args[args.index("--wallet-provider") + 1] == "local-vault"
+
+
+@pytest.mark.asyncio
+async def test_events_records_proxies_orchestrator_audit_log():
+    """events_records() GETs /events on the orchestrator and returns the
+    raw records (supervisor does the filtering/paging)."""
+    api = _RecordingApi()
+    control = _RecordingControl(become_ready_after=1)
+    driver = K8sDarwinDriver(
+        api=api, control_client=control,
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+    await driver.start(DarwinSpec(darwin_id="d-1", opening_usdc=50.0))
+    records = await driver.events_records("d-1")
+    assert ("/events" in [p for (p, _b) in control.calls])
+    assert records and records[0]["darwin_id"] == "d-1"

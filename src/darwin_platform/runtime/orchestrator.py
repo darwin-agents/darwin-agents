@@ -254,6 +254,20 @@ class OrchestratorState:
             "death_reason": st.death_reason,
         }
 
+    def events_records(self) -> list[dict[str, Any]]:
+        """Raw audit-log records held in this pod.
+
+        In ``--driver=k8s`` the Darwin runs here, so its hash-chained audit
+        log lives in this pod's ``audit_sink`` — not in the supervisor. The
+        supervisor fetches these via the control API and applies all
+        filtering/paging itself (single source of truth), so we just hand
+        over the records.
+        """
+        try:
+            return self.stack.audit_sink.read_all()
+        except Exception:
+            return []
+
     def pause(self, reason: str) -> None:
         self.stack.pause.pause(reason)
 
@@ -309,6 +323,11 @@ def _build_control_app(state: OrchestratorState, token: str):
     @app.get("/snapshot")
     async def snapshot(_: None = Depends(_require_token)) -> dict:
         return state.snapshot()
+
+    @app.get("/events")
+    async def events(_: None = Depends(_require_token)) -> dict:
+        # Raw records; the supervisor filters + pages (see Supervisor.events).
+        return {"records": state.events_records()}
 
     @app.post("/pause")
     async def pause(

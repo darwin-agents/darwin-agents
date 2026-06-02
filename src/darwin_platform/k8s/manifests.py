@@ -73,11 +73,14 @@ class DarwinPodConfig:
     lancedb_image: str = "lancedb/lancedb:latest"
     lancedb_storage_size: str = "1Gi"
     lancedb_storage_class: str | None = None
-    # Resources for the orchestrator container — tight by default.
+    # Resources for the orchestrator container. The orchestrator loads the
+    # genome + LLM/adapter SDKs at boot; 1Gi OOM-killed it on the local
+    # k8s stack (crash loop, exit 137), so the floor is 2Gi. Override via
+    # --k8s-orchestrator-memory.
     orchestrator_cpu_request: str = "100m"
     orchestrator_cpu_limit: str = "1000m"
-    orchestrator_memory_request: str = "256Mi"
-    orchestrator_memory_limit: str = "1Gi"
+    orchestrator_memory_request: str = "512Mi"
+    orchestrator_memory_limit: str = "2Gi"
     # Where the egress proxy lives (NetworkPolicy peer).
     platform_data_namespace: str = "platform-data"
     egress_proxy_pod_label_key: str = "darwin.io/component"

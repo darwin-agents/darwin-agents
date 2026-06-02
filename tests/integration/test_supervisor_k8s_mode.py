@@ -21,6 +21,7 @@ class _FakeK8sDriver:
         self.killed: list[tuple[str, str]] = []
         self.forced: list[str] = []
         self.snapshots_called: list[str] = []
+        self.events_called: list[str] = []
 
     async def start(self, spec: DarwinSpec) -> DarwinSnapshot:
         self.started.append(spec)
@@ -47,6 +48,15 @@ class _FakeK8sDriver:
             darwin_id=darwin_id, alive=True, paused=False, killed=False,
             tick=42, days_elapsed=1.5, balance_usdc=99.0,
         )
+
+    async def events_records(self, darwin_id: str) -> list[dict]:
+        self.events_called.append(darwin_id)
+        return [
+            {"seq": 1, "ts": 1.0, "kind": "event:spawn",
+             "darwin_id": darwin_id, "payload": {}},
+            {"seq": 2, "ts": 2.0, "kind": "event:tick",
+             "darwin_id": darwin_id, "payload": {"tier": "fast"}},
+        ]
 
     async def list_ids(self) -> list[str]: return []
 
@@ -101,3 +111,34 @@ async def test_shutdown_kills_each_k8s_darwin():
     await sup.shutdown(kill_running=True)
     killed_ids = {did for did, _r in driver.killed}
     assert {a, b} <= killed_ids
+
+
+@pytest.mark.asyncio
+async def test_events_route_through_driver_in_k8s_mode():
+    """events() must fetch from the driver (orchestrator pod), not the
+    in-process audit sink, and still apply filtering/paging."""
+    driver = _FakeK8sDriver()
+    sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
+    status = await sup.spawn(opening_usdc=100.0)
+    did = status.darwin_id
+
+    page = await sup.events(did, limit=100)
+    assert did in driver.events_called
+    assert page["darwin_id"] == did
+    assert len(page["events"]) == 2
+
+    # Filtering composes on the driver-fetched records.
+    only_fast = await sup.events(did, tier="fast")
+    assert len(only_fast["events"]) == 1
+    assert only_fast["events"][0]["kind"] == "event:tick"
+
+
+@pytest.mark.asyncio
+async def test_alerts_do_not_404_in_k8s_mode():
+    """alerts() must not raise UnknownDarwin for a k8s darwin (returns []
+    until orchestrator-side alert propagation lands)."""
+    driver = _FakeK8sDriver()
+    sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
+    status = await sup.spawn(opening_usdc=100.0)
+    rows = await sup.alerts(status.darwin_id)
+    assert rows == []

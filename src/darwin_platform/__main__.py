@@ -1039,6 +1039,9 @@ def _build_k8s_driver(args: argparse.Namespace):
         lancedb_image=getattr(args, "k8s_lancedb_image", "lancedb/lancedb:latest"),
         lancedb_storage_size=getattr(args, "k8s_lancedb_storage_size", None) or "1Gi",
         lancedb_storage_class=getattr(args, "k8s_lancedb_storage_class", None) or None,
+        orchestrator_memory_limit=(
+            getattr(args, "k8s_orchestrator_memory", None) or "2Gi"
+        ),
         platform_data_namespace=(
             getattr(args, "k8s_egress_proxy_namespace", None) or "platform-data"
         ),
@@ -1809,6 +1812,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--k8s-orchestrator-image", default=None,
         help="Image:tag for the orchestrator pod. Default reuses the "
         "supervisor image (the entrypoint differs).",
+    )
+    k8s_group.add_argument(
+        "--k8s-orchestrator-memory", default="2Gi",
+        help="Memory limit for the orchestrator pod (default: 2Gi). The "
+        "orchestrator OOM-kills below ~2Gi while loading the genome + "
+        "adapter SDKs at boot.",
     )
     k8s_group.add_argument(
         "--k8s-egress-proxy-namespace", default="platform-data",

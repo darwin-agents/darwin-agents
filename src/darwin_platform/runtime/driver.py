@@ -115,6 +115,12 @@ class DarwinDriver(Protocol):
         supervisor cross-references this with its own bookkeeping at
         startup to reconcile state."""
 
+    async def events_records(self, darwin_id: str) -> list[dict]:
+        """Raw audit-log records for the Darwin. The Darwin's hash-chained
+        audit log lives wherever it runs (the orchestrator pod for the K8s
+        driver); the supervisor applies filtering + paging on top, so this
+        returns the unfiltered records for ``GET /darwins/{id}/events``."""
+
 
 class DriverError(Exception):
     """Driver-side rejection. The supervisor wraps these into
