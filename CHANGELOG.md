@@ -9,12 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(terraform): add platform-stack and k8s-addons modules for cloud-agnostic compose
+- feat(charts): export POD_NAMESPACE via downward API (chart 0.3.1)
+- feat(devx): standardize docker stack env file at repo-root .env
+- feat(platform): stream k8s Darwin events through driver control API
+- feat(terraform): allow dashboard CORS on local kind stack
 - feat(docker): add Next.js dashboard to local compose stack
 - feat(charts): add walletProvider, heartbeatSeconds, and extraArgs passthrough
 
 ### Changed
 
-- docs: sync unreleased changelog for infra consolidation and k8s fixes
+- refactor(terraform/local): compose kind stack via platform-stack module
+- refactor(terraform): move ingress exposure into k8s-addons module
 - refactor(terraform): deploy darwin-platform supervisor via Helm chart
 - refactor(infra): consolidate deploy assets under infra/
 - docs(engineering): update backlog for k8s substrate forwarding and SQL splitter
@@ -22,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): return k8s timeline events without handle-id filter
+- fix(web): probe readyz instead of healthz in connectivity banner
+- fix(web): apply CSP nonces in middleware so production build hydrates
 - fix(platform): forward LiteLLM and Vault env to per-Darwin k8s pods
 - fix(platform): strip SQL comments before splitting Postgres executescript
 - fix(infra): add kata RuntimeClass shim and supervisor pod namespace wiring
