@@ -231,10 +231,18 @@ class LiteLLMTransport:
         request_timeout: float = 60.0,
         tier_timeouts: dict[str, float] | None = None,
         circuit_breaker: CircuitBreaker | None = None,
+        darwin_id: str | None = None,
     ) -> None:
         if not isinstance(tier_mappings, dict) or not tier_mappings:
             raise ValueError("tier_mappings must be a non-empty dict")
         self._wallet = wallet
+        # Per-Darwin attribution (doc 13 §Observability + §Caching). When the
+        # transport is bound to a Darwin, every completion carries
+        # ``metadata.darwin_id`` so the proxy tags the spend-log row and the
+        # cache key with it — that's what the spend-table reconciliation
+        # worker keys off and what keeps one Darwin's cache from polluting
+        # another's. ``None`` (e.g. tests, a shared-key dev run) omits it.
+        self._darwin_id = str(darwin_id) if darwin_id else None
         self._breaker = circuit_breaker or CircuitBreaker()
         self._tiers: dict[str, TierMapping] = dict(tier_mappings)
         self._markup = float(markup_rate)
@@ -368,6 +376,40 @@ class LiteLLMTransport:
         longer leash; tiers without a configured timeout use the default."""
         return self._tier_timeouts.get(tier.value, self._timeout)
 
+    def _base_kwargs(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tier: Tier,
+        *,
+        response_format: dict[str, Any] | None,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        """Build the LiteLLM call kwargs shared by the sync + async paths.
+
+        Centralises per-request shaping — model, messages, timeout, optional
+        JSON mode / token cap, and the per-Darwin ``metadata`` LiteLLM
+        attributes spend + cache against (doc 13). Keeping it in one place
+        means the two fallback loops can never drift on what they send."""
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "timeout": self._timeout_for(tier),
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if self._darwin_id is not None:
+            # LiteLLM logs ``metadata`` against the call's virtual key in its
+            # spend table and folds it into the cache key; ``tier`` rides
+            # along so per-tier spend stays attributable post-hoc.
+            kwargs["metadata"] = {
+                "darwin_id": self._darwin_id,
+                "tier": tier.value,
+            }
+        return kwargs
+
     def _call_with_fallback(
         self,
         tier: Tier,
@@ -386,15 +428,10 @@ class LiteLLMTransport:
                 skipped.append(model)
                 continue
             try:
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "timeout": self._timeout_for(tier),
-                }
-                if response_format is not None:
-                    kwargs["response_format"] = response_format
-                if max_tokens is not None:
-                    kwargs["max_tokens"] = max_tokens
+                kwargs = self._base_kwargs(
+                    model, messages, tier,
+                    response_format=response_format, max_tokens=max_tokens,
+                )
                 response = self._invoke_completion(kwargs, self._timeout_for(tier))
             except Exception as exc:
                 last_exc = exc
@@ -436,15 +473,10 @@ class LiteLLMTransport:
                 skipped.append(model)
                 continue
             try:
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "timeout": self._timeout_for(tier),
-                }
-                if response_format is not None:
-                    kwargs["response_format"] = response_format
-                if max_tokens is not None:
-                    kwargs["max_tokens"] = max_tokens
+                kwargs = self._base_kwargs(
+                    model, messages, tier,
+                    response_format=response_format, max_tokens=max_tokens,
+                )
                 response = await self._aprovider_call(kwargs)
             except Exception as exc:
                 last_exc = exc

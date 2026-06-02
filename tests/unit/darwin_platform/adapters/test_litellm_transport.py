@@ -156,6 +156,34 @@ def test_tier_timeouts_can_be_overridden():
     assert stub.calls[-1]["timeout"] == 5.0
 
 
+# -- per-Darwin attribution metadata (doc 13) ----------------------------
+def test_darwin_id_metadata_attached_to_each_call():
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    stub = _CompletionStub()
+    t = LiteLLMTransport(
+        wallet=w,
+        tier_mappings={"reasoning": TierMapping(models=("m",))},
+        litellm_completion=stub,
+        litellm_completion_cost=lambda **_: 0.0,
+        darwin_id="darwin-42",
+    )
+    t.complete("reasoning", {"task": "plan", "balance_usdc": 1.0})
+    # The proxy keys its spend table + cache on metadata.darwin_id; tier
+    # rides along for per-tier post-hoc attribution.
+    assert stub.calls[-1]["metadata"] == {
+        "darwin_id": "darwin-42",
+        "tier": "reasoning",
+    }
+
+
+def test_no_metadata_when_darwin_id_unset():
+    w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)
+    stub = _CompletionStub()
+    t = _make_transport(w, stub)  # no darwin_id
+    t.complete("fast", {"task": "plan", "balance_usdc": 1.0})
+    assert "metadata" not in stub.calls[-1]
+
+
 # -- task handlers --------------------------------------------------------
 def test_plan_handler_basic():
     w = FakeWallet(opening_usdc=10.0, clock=lambda: 0.0)

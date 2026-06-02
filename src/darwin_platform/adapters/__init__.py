@@ -15,6 +15,13 @@ Currently implemented:
 from .browser import BrowserClient, BrowserUseClient
 from .coinbase_cdp import CdpChainClient, build_cdp_chain_client
 from .hvac_vault import HvacVaultClient
+from .litellm_admin import (
+    LiteLLMAdminClient,
+    LiteLLMAdminError,
+    LiteLLMSpendReconciler,
+    LLMSpendReconciliation,
+    ledger_llm_spend_usdc,
+)
 from .litellm_transport import LiteLLMTransport, TierMapping
 from .sandbox import E2BSandbox, SandboxClient
 from .vault_backend import (
@@ -34,6 +41,11 @@ from .x402 import HTTPClient, X402Error, X402PaymentClient
 __all__ = [
     "LiteLLMTransport",
     "TierMapping",
+    "LiteLLMAdminClient",
+    "LiteLLMAdminError",
+    "LiteLLMSpendReconciler",
+    "LLMSpendReconciliation",
+    "ledger_llm_spend_usdc",
     "ChainClient",
     "RealWallet",
     "WalletError",
