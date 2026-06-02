@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): re-adopt k8s darwins after supervisor restart so APIs stop 404ing
 - fix(platform): return k8s timeline events without handle-id filter
 - fix(web): probe readyz instead of healthz in connectivity banner
 - fix(web): apply CSP nonces in middleware so production build hydrates
