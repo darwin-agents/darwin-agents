@@ -126,7 +126,12 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 wallet_secret=_ws, network=_net,
                 account_name=f"darwin-{darwin_id}",
             )
-            return RealWallet(chain=chain, clock=clock, network=_net)
+            return RealWallet(
+                chain=chain, clock=clock, network=_net,
+                # Gate the ledger credit on an on-chain confirmation when
+                # moving real funds (doc 30). Testnet stays fire-and-forget.
+                wait_for_confirmation=(_net == "base-mainnet"),
+            )
 
         factories["wallet_factory"] = _cdp_wallet_factory
 
@@ -153,34 +158,24 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     have_solana = bool(solana_rpc and solana_key) and "solana" in chain_networks
     have_stellar = bool(stellar_horizon and stellar_secret) and "stellar" in chain_networks
     enabled_count = sum([have_base, have_solana, have_stellar])
+    # Single authoritative network switch (doc 30 §1): the network is decided
+    # by --network / --cdp-mainnet via _is_mainnet(), never guessed from an RPC
+    # URL substring (which silently missed mainnet endpoints like 1rpc.io/base
+    # or base.llamarpc.com). The testnet-config-pointed-at-mainnet-RPC mismatch
+    # is caught separately by _assert_mainnet_safe() at boot.
+    is_mainnet = _is_mainnet(args)
+    base_network = "base-mainnet" if is_mainnet else "base-sepolia"
     if wallet_provider not in ("cdp", "local-vault") and enabled_count > 0:
-        # Mainnet refusal: a single shared key is a testnet shortcut.
-        # Refuse to start if any configured RPC URL looks like mainnet, so
-        # an accidental ``--rpc-url https://mainnet...`` can't sign real
-        # money with a fleet-shared key. Operator must opt into cdp or
-        # local-vault for mainnet.
-        mainnet_hits = [
-            (label, url) for label, url in (
-                ("--rpc-url", rpc_url if have_base else None),
-                ("--solana-rpc-url", solana_rpc if have_solana else None),
-                ("--stellar-horizon-url", stellar_horizon if have_stellar else None),
+        # Mainnet refusal: a single fleet-shared key is a testnet-only
+        # shortcut. On mainnet the operator must opt into cdp (TEE-held key)
+        # or local-vault (per-Darwin minted key sealed in the per-Darwin vault).
+        if is_mainnet:
+            print(
+                "--wallet-provider web3 refuses --network mainnet: a single "
+                "fleet-shared key signing real funds is unsafe. Use "
+                "--wallet-provider cdp or local-vault for mainnet.",
+                file=sys.stderr,
             )
-            if url and "mainnet" in url.lower()
-        ]
-        # horizon.stellar.org is Stellar mainnet too — the substring "mainnet"
-        # doesn't appear in the hostname, so check it explicitly.
-        if have_stellar and stellar_horizon and (
-            "horizon.stellar.org" in stellar_horizon.lower()
-        ):
-            mainnet_hits.append(("--stellar-horizon-url", stellar_horizon))
-        if mainnet_hits:
-            for label, url in mainnet_hits:
-                print(
-                    f"--wallet-provider web3 refuses mainnet RPC {label}={url} "
-                    f"— a shared key on mainnet is unsafe. Use "
-                    f"--wallet-provider cdp or local-vault instead.",
-                    file=sys.stderr,
-                )
             sys.exit(2)
         # Shared-key path: a single private key from the platform env signs
         # for every Darwin. ``darwin_id`` and ``vault`` are unused here.
@@ -195,23 +190,35 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             _have_stellar=have_stellar, _horizon=stellar_horizon,
             _stellar_secret=stellar_secret,
             _preferred=tuple(chain_networks),
+            _is_mainnet=is_mainnet, _base_network=base_network,
         ):
             from .adapters.wallet import RealWallet
             clients: dict = {}
             if _have_base:
-                from .adapters.web3_chain import Web3ChainClient
+                from .adapters.multichain import ChainNetwork
+                from .adapters.web3_chain import (
+                    USDC_BASE_MAINNET,
+                    USDC_BASE_SEPOLIA,
+                    Web3ChainClient,
+                )
                 try:
-                    from web3 import Web3  # noqa: F401
+                    from eth_account import Account
+                    from web3 import Web3
                 except ImportError as exc:
                     raise ImportError(
                         "Base chain requires the [web3] extra: "
                         "pip install 'darwin-dna[web3]'"
                     ) from exc
-                kwargs = dict(rpc_url=_rpc, private_key=_key)
-                if _usdc:
-                    kwargs["usdc_contract"] = _usdc
-                from .adapters.multichain import ChainNetwork
-                clients[ChainNetwork.BASE] = Web3ChainClient(**kwargs)
+                _usdc_addr = _usdc or (
+                    USDC_BASE_MAINNET if _is_mainnet else USDC_BASE_SEPOLIA
+                )
+                clients[ChainNetwork.BASE] = Web3ChainClient(
+                    web3_factory=lambda url=_rpc: Web3(Web3.HTTPProvider(url)),
+                    wallet_address=Account.from_key(_key).address,
+                    private_key=_key,
+                    usdc_contract=_usdc_addr,
+                    chain_id=8453 if _is_mainnet else 84532,
+                )
             if _have_solana:
                 from .adapters.multichain import ChainNetwork
                 from .adapters.solana_sdk import build_solana_chain_client
@@ -249,7 +256,11 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 )
             else:
                 chain = next(iter(clients.values()))
-            return RealWallet(chain=chain, clock=clock)
+            return RealWallet(
+                chain=chain, clock=clock,
+                network=_base_network,
+                wait_for_confirmation=_is_mainnet,
+            )
         factories["wallet_factory"] = _wallet_factory
 
     # -- wallet (local-vault: per-Darwin minted keypair sealed in vault) ----
@@ -284,6 +295,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             _base_rpc=rpc_url, _usdc=args.usdc_contract,
             _solana_rpc=solana_rpc,
             _stellar_horizon=stellar_horizon,
+            _is_mainnet=is_mainnet, _base_network=base_network,
         ):
             from .adapters.wallet import RealWallet
             from .adapters.wallet_keypair import (
@@ -305,12 +317,27 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                     vault, chain=chain_name, minter=minters[chain_name],
                 )
                 if chain_name == "base":
+                    from eth_account import Account
+                    from web3 import Web3
+
                     from .adapters.multichain import ChainNetwork
-                    from .adapters.web3_chain import Web3ChainClient
-                    kwargs = dict(rpc_url=_base_rpc, private_key=kp.secret)
-                    if _usdc:
-                        kwargs["usdc_contract"] = _usdc
-                    clients[ChainNetwork.BASE] = Web3ChainClient(**kwargs)
+                    from .adapters.web3_chain import (
+                        USDC_BASE_MAINNET,
+                        USDC_BASE_SEPOLIA,
+                        Web3ChainClient,
+                    )
+                    _usdc_addr = _usdc or (
+                        USDC_BASE_MAINNET if _is_mainnet else USDC_BASE_SEPOLIA
+                    )
+                    clients[ChainNetwork.BASE] = Web3ChainClient(
+                        web3_factory=lambda url=_base_rpc: Web3(
+                            Web3.HTTPProvider(url)
+                        ),
+                        wallet_address=Account.from_key(kp.secret).address,
+                        private_key=kp.secret,
+                        usdc_contract=_usdc_addr,
+                        chain_id=8453 if _is_mainnet else 84532,
+                    )
                 elif chain_name == "solana":
                     from .adapters.multichain import ChainNetwork
                     from .adapters.solana_sdk import build_solana_chain_client
@@ -345,7 +372,11 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 )
             else:
                 chain_client = next(iter(clients.values()))
-            return RealWallet(chain=chain_client, clock=clock)
+            return RealWallet(
+                chain=chain_client, clock=clock,
+                network=_base_network,
+                wait_for_confirmation=_is_mainnet,
+            )
 
         factories["wallet_factory"] = _local_vault_wallet_factory
 
