@@ -9,6 +9,8 @@ that escapes the soma sandbox.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ import pytest
 from darwin_dna.machinery.patch_validator import FileChange, Patch
 from darwin_platform.evolution import (
     DiffApplyError,
+    SomaForensicSnapshot,
     SomaMerger,
     apply_unified_diff,
 )
@@ -164,3 +167,119 @@ def test_merge_is_all_or_nothing(tmp_path):
     assert (tmp_path / "soma" / "strategies" / "x.py").read_text() == (
         "def f():\n    return 1\n"
     )
+
+
+# -- death-time forensic snapshot -----------------------------------------
+def test_forensic_snapshot_captures_whole_tree(tmp_path):
+    # The merger's rollback snapshots only hold patch *targets*; the death
+    # snapshot must capture every file in the soma, mutated or not.
+    soma = tmp_path / "soma_root" / "darwin-x"
+    soma.mkdir(parents=True)
+    _seed(soma)
+    (soma / "soma" / "strategies" / "untouched.py").write_text("VALUE = 7\n")
+    m = SomaMerger(soma, clock=lambda: 1234.5)
+
+    snap = m.forensic_snapshot(reason="bankruptcy", darwin_id="darwin-x")
+
+    assert isinstance(snap, SomaForensicSnapshot)
+    assert snap.captured is True
+    assert snap.reason == "bankruptcy"
+    assert snap.darwin_id == "darwin-x"
+    assert snap.snapshot_id == "death-1234500"
+    assert snap.file_count == 2
+    assert snap.digest  # a non-empty fingerprint over the tree
+    assert snap.failure == ""
+
+    # The artifact is persisted as a self-describing manifest with both file
+    # metadata and full contents — outside the soma tree (a sibling root).
+    out = Path(snap.path)
+    assert out.is_file()
+    assert soma not in out.parents
+    manifest = json.loads(out.read_text())
+    assert manifest["schema"] == "darwin-platform.soma-forensic/1"
+    assert manifest["soma_digest"] == snap.digest
+    assert (
+        manifest["contents"]["soma/strategies/untouched.py"] == "VALUE = 7\n"
+    )
+    assert manifest["files"]["soma/strategies/x.py"]["sha256"] == (
+        hashlib.sha256(b"def f():\n    return 1\n").hexdigest()
+    )
+
+
+def test_forensic_snapshot_digest_is_deterministic_and_changes_with_soma(
+    tmp_path,
+):
+    soma = tmp_path / "darwin-y"
+    _seed(soma)
+    ticks = iter([1.0, 2.0, 3.0])
+    m = SomaMerger(soma, clock=lambda: next(ticks))
+
+    first = m.forensic_snapshot(reason="d1")
+    # Same bytes on disk → identical fingerprint, different snapshot id.
+    second = m.forensic_snapshot(reason="d2")
+    assert second.digest == first.digest
+    assert second.snapshot_id != first.snapshot_id
+
+    # Mutate the soma → the fingerprint moves.
+    (soma / "soma" / "strategies" / "x.py").write_text("def f():\n    return 9\n")
+    third = m.forensic_snapshot(reason="d3")
+    assert third.digest != first.digest
+
+
+def test_forensic_snapshot_on_empty_soma_still_captures(tmp_path):
+    soma = tmp_path / "darwin-empty"
+    m = SomaMerger(soma, clock=lambda: 5.0)
+    snap = m.forensic_snapshot(reason="death")
+    assert snap.captured is True
+    assert snap.file_count == 0
+    assert snap.total_bytes == 0
+    # An empty tree fingerprints to the SHA-256 of nothing.
+    assert snap.digest == hashlib.sha256().hexdigest()
+    assert Path(snap.path).is_file()
+
+
+def test_forensic_snapshot_records_live_mutation_history(tmp_path):
+    _seed(tmp_path)
+    m = SomaMerger(tmp_path)
+    patch = Patch(
+        rationale="fix",
+        changes=[FileChange(path="soma/strategies/x.py", diff=_GOOD_DIFF)],
+    )
+    res = m.merge(patch)
+    assert res.merged is True
+    snap = m.forensic_snapshot(reason="death")
+    manifest = json.loads(Path(snap.path).read_text())
+    # The in-memory rollback snapshot ids are named in the death manifest —
+    # the last record that the mutation history existed.
+    assert res.snapshot_id in manifest["mutation_snapshot_ids"]
+
+
+def test_forensic_snapshot_never_raises_on_write_failure(tmp_path):
+    _seed(tmp_path)
+    # Point the forensics root at a path blocked by an existing *file* so the
+    # mkdir/write fails — capture must report the failure, not raise.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir\n")
+    m = SomaMerger(tmp_path, forensics_root=blocker / "under-a-file")
+    snap = m.forensic_snapshot(reason="death")
+    assert snap.captured is False
+    assert snap.path is None
+    assert snap.failure  # carries the cause
+
+
+def test_forensic_snapshot_skips_forensics_dir_under_root(tmp_path):
+    # If a caller roots forensics inside the soma tree, the capture must not
+    # fold prior snapshots into later ones (no runaway growth).
+    _seed(tmp_path)
+    m = SomaMerger(
+        tmp_path, forensics_root=tmp_path / ".forensics", clock=lambda: 1.0,
+    )
+    first = m.forensic_snapshot(reason="d1")
+    assert first.captured is True
+    files_after_first = first.file_count
+    m2 = SomaMerger(
+        tmp_path, forensics_root=tmp_path / ".forensics", clock=lambda: 2.0,
+    )
+    second = m2.forensic_snapshot(reason="d2")
+    # The second capture sees the same soma files, not the first manifest.
+    assert second.file_count == files_after_first

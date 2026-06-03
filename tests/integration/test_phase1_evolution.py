@@ -10,7 +10,9 @@ the in-process supervisor with the in-process staging fallback.
 
 from __future__ import annotations
 
+import asyncio
 import types
+from pathlib import Path
 
 import pytest
 
@@ -64,6 +66,84 @@ async def test_supervisor_pins_per_darwin_soma_merge_hook(tmp_path):
         assert merger.root == (tmp_path / status.darwin_id).resolve()
     finally:
         await sup.shutdown(kill_running=True)
+
+
+async def test_kill_captures_death_forensic_soma_snapshot(tmp_path):
+    """On kill, the supervisor snapshots the whole soma tree for post-mortem
+    forensics (doc 05 death sequence) — distinct from soma_merge's in-memory
+    mutation-time rollback snapshots, which die with the organism."""
+    import json
+
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    merger = sup.soma_merger_for(did)
+    # Seed a file in the live soma so the snapshot has something to capture.
+    (merger.root / "soma" / "strategies").mkdir(parents=True, exist_ok=True)
+    (merger.root / "soma" / "strategies" / "live.py").write_text(
+        "ALPHA = 1\n"
+    )
+    try:
+        await sup.kill(did, reason="owner kill", actor="alice")
+
+        handle = sup._darwins[did]  # noqa: SLF001
+        assert handle.forensics_captured is True
+
+        # The capture is on the operator audit chain.
+        rows = sup._audit.entries(  # noqa: SLF001
+            action="soma_forensic_snapshot", darwin_id=did,
+        )
+        assert len(rows) == 1
+        meta = rows[0].metadata
+        assert meta["captured"] is True
+        assert meta["reason"] == "owner kill"
+        assert meta["file_count"] >= 1
+
+        # The persisted manifest carries the live soma byte-for-byte and
+        # records the death reason in its metadata.
+        manifest = json.loads(Path(meta["path"]).read_text())
+        assert (
+            manifest["contents"]["soma/strategies/live.py"] == "ALPHA = 1\n"
+        )
+        assert manifest["reason"] == "owner kill"
+        assert manifest["metadata"]["killed"] is True
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+async def test_natural_death_drive_loop_captures_forensic_snapshot(tmp_path):
+    """Natural (bankruptcy) death exits the drive loop, which captures the
+    forensic soma snapshot on the way out — same helper as the kill path, a
+    different call site (doc 05)."""
+    import json
+
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    merger = sup.soma_merger_for(did)
+    (merger.root / "soma").mkdir(parents=True, exist_ok=True)
+    (merger.root / "soma" / "s.py").write_text("X = 1\n")
+    handle = sup._darwins[did]  # noqa: SLF001
+    try:
+        # Stand in for the genome's bankruptcy verdict: once not-alive, the
+        # drive loop's `while runtime.state.alive` exits and runs the capture.
+        handle.runtime.state.death_reason = "bankruptcy: test"
+        handle.runtime.state.alive = False
+        for _ in range(200):
+            if handle.forensics_captured:
+                break
+            await asyncio.sleep(0.005)
+        assert handle.forensics_captured is True
+
+        rows = sup._audit.entries(  # noqa: SLF001
+            action="soma_forensic_snapshot", darwin_id=did,
+        )
+        assert len(rows) == 1
+        assert rows[0].metadata["reason"] == "bankruptcy: test"
+        manifest = json.loads(Path(rows[0].metadata["path"]).read_text())
+        assert manifest["contents"]["soma/s.py"] == "X = 1\n"
+    finally:
+        await sup.shutdown(kill_running=False)
 
 
 @pytest.mark.asyncio
