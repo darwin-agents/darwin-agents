@@ -59,8 +59,8 @@ This shows what's running in our infrastructure to host many Darwins.
                 ┌────────────────────────────────────────────────────────────────────────────────┐
                 │                  SHARED PLATFORM SERVICES                                      │
                 │  ┌────────────────┐  ┌────────────────┐  ┌─────────────────┐  ┌─────────────┐  │
-                │  │  LiteLLM Proxy │  │ HashiCorp      │  │ Egress proxy    │  │ Temporal    │  │
-                │  │  - all LLM     │  │ Vault          │  │ - per-tenant    │  │ - durable   │  │
+                │  │  LiteLLM Proxy │  │ HashiCorp      │  │ Egress proxy    │  │ Maint loop  │  │
+                │  │  - all LLM     │  │ Vault          │  │ - per-tenant    │  │ - in-proc   │  │
                 │  │  - embeddings  │  │ - namespace    │  │   filtering &   │  │   jobs      │  │
                 │  │  - image gen   │  │   per Darwin   │  │   logging       │  │ - billing,  │  │
                 │  │  - video gen   │  │ - bidirectional│  │ - blocklist     │  │   harvest,  │  │

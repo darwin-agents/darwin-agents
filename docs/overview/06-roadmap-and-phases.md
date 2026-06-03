@@ -224,7 +224,7 @@ Layer 0 is _the_ founding code. We will spend phases 0–2 refining it based on 
 
 ### Infrastructure-as-code
 
-From day 1, all infrastructure is Terraform (with Pulumi for any TS-side resources). We do not click in cloud consoles for anything production-related. The IaC repo lives alongside the platform code.
+From day 1, all infrastructure is Terraform + Helm. We do not click in cloud consoles for anything production-related. The IaC repo lives alongside the platform code. (Pulumi was considered for TS-side resources but not adopted — a second IaC tool would be redundant; see `engineering/11-tech-stack-at-a-glance.md`.)
 
 ### Documentation
 

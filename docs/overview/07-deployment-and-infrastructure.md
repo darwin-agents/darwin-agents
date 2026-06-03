@@ -179,7 +179,7 @@ Walking through what runs in EKS, by namespace:
 - The supervisor workers (replicated, leader-elected via Postgres advisory locks)
 - The escalation router worker
 - The reconciliation worker (LiteLLM spend → ledger)
-- Background job runners (Temporal Cloud workers)
+- Background jobs (the supervisor's in-process maintenance loop — billing, harvest, reproduction; no separate workflow engine, see `engineering/11-tech-stack-at-a-glance.md`)
 
 ### `platform-data` namespace
 - The egress proxy (3+ replicas)
