@@ -1,0 +1,39 @@
+# Alertmanager config for the local dev stack (docs/engineering/22).
+#
+# Prometheus evaluates the rules in alerting_rules.yml and forwards firing
+# alerts here (see prometheus.yml `alerting:`). This dev config groups alerts
+# and routes them to a single webhook receiver — point `url` at a real Slack /
+# PagerDuty / ops endpoint for a production install. CRITICAL is split out with
+# a tighter repeat interval so a paging integration re-notifies faster.
+
+route:
+  receiver: default
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: critical
+      repeat_interval: 1h
+
+receivers:
+  - name: default
+    webhook_configs:
+      # Dev placeholder — replace with a real receiver. send_resolved so the
+      # downstream sees clear/recover transitions.
+      - url: http://127.0.0.1:5001/webhook
+        send_resolved: true
+
+  - name: critical
+    webhook_configs:
+      - url: http://127.0.0.1:5001/webhook/critical
+        send_resolved: true
+
+inhibit_rules:
+  # A firing CRITICAL for an alertname suppresses a WARN for the same one, so
+  # the operator isn't double-paged for the same underlying condition.
+  - source_matchers: [severity = "critical"]
+    target_matchers: [severity = "warning"]
+    equal: ['alertname']

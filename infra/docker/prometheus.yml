@@ -13,10 +13,17 @@ global:
     service: darwin-platform
 
 # Alerting rules (doc 22). Evaluated every evaluation_interval; mounted into
-# the prometheus container alongside this file. Add an `alerting:` block with
-# an Alertmanager target to route the fired alerts to a pager/ticket.
+# the prometheus container alongside this file.
 rule_files:
   - /etc/prometheus/alerting_rules.yml
+
+# Route firing alerts to the bundled Alertmanager, which groups/inhibits them
+# and forwards to the configured receivers (see alertmanager.yml).
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
 
 scrape_configs:
   - job_name: darwin-supervisor
@@ -34,6 +41,12 @@ scrape_configs:
       - targets:
           - litellm:4000
     metrics_path: /metrics
+
+  # OTel collector self-metrics (span throughput, queue health) — doc 22.
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - otel-collector:8888
 
   # Prometheus' own metrics — handy for confirming the scrape is alive.
   - job_name: prometheus

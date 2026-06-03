@@ -76,6 +76,11 @@ services:
       # (and the mount) the API trusts every caller.
       - --auth-tokens
       - /run/secrets/tokens.json
+      # Tracing — export spans (OTLP/HTTP) to the bundled OTel collector
+      # (doc 22). Empty/down collector just means spans are dropped; the
+      # supervisor runs unaffected.
+      - --otlp-endpoint
+      - http://otel-collector:4318
     depends_on:
       # Postgres must be healthy before the supervisor opens its pool;
       # litellm before the genome's first real LLM call.
@@ -217,20 +222,50 @@ services:
       - supervisor
     restart: unless-stopped
 
-  # -- jaeger: OpenTelemetry trace UI ----------------------------------
-  # Receives OTLP on 4317 (gRPC) / 4318 (HTTP); UI on 16686. NOTE: the
-  # supervisor's tracing module stays a NoOp until code wires an OTLP
-  # exporter at startup (see observability/tracing.py) — Jaeger is in the
-  # stack per doc 20, but no spans flow to it yet.
+  # -- otel-collector: receives the supervisor's OTLP spans (doc 22) ----
+  # On :4318 (OTLP/HTTP) + :4317 (gRPC); :8888 exposes its own metrics for
+  # Prometheus. Local dev logs spans (debug exporter); prod swaps in a tracing
+  # backend (Jaeger/Tempo/OTLP cloud).
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: darwin-otel-collector
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4318:4318"
+      - "4317:4317"
+    depends_on:
+      - jaeger
+    restart: unless-stopped
+
+  # -- jaeger: tracing backend + UI for the collector's spans (doc 22) --
+  # Accepts OTLP from the collector (COLLECTOR_OTLP_ENABLED) and serves the
+  # trace-explorer UI on :16686. All-in-one (memory store) — fine for dev; a
+  # prod install uses a persistent backend (Tempo / Elasticsearch).
   jaeger:
     image: jaegertracing/all-in-one:latest
     container_name: darwin-jaeger
-    ports:
-      - "16686:16686"   # web UI
-      - "4317:4317"     # OTLP gRPC receiver
-      - "4318:4318"     # OTLP HTTP receiver
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # trace UI
+      - "4317:4317"     # OTLP gRPC (direct debug; collector uses jaeger:4317)
+      - "4318:4318"     # OTLP HTTP
+    restart: unless-stopped
+
+  # -- alertmanager: routes Prometheus alerts to receivers (doc 22) -----
+  # Prometheus forwards firing alerts here (see prometheus.yml `alerting:`);
+  # it groups/inhibits and webhooks them out. Point the receivers at a real
+  # Slack/PagerDuty endpoint for production.
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: darwin-alertmanager
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
     restart: unless-stopped
 
 volumes:

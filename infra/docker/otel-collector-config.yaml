@@ -1,0 +1,47 @@
+# OpenTelemetry Collector config for the local dev stack (docs/engineering/22).
+#
+# The supervisor exports spans over OTLP/HTTP to this collector
+# (--otlp-endpoint http://otel-collector:4318). The collector batches them and
+# fans them out to exporters. For local dev we log spans (debug) and expose the
+# collector's own metrics for Prometheus to scrape; a real install swaps the
+# `debug` exporter for a tracing backend (Jaeger/Tempo/an OTLP cloud endpoint).
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  # Local dev: print a summary of each span batch to the collector log so a
+  # developer can confirm the pipeline end-to-end.
+  debug:
+    verbosity: normal
+  # Ship spans to the bundled Jaeger (OTLP/gRPC). The Jaeger UI on :16686 then
+  # shows real traces. Swap the endpoint for Tempo / an OTLP cloud in prod.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlp/jaeger]
+  telemetry:
+    # The collector's own metrics — scraped by Prometheus (job: otel-collector).
+    metrics:
+      address: 0.0.0.0:8888
