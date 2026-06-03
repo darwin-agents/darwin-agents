@@ -349,6 +349,12 @@ class DarwinRuntime:
             and tags & {"content.publish", "web.publish"}
         ):
             nctx.content_classifier = self._p.content_classifier
+        # Holdings book (doc 05 §Treasury): granted only to the trading neuron,
+        # which records its fills so perceive can mark them to USDC and
+        # check_death sees net worth, not just cash. Same capability gate — a
+        # neuron that doesn't trade can't touch the asset book.
+        if self.holdings is not None and "trading.operate" in tags:
+            nctx.holdings = self.holdings
         return nctx
 
     # -- the loop ----------------------------------------------------------

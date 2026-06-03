@@ -21,6 +21,8 @@ in the scoped vault.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ._base import (
     BaseNeuron,
     Blocker,
@@ -130,6 +132,11 @@ class TradingOperator(BaseNeuron):
                 output={"reason": str(exc)},
             )
         if 200 <= status < 300:
+            # Record the fill in the Darwin's holdings book (doc 05 §Treasury)
+            # so perceive can mark it to USDC and check_death sees net worth,
+            # not just cash — otherwise a trading Darwin that spent cash on
+            # inventory looks bankrupt. No-op when no holdings book was granted.
+            self._record_fill(context, side, symbol, size, plan.payload, resp)
             context.audit.log_outcome(
                 intent, "ok",
                 {"exchange": exchange, "side": side, "symbol": symbol,
@@ -178,3 +185,73 @@ class TradingOperator(BaseNeuron):
             ok=False, error_code="exchange_unavailable",
             output={"status": status},
         )
+
+    # -- holdings (doc 05 §Treasury) --------------------------------------
+    def _record_fill(self, context, side, symbol, size, payload, resp) -> None:
+        """Reflect a filled order in the holdings book. A BUY adds the position
+        at its USDC cost; a SELL releases it. Only the side/symbol/size are
+        audited — never a price the exchange returned in a private response."""
+        holdings = getattr(context, "holdings", None)
+        if holdings is None or not symbol or size <= 0:
+            return
+        if side == "buy":
+            price = self._fill_price(resp, payload)
+            if price is None:
+                # The position exists at the exchange but the genome cannot
+                # value it (a market fill whose response omitted the price).
+                # Surface the gap rather than record a zero-cost holding, which
+                # would mark to $0 and re-open the wrongful-bankruptcy hole.
+                context.audit.log_event(
+                    "holdings.unrecorded_fill",
+                    {"symbol": symbol, "side": side, "size": size,
+                     "reason": "no fill price in response or limit_price"},
+                )
+                return
+            holdings.record_buy(symbol, size, size * price)
+        elif side == "sell":
+            holdings.record_sell(symbol, size)
+        else:
+            return
+        context.audit.log_event(
+            "holdings.recorded",
+            {"symbol": symbol, "side": side, "size": size},
+        )
+
+    @staticmethod
+    def _fill_price(resp, payload) -> float | None:
+        """The per-unit USDC price of a fill: the exchange's reported average/
+        fill price when present, else a limit order's stated price, else None
+        (cost basis unknown). Tolerant of dict-or-text response bodies."""
+        body: Any = None
+        getj = getattr(resp, "json", None)
+        if callable(getj):
+            try:
+                body = getj()
+            except Exception:
+                body = None
+        if not isinstance(body, dict):
+            import json as _json
+            try:
+                body = _json.loads(getattr(resp, "text", "") or "")
+            except Exception:
+                body = None
+        if isinstance(body, dict):
+            for k in ("avg_price", "average_price", "filled_avg_price",
+                      "fill_price", "price"):
+                v = body.get(k)
+                if v is not None:
+                    try:
+                        f = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if f > 0:
+                        return f
+        lp = payload.get("limit_price")
+        if lp is not None:
+            try:
+                f = float(lp)
+                if f > 0:
+                    return f
+            except (TypeError, ValueError):
+                pass
+        return None

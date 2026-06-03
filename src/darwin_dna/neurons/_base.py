@@ -136,6 +136,7 @@ class NeuronContext:
         http=None,  # X402PaymentClient | HTTPClient | None (doc 17)
         sandbox=None,  # SandboxClient | None (doc 14)
         content_classifier=None,  # ContentClassifier | None (doc 10)
+        holdings=None,  # machinery.Holdings | None (doc 05 §Treasury)
     ):
         self.darwin_id = darwin_id
         self.llm = llm
@@ -157,6 +158,11 @@ class NeuronContext:
         # neurons. The ContentSafetyGate runs its deterministic backstop even
         # when this is None, so outbound content is never wholly unscreened.
         self.content_classifier = content_classifier
+        # Non-USDC holdings book (doc 05 §Treasury). Granted only to the trading
+        # neuron, which records its fills here so the orchestrator can mark them
+        # to USDC and the bankruptcy check sees net worth, not just cash. None
+        # for every other neuron — the asset book is a capability, not ambient.
+        self.holdings = holdings
 
 
 @runtime_checkable
