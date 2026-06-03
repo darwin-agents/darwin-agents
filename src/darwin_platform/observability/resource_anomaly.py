@@ -53,6 +53,7 @@ _DEFAULT_MIN_OBSERVATIONS = 4  # below this, the baseline is too noisy to flag
 _DIMENSIONS: tuple[str, ...] = (
     "llm_spend_usdc",
     "egress_calls",
+    "egress_bytes",
     "sandbox_calls",
     "browser_calls",
 )
@@ -74,6 +75,7 @@ class ResourceSample:
     period_iso: str
     llm_spend_usdc: float = 0.0
     egress_calls: float = 0.0
+    egress_bytes: float = 0.0
     sandbox_calls: float = 0.0
     browser_calls: float = 0.0
 

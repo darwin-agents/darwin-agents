@@ -296,6 +296,33 @@ class HttpEgressRevoker:
         )
         resp.raise_for_status()
 
+    def bandwidth_used_today(self, darwin_id: str) -> float | None:
+        """Bytes ``darwin_id`` has sent today per the proxy's bandwidth quota.
+
+        Returns ``None`` when the proxy is unreachable or bandwidth metering is
+        off (so the caller falls back / skips), and ``0.0`` for a Darwin the
+        proxy knows but has no usage for. Best-effort + short-timeout — the
+        resource-anomaly maintenance pass that calls this must never break on a
+        flaky proxy."""
+        import httpx
+
+        try:
+            resp = httpx.get(f"{self._base}/bandwidth", timeout=self._timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return None
+        if not isinstance(data, dict) or not data.get("enabled"):
+            return None
+        usage = data.get("per_darwin_usage") or {}
+        val = usage.get(darwin_id)
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
 
 def _build_app(
     allowlist: Allowlist,

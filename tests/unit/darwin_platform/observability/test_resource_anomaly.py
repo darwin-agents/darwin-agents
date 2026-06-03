@@ -41,6 +41,14 @@ def test_quiet_baseline_then_spike_fires_warn_or_critical():
     assert a.z_score > 0
 
 
+def test_egress_bytes_spike_is_detected():
+    det = _det()
+    # A flat byte baseline then a volume blow-out (e.g. exfil / runaway crawl).
+    alerts = _feed(det, "d1", "egress_bytes",
+                   [1e6, 1.1e6, 0.9e6, 1e6, 1e6, 5e8])
+    assert any(a.dimension == "egress_bytes" for a in alerts)
+
+
 def test_under_min_observations_never_alerts():
     det = _det(min_observations=4)
     # Only 3 periods — even with a wild value, too little history to flag.

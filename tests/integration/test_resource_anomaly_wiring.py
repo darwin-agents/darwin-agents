@@ -53,6 +53,27 @@ async def test_observation_feeds_detector_with_deltas():
         await sup.shutdown(kill_running=True)
 
 
+async def test_gather_includes_real_egress_bytes_from_revoker():
+    """When the egress revoker exposes bandwidth_used_today, the gather feeds
+    true egress BYTES (not just the call-count proxy)."""
+    class _Revoker:
+        def revoke(self, did): ...
+        def restore(self, did): ...
+        def bandwidth_used_today(self, did):
+            return 4_200_000.0
+
+    det = ResourceAnomalyDetector()
+    sup = Supervisor(heartbeat_seconds=0.0, resource_anomaly_detector=det,
+                     egress_revoker=_Revoker())
+    try:
+        status = await sup.spawn(opening_usdc=100.0)
+        handle = sup._darwins[status.darwin_id]  # noqa: SLF001
+        cumulative = sup._gather_resource_cumulative(handle)  # noqa: SLF001
+        assert cumulative["egress_bytes"] == 4_200_000.0
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
 async def test_sustained_spike_alerts_and_auto_throttles_sandbox():
     det = ResourceAnomalyDetector(min_observations=4, warn_sigma=2.0,
                                   critical_sigma=3.0)

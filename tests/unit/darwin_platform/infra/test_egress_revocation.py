@@ -134,3 +134,47 @@ async def test_supervisor_kill_cuts_egress():
         assert len(sup.audit_log.entries(action="egress_revoked")) == 1
     finally:
         await sup.shutdown(kill_running=True)
+
+
+# -- HttpEgressRevoker.bandwidth_used_today (resource-anomaly source) -------
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_bandwidth_used_today_reads_per_darwin_usage(monkeypatch):
+    from darwin_platform.infra.egress_proxy import HttpEgressRevoker
+
+    calls = []
+
+    def fake_get(url, timeout=None):
+        calls.append(url)
+        return _FakeResp({"enabled": True,
+                          "per_darwin_usage": {"d1": 12345}})
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    rev = HttpEgressRevoker(base_url="http://proxy:9000")
+    assert rev.bandwidth_used_today("d1") == 12345.0
+    assert calls[0] == "http://proxy:9000/bandwidth"
+    # A Darwin the proxy knows nothing about → 0.0 (not None).
+    assert rev.bandwidth_used_today("unknown") == 0.0
+
+
+def test_bandwidth_used_today_none_when_disabled_or_unreachable(monkeypatch):
+    from darwin_platform.infra.egress_proxy import HttpEgressRevoker
+
+    rev = HttpEgressRevoker(base_url="http://proxy:9000")
+    monkeypatch.setattr("httpx.get", lambda url, timeout=None: _FakeResp({"enabled": False}))
+    assert rev.bandwidth_used_today("d1") is None
+
+    def boom(url, timeout=None):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("httpx.get", boom)
+    assert rev.bandwidth_used_today("d1") is None

@@ -4518,6 +4518,7 @@ class Supervisor:
         "sandbox_calls": "sandbox",
         "browser_calls": "browser",
         "egress_calls": "egress",
+        "egress_bytes": "egress",
     }
 
     def _gather_resource_cumulative(self, handle: _Handle) -> dict[str, float]:
@@ -4527,7 +4528,7 @@ class Supervisor:
         contributes 0, never raises."""
         did = handle.darwin_id
         out: dict[str, float] = {
-            "llm_spend_usdc": 0.0, "egress_calls": 0.0,
+            "llm_spend_usdc": 0.0, "egress_calls": 0.0, "egress_bytes": 0.0,
             "sandbox_calls": 0.0, "browser_calls": 0.0,
         }
         try:
@@ -4555,6 +4556,19 @@ class Supervisor:
                     out[key] = float(ts.used_today(darwin_id=did, kind=kind))
                 except Exception:
                     pass
+        # True egress BYTES from the proxy's bandwidth quota (vs the call-count
+        # proxy above). Best-effort: the revoker may not expose it, or the proxy
+        # may be unreachable — either way egress_bytes stays 0 (flat → no spurious
+        # alert) rather than failing the maintenance pass.
+        revoker = getattr(self, "_egress_revoker", None)
+        bw = getattr(revoker, "bandwidth_used_today", None)
+        if callable(bw):
+            try:
+                used = bw(did)
+                if used is not None:
+                    out["egress_bytes"] = float(used)
+            except Exception:
+                pass
         return out
 
     def _run_resource_observation(self, handle: _Handle) -> None:
@@ -4582,6 +4596,7 @@ class Supervisor:
             period_iso=f"period-{handle.resource_runs}",
             llm_spend_usdc=deltas.get("llm_spend_usdc", 0.0),
             egress_calls=deltas.get("egress_calls", 0.0),
+            egress_bytes=deltas.get("egress_bytes", 0.0),
             sandbox_calls=deltas.get("sandbox_calls", 0.0),
             browser_calls=deltas.get("browser_calls", 0.0),
         )
