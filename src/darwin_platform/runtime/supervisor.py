@@ -56,6 +56,7 @@ from ..evolution.patch_staging import (
     StagingSandbox,
     StagingVerdict,
 )
+from ..evolution.soma_merge import SomaMerger
 from ..infra.browser_cache import BrowserCacheService, CachedBrowserSubstrate
 from ..infra.throttle import (
     THROTTLE_KIND_BROWSER,
@@ -284,6 +285,26 @@ class _GenomeStagingHook:
         )
 
 
+# -- Phase 1 hook: bridge from genome ctx to the platform soma merger ------
+class _GenomeMergeHook:
+    """Thin callable the supervisor pins on ``ctx.soma_merge``.
+
+    The genome's apply_mutation node calls
+    ``ctx.soma_merge.merge(patch=..., failure_class=...)`` after a promote
+    verdict and treats the returned :class:`SomaMergeResult` as
+    authoritative — the fix only counts as landed when ``merged`` is True.
+    Absence of the hook keeps the Phase-0 simulation (clear the recurrence
+    counter without writing code); the supervisor only attaches it when a
+    soma root is configured."""
+
+    def __init__(self, *, merger: "SomaMerger", darwin_id: str) -> None:
+        self._merger = merger
+        self._darwin_id = darwin_id
+
+    def merge(self, *, patch: Any, failure_class: str = "") -> Any:
+        return self._merger.merge(patch, failure_class=str(failure_class))
+
+
 # -- per-Darwin handle -----------------------------------------------------
 @dataclass
 class _Handle:
@@ -406,6 +427,7 @@ class Supervisor:
         ) = None,
         patch_staging_quota: StagingQuota | None = None,
         patch_staging_timeout_s: float = 30.0,
+        soma_root: str | Path | None = None,
         publishing_endpoints: dict[str, str] | None = None,
         analytics_endpoint: str | None = None,
         kyc_service: KYCService | None = None,
@@ -587,6 +609,13 @@ class Supervisor:
             staging=self._patch_staging,
             audit_sink_resolver=self._resolve_audit_sink_for,
         )
+        # Phase 1 soma merge (docs 03/21). When a soma root is configured,
+        # each Darwin gets its OWN merger rooted at ``<soma_root>/<id>`` (the
+        # soma is the organism's mutable code — never shared across tenants),
+        # installed on the genome's ctx so apply_mutation writes a promoted
+        # patch's real diff to disk. Unset → no hook → Phase-0 simulation.
+        self._soma_root = Path(soma_root) if soma_root is not None else None
+        self._soma_mergers: dict[str, SomaMerger] = {}
         # Phase 1 §"Real economic activity": real publishing destinations
         # are configured fleet-wide; the supervisor reaches into the
         # catalog post-boot and wires them onto the content.publisher
@@ -1382,6 +1411,8 @@ class Supervisor:
             # The genome's evaluate node calls ``ctx.patch_staging`` when
             # present; absence falls back to the in-DNA harness.
             self._install_patch_staging_hook(runtime)
+            # Phase 1 soma merge: write promoted patches to the live soma.
+            self._install_soma_merge_hook(runtime)
             handle = _Handle(
                 darwin_id=runtime.identity.darwin_id,
                 stack=stack,
@@ -1813,6 +1844,32 @@ class Supervisor:
             runner=self._eval_runner,
             darwin_id=runtime.identity.darwin_id,
         )
+
+    def _install_soma_merge_hook(self, runtime: Any) -> None:
+        """Expose a per-Darwin :class:`SomaMerger` on the genome's ctx so
+        apply_mutation can write a promoted patch's real diff onto the
+        Darwin's soma tree. No-op when no soma root is configured — the
+        genome then keeps the Phase-0 simulation. Each Darwin's merger is
+        rooted under ``<soma_root>/<darwin_id>`` so one tenant's
+        self-modification can never touch another's code."""
+        if self._soma_root is None:
+            return
+        try:
+            ctx = runtime._ctx  # noqa: SLF001  — single owner
+        except Exception:
+            return
+        darwin_id = runtime.identity.darwin_id
+        merger = self._soma_mergers.get(darwin_id)
+        if merger is None:
+            merger = SomaMerger(self._soma_root / darwin_id, clock=self._clock)
+            self._soma_mergers[darwin_id] = merger
+        ctx.soma_merge = _GenomeMergeHook(merger=merger, darwin_id=darwin_id)
+
+    def soma_merger_for(self, darwin_id: str) -> SomaMerger | None:
+        """Read-only handle to a Darwin's soma merger (for ops/rollback +
+        tests). None when no soma root is configured or the Darwin has not
+        been spawned."""
+        return self._soma_mergers.get(darwin_id)
 
     @property
     def patch_staging(self) -> PatchStagingService:
@@ -3659,6 +3716,27 @@ class Supervisor:
                 raise RuntimeError("LiteLLM key minter returned no key")
             self._llm_virtual_keys[supervisor_id] = key
             secret_extras[LITELLM_VIRTUAL_KEY_SECRET_KEY] = key
+        # Tenant namespace (Vault namespace + organism DB) — doc 22. The driver
+        # owns the K8s namespace itself; the provisioner's K8s backend only
+        # derives its name (see DriverK8sNamespaceBackend), so this creates the
+        # per-Darwin Vault policy/AppRole + private organism database BEFORE the
+        # pod boots, with the same 90-day deferred-teardown lifecycle the
+        # in-process path gets. FATAL on failure (a pod without its isolated
+        # Vault/DB would silently fall back to shared state); the minted LLM key
+        # is revoked so it doesn't leak.
+        if self._namespace_provisioner is not None:
+            try:
+                self._namespace_provisioner.provision(
+                    darwin_id=supervisor_id, actor=actor,
+                )
+            except Exception as exc:  # noqa: BLE001 - audited + re-raised
+                self._revoke_llm_virtual_key(supervisor_id)
+                self._audit.record(
+                    actor=actor, action="tenant_provision_failed",
+                    darwin_id=supervisor_id,
+                    metadata={"reason": str(exc)[:200], "driver": "k8s"},
+                )
+                raise
         spec = DarwinSpec(
             darwin_id=supervisor_id,
             opening_usdc=float(opening_usdc),
@@ -3677,8 +3755,18 @@ class Supervisor:
             try:
                 snapshot = await self._k8s_driver.start(spec)
             except Exception:
-                # The pod never came up — don't leak the minted virtual key.
+                # The pod never came up — don't leak the minted virtual key or
+                # the just-provisioned tenant namespace (Vault policy + organism
+                # DB). Tear them down immediately (not the deferred 90-day path:
+                # nothing ran, so there's no data worth retaining).
                 self._revoke_llm_virtual_key(supervisor_id)
+                if self._namespace_provisioner is not None:
+                    try:
+                        self._namespace_provisioner.teardown(
+                            darwin_id=supervisor_id, actor=actor,
+                        )
+                    except Exception:  # noqa: BLE001 - best-effort cleanup
+                        pass
                 raise
         spawned_at = self._clock()
         self._k8s_handles[supervisor_id] = {
