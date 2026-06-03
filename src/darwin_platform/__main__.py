@@ -1193,6 +1193,82 @@ def _build_alert_sink(args: argparse.Namespace):
     return FanOutAlertSink(sinks)
 
 
+def _build_namespace_provisioner(args: argparse.Namespace, k8s_driver):
+    """Construct the per-Darwin :class:`NamespaceProvisioner` (doc 22) when
+    ``--tenant-namespaces`` is set; otherwise ``None``.
+
+    Wires the three real backends:
+
+    * **Vault** — :func:`build_vault_namespace_backend` from the ``--vault-*``
+      flags (one path-scoped policy + AppRole per Darwin).
+    * **Organism DB** — :func:`build_organism_db_backend` from
+      ``--organism-db-admin-url`` (a private Postgres database + owner role +
+      read-only dashboard role per Darwin).
+    * **K8s** — :class:`DriverK8sNamespaceBackend` wrapping the driver's API in
+      k8s mode (the driver owns namespace *creation*; the provisioner only
+      derives the name + owns the tolerant teardown sweep). In in-process mode
+      there is no real K8s namespace, so the in-memory stub records a symbolic
+      name to keep the :class:`TenantNamespace` bundle complete.
+
+    Exits with status 2 (matching the other real-backend flags) when a required
+    credential is missing, so a misconfigured production boot fails loudly
+    rather than silently skipping tenant isolation."""
+    if not getattr(args, "tenant_namespaces", False):
+        return None
+    vault_url = args.vault_url or os.environ.get("DARWIN_VAULT_URL")
+    vault_token = args.vault_token or os.environ.get("DARWIN_VAULT_TOKEN")
+    if not (vault_url and vault_token):
+        print(
+            "--tenant-namespaces requires --vault-url + --vault-token "
+            "(the per-Darwin Vault policy/AppRole is provisioned there).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    admin_dsn = getattr(args, "organism_db_admin_url", None) or os.environ.get(
+        "DARWIN_ORGANISM_DB_ADMIN_URL"
+    )
+    if not admin_dsn:
+        print(
+            "--tenant-namespaces requires --organism-db-admin-url "
+            "(or DARWIN_ORGANISM_DB_ADMIN_URL): the admin DSN for the shared "
+            "organism Postgres cluster.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    from .adapters.organism_db import build_organism_db_backend
+    from .adapters.vault_namespace import build_vault_namespace_backend
+    from .tenancy.namespace_provisioner import (
+        NamespaceProvisioner,
+        StubK8sBackend,
+    )
+
+    vault_backend = build_vault_namespace_backend(
+        url=vault_url, token=vault_token,
+        mount_point=getattr(args, "vault_mount", None) or "secret",
+    )
+    organism_backend = build_organism_db_backend(
+        admin_dsn=admin_dsn,
+        child_host=getattr(args, "organism_db_child_host", None),
+        child_port=getattr(args, "organism_db_child_port", None),
+        child_sslmode=getattr(args, "organism_db_sslmode", None),
+        create_readonly_role=not getattr(args, "organism_db_no_readonly", False),
+    )
+    if k8s_driver is not None:
+        from .k8s.namespace_backend import DriverK8sNamespaceBackend
+
+        k8s_backend: Any = DriverK8sNamespaceBackend(
+            api=k8s_driver.api,
+            namespace_prefix=k8s_driver.namespace_prefix,
+        )
+    else:
+        k8s_backend = StubK8sBackend(
+            prefix=getattr(args, "k8s_namespace_prefix", None) or "darwin-"
+        )
+    return NamespaceProvisioner(
+        k8s=k8s_backend, vault=vault_backend, organism_db=organism_backend,
+    )
+
+
 def _build_k8s_driver(args: argparse.Namespace):
     """Build a :class:`darwin_platform.k8s.K8sDarwinDriver` when
     ``--driver=k8s`` is set; otherwise ``None`` (the supervisor uses
@@ -1409,6 +1485,13 @@ def _serve(args: argparse.Namespace) -> int:
     # in-process and k8s mode; only the per-Darwin substrate factories
     # are k8s-excluded.
     supervisor_kwargs.update(_build_platform_services(args))
+    # Per-Darwin tenant namespaces (Vault + organism DB), gated on
+    # --tenant-namespaces. Built here because its K8s backend needs the
+    # already-constructed driver. Supervisor-side: provisioned on spawn in both
+    # in-process and k8s mode (doc 22).
+    namespace_provisioner = _build_namespace_provisioner(args, k8s_driver)
+    if namespace_provisioner is not None:
+        supervisor_kwargs["namespace_provisioner"] = namespace_provisioner
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
@@ -1728,6 +1811,48 @@ def build_parser() -> argparse.ArgumentParser:
         "--vault-k8s-jwt-path", default=None, metavar="PATH",
         help="Service-account JWT path for k8s auth (default: the in-pod "
              "/var/run/secrets/kubernetes.io/serviceaccount/token).",
+    )
+
+    tenant_group = serve.add_argument_group(
+        "tenant namespaces (doc 22)",
+        "Per-Darwin infrastructure isolation: a Vault policy/AppRole + a "
+        "private organism Postgres database, provisioned at spawn and torn "
+        "down (after a 90-day retention) on death. Requires --vault-url + "
+        "--vault-token and --organism-db-admin-url.",
+    )
+    tenant_group.add_argument(
+        "--tenant-namespaces", action="store_true",
+        help="Construct the NamespaceProvisioner and provision a per-Darwin "
+             "Vault namespace + organism DB on every spawn. Off by default "
+             "(the in-process FakeVault path-prefix model stays the default).",
+    )
+    tenant_group.add_argument(
+        "--organism-db-admin-url", default=None, metavar="DSN",
+        help="Admin Postgres DSN for the shared organism cluster (needs "
+             "CREATEDB + CREATEROLE). Env: DARWIN_ORGANISM_DB_ADMIN_URL. "
+             "URL-style DSNs only (postgresql://user:pw@host:port/db).",
+    )
+    tenant_group.add_argument(
+        "--organism-db-child-host", default=None, metavar="HOST",
+        help="Host to embed in each Darwin's organism DSN (default: parsed "
+             "from --organism-db-admin-url). Set when pods reach Postgres at a "
+             "different address than the admin connection does.",
+    )
+    tenant_group.add_argument(
+        "--organism-db-child-port", default=None, type=int, metavar="PORT",
+        help="Port to embed in each Darwin's organism DSN (default: parsed "
+             "from --organism-db-admin-url).",
+    )
+    tenant_group.add_argument(
+        "--organism-db-sslmode", default=None, metavar="MODE",
+        help="Optional sslmode appended to each Darwin's organism DSN "
+             "(e.g. require).",
+    )
+    tenant_group.add_argument(
+        "--organism-db-no-readonly", action="store_true",
+        help="Skip the read-only dashboard role (by default each organism DB "
+             "gets a second SELECT-only LOGIN role for the dashboard's data "
+             "browser).",
     )
 
     browser_group = serve.add_argument_group(
