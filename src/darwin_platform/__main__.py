@@ -790,6 +790,12 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
 
         kwargs["drift_detector"] = DriftDetector()
 
+    # -- resource-consumption anomaly detection (doc 22) -----------------
+    if getattr(args, "enable_resource_anomaly_detection", False):
+        from .observability.resource_anomaly import ResourceAnomalyDetector
+
+        kwargs["resource_anomaly_detector"] = ResourceAnomalyDetector()
+
     # -- Merkle anchoring (doc 22) ---------------------------------------
     if getattr(args, "enable_merkle_anchor", False):
         from .observability.merkle_anchor import (
@@ -2100,6 +2106,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--enable-drift-detection", action="store_true",
         help="Run the behavioural drift detector (rolling 7-window "
              "profile, 2σ alerts).",
+    )
+    phase2_group.add_argument(
+        "--enable-resource-anomaly-detection", action="store_true",
+        help="Run the resource-consumption anomaly detector (per-Darwin "
+             "LLM-spend / sandbox / browser / egress vs its own baseline; "
+             "WARN at 2σ, CRITICAL at 3σ or sustained, routed to auto-throttle).",
     )
     phase2_group.add_argument(
         "--enable-merkle-anchor", action="store_true",

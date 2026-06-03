@@ -50,6 +50,13 @@ from .operator_audit import (
     OperatorAuditLog,
     to_dicts,
 )
+from .resource_anomaly import (
+    ResourceAnomalyAlert,
+    ResourceAnomalyDetector,
+    ResourceRollingState,
+    ResourceSample,
+    ResourceSeverity,
+)
 from .sinks import (
     FanOutAlertSink,
     FanOutNotificationSink,
@@ -93,6 +100,11 @@ __all__ = [
     "OperatorAuditLog",
     "PagerDutyAlertSink",
     "Quotas",
+    "ResourceAnomalyAlert",
+    "ResourceAnomalyDetector",
+    "ResourceRollingState",
+    "ResourceSample",
+    "ResourceSeverity",
     "SMTPEmailNotificationSink",
     "Severity",
     "SlackWebhookNotificationSink",

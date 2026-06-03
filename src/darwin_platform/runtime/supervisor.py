@@ -366,6 +366,12 @@ class _Handle:
     last_drift_maintenance_ts: float = 0.0
     drift_audit_cursor: int = 0
     maintenance_runs: int = 0
+    # Resource-anomaly cadence + the last cumulative counters, so each
+    # observation feeds the per-interval DELTA (consumption this period), not a
+    # monotonic running total. resource_runs is the period label.
+    last_resource_maintenance_ts: float = 0.0
+    resource_runs: int = 0
+    resource_last_cumulative: dict[str, float] = field(default_factory=dict)
     # Owner-set escalation policy (doc 09). Persisted on the lifecycle row at
     # spawn so a supervisor restart re-applies it, and held here so the
     # auto-decide hook + child-boot inheritance don't have to round-trip
@@ -441,6 +447,7 @@ class Supervisor:
         path_c_enabled: bool = False,
         path_c_require_human_review: bool = True,
         drift_detector: DriftDetector | None = None,
+        resource_anomaly_detector: Any | None = None,
         merkle_anchor_publisher: MerkleAnchorPublisher | None = None,
         maintenance_interval_seconds: float = 86400.0,
         llm_key_minter: Any | None = None,
@@ -658,6 +665,11 @@ class Supervisor:
         # keeps the genome's cost-basis fallback (safe, just not live).
         self._price_oracle = price_oracle
         self._drift_detector: DriftDetector | None = drift_detector
+        # Resource-consumption anomaly detector (doc 22): catches a Darwin
+        # burning far more LLM spend / sandbox / browser / egress than its own
+        # baseline. Fed per-interval deltas in _run_resource_observation; a
+        # CRITICAL routes to the existing auto-throttle. None → not run.
+        self._resource_anomaly_detector = resource_anomaly_detector
         self._merkle_anchor: MerkleAnchorPublisher | None = (
             merkle_anchor_publisher
         )
@@ -4395,6 +4407,23 @@ class Supervisor:
                         metadata={"reason": str(exc)[:200]},
                     )
 
+        # Per-Darwin: resource-consumption anomaly profiling (doc 22). Same
+        # cadence + baseline-then-fire shape as drift.
+        if self._resource_anomaly_detector is not None:
+            if handle.last_resource_maintenance_ts == 0.0:
+                handle.last_resource_maintenance_ts = now
+            elif now - handle.last_resource_maintenance_ts >= interval:
+                handle.last_resource_maintenance_ts = now
+                try:
+                    self._run_resource_observation(handle)
+                except Exception as exc:  # noqa: BLE001
+                    self._audit.record(
+                        actor="platform.maintenance",
+                        action="resource_observation_failed",
+                        darwin_id=handle.darwin_id,
+                        metadata={"reason": str(exc)[:200]},
+                    )
+
         # Fleet-level: Merkle anchoring + omnibus reconciliation. The
         # first drive loop to cross the interval claims it (synchronous —
         # no await between the check and the timestamp bump, so two
@@ -4442,6 +4471,125 @@ class Supervisor:
                     "note": a.note,
                 },
             )
+
+    # Resource dimension → the throttle kind an auto-throttle would tighten.
+    # llm_spend has no single throttle kind (it spans tiers), so it alerts only.
+    _RESOURCE_DIM_TO_THROTTLE: dict[str, str] = {
+        "sandbox_calls": "sandbox",
+        "browser_calls": "browser",
+        "egress_calls": "egress",
+    }
+
+    def _gather_resource_cumulative(self, handle: _Handle) -> dict[str, float]:
+        """This Darwin's cumulative resource counters right now. LLM spend is
+        the lifetime ledger sum; the substrate call counts come from the
+        throttle service (daily-reset). All best-effort — a missing source
+        contributes 0, never raises."""
+        did = handle.darwin_id
+        out: dict[str, float] = {
+            "llm_spend_usdc": 0.0, "egress_calls": 0.0,
+            "sandbox_calls": 0.0, "browser_calls": 0.0,
+        }
+        try:
+            from darwin_platform.adapters.litellm_admin import (
+                ledger_llm_spend_usdc,
+            )
+
+            wallet = getattr(handle.stack, "wallet", None)
+            movements = (
+                wallet.movements()
+                if wallet is not None and hasattr(wallet, "movements")
+                else []
+            )
+            out["llm_spend_usdc"] = float(ledger_llm_spend_usdc(movements))
+        except Exception:
+            pass
+        ts = getattr(self, "_throttle_service", None)
+        if ts is not None:
+            for kind, key in (
+                ("egress", "egress_calls"),
+                ("sandbox", "sandbox_calls"),
+                ("browser", "browser_calls"),
+            ):
+                try:
+                    out[key] = float(ts.used_today(darwin_id=did, kind=kind))
+                except Exception:
+                    pass
+        return out
+
+    def _run_resource_observation(self, handle: _Handle) -> None:
+        """Feed this interval's resource consumption (delta of each cumulative
+        counter) to the anomaly detector, audit alerts, page the alert sink,
+        and route a CRITICAL over-consumption to the existing auto-throttle."""
+        detector = self._resource_anomaly_detector
+        if detector is None:
+            return
+        from darwin_platform.observability.resource_anomaly import ResourceSample
+
+        did = handle.darwin_id
+        cumulative = self._gather_resource_cumulative(handle)
+        last = handle.resource_last_cumulative
+        # Per-interval delta, floored at 0: a daily-reset counter that rolled
+        # over at UTC midnight must not read as negative consumption, and the
+        # first observation (no prior) yields 0 rather than a phantom spike.
+        deltas = {
+            k: max(0.0, v - last.get(k, v)) for k, v in cumulative.items()
+        }
+        handle.resource_last_cumulative = dict(cumulative)
+        handle.resource_runs += 1
+        sample = ResourceSample(
+            darwin_id=did,
+            period_iso=f"period-{handle.resource_runs}",
+            llm_spend_usdc=deltas.get("llm_spend_usdc", 0.0),
+            egress_calls=deltas.get("egress_calls", 0.0),
+            sandbox_calls=deltas.get("sandbox_calls", 0.0),
+            browser_calls=deltas.get("browser_calls", 0.0),
+        )
+        for a in detector.observe(sample):
+            is_critical = a.severity.value == "critical"
+            self._audit.record(
+                actor="platform.maintenance",
+                action="resource_anomaly_alert",
+                darwin_id=did,
+                metadata={
+                    "dimension": a.dimension,
+                    "severity": a.severity.value,
+                    "z_score": (
+                        None if a.z_score == float("inf")
+                        else round(a.z_score, 4)
+                    ),
+                    "period_value": a.period_value,
+                    "note": a.note,
+                },
+            )
+            self._emit_resource_alert(did, a, is_critical)
+            kind = self._RESOURCE_DIM_TO_THROTTLE.get(a.dimension)
+            if is_critical and kind is not None:
+                self._maybe_auto_throttle_resource(
+                    handle, kind, f"resource_anomaly:{a.dimension}",
+                )
+
+    def _emit_resource_alert(
+        self, darwin_id: str, alert: Any, is_critical: bool,
+    ) -> None:
+        sink = getattr(self, "_alert_sink", None)
+        if sink is None:
+            return
+        try:
+            sink.emit(Alert(
+                darwin_id=darwin_id,
+                kind=f"resource_anomaly:{alert.dimension}",
+                severity=Severity.CRITICAL if is_critical else Severity.WARN,
+                suggested_level=3 if is_critical else 2,
+                detail={
+                    "dimension": alert.dimension,
+                    "period_value": alert.period_value,
+                    "note": alert.note,
+                },
+                ts=self._clock(),
+            ))
+        except Exception:
+            pass
 
     def _run_fleet_maintenance(self, now: float) -> None:
         """Publish the daily Merkle anchor + reconcile the omnibus
