@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(platform): cover HttpPriceOracle and supervisor injection
+- feat(platform): wire HttpPriceOracle for live holdings valuation
 - test(dna): cover trading operator holdings capability and fill recording
 - feat(dna): record trading fills in holdings for net-worth solvency
 - test(platform): cover sensitive vault grant minting and consumption
