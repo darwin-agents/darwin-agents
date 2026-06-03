@@ -21,6 +21,18 @@ model_list:
       model: gemini/gemini-2.0-flash
       api_key: os.environ/GEMINI_API_KEY
 
+  # tier=balanced — day-to-day reasoning + content generation; the soft
+  # degrade target for tier=reasoning (doc 13 capability-profile table). One
+  # band cheaper than reasoning, one band smarter than fast.
+  - model_name: tier-balanced
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/CLAUDE_API_KEY
+  - model_name: tier-balanced
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
   # tier=reasoning — the planner; the default thinking tier. Production
   # quality requires Sonnet; for fast local interaction testing swap the
   # model to anthropic/claude-haiku-4-5-20251001 (~5-10s/call) — that is a
@@ -45,13 +57,27 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
 router_settings:
-  routing_strategy: latency-based-routing
+  # Cost-based routing (doc 13 §"Why LiteLLM"): per-Darwin spend is metered
+  # into treasuries, so the gateway picks the cheapest healthy upstream that
+  # meets the tier bar rather than the lowest-latency one.
+  routing_strategy: cost-based-routing
+  # One retry per call, then the soma decides (doc 13 §"Failover": "Per-call
+  # retry budget is small (one retry)"). Beyond that we degrade tier rather
+  # than block.
+  num_retries: 1
   fallbacks:
-    # Degrade rather than fail outright. doc 13 §"Failover".
-    - tier-reasoning: ["tier-fast"]
+    # Degrade rather than fail outright. doc 13 §"Failover". Reasoning steps
+    # down through balanced before fast so quality drops one band at a time.
+    - tier-reasoning: ["tier-balanced", "tier-fast"]
+    - tier-balanced: ["tier-fast"]
     - tier-coding: ["tier-reasoning"]
 
 litellm_settings:
+  # Prometheus exporter (doc 13 §Observability: "LiteLLM emits Prometheus
+  # metrics out of the box"). Exposes per-model latency / error-rate / token /
+  # per-virtual-key cost counters on the proxy's /metrics; the bundled
+  # Prometheus scrapes litellm:4000 (see prometheus.yml).
+  callbacks: ["prometheus"]
   # Redis-backed response cache (docs/engineering/13, 19). Identical
   # tier+prompt requests are served from cache — repeat planner / research
   # calls stop costing money. The same Redis coordinates cross-replica

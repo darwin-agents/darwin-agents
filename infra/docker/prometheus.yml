@@ -19,6 +19,16 @@ scrape_configs:
           - supervisor:8000
     metrics_path: /metrics
 
+  # LiteLLM proxy — per-model latency / error-rate / token counts and the
+  # per-virtual-key cost gauges (doc 13 §Observability). Enabled by the
+  # `callbacks: ["prometheus"]` setting in litellm.config.yaml; exposed on the
+  # proxy's own port.
+  - job_name: darwin-litellm
+    static_configs:
+      - targets:
+          - litellm:4000
+    metrics_path: /metrics
+
   # Prometheus' own metrics — handy for confirming the scrape is alive.
   - job_name: prometheus
     static_configs:

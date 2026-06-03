@@ -18,6 +18,16 @@ model_list:
       model: gemini/gemini-2.0-flash
       api_key: os.environ/GEMINI_API_KEY
 
+  # tier=balanced — day-to-day reasoning; soft degrade target for reasoning
+  - model_name: tier-balanced
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/CLAUDE_API_KEY
+  - model_name: tier-balanced
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
   # tier=reasoning — the planner; the default thinking tier
   - model_name: tier-reasoning
     litellm_params:
@@ -37,10 +47,18 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
 router_settings:
-  routing_strategy: latency-based-routing
+  # Cost-based routing + one-retry budget (doc 13 §"Why LiteLLM" / §"Failover").
+  routing_strategy: cost-based-routing
+  num_retries: 1
   fallbacks:
-    - tier-reasoning: ["tier-fast"]
+    - tier-reasoning: ["tier-balanced", "tier-fast"]
+    - tier-balanced: ["tier-fast"]
     - tier-coding: ["tier-reasoning"]
+
+litellm_settings:
+  # Prometheus exporter (doc 13 §Observability). Redis cache is intentionally
+  # absent here — Redis isn't deployed in this stack (see header).
+  callbacks: ["prometheus"]
 
 general_settings:
   master_key: os.environ/DARWIN_LITELLM_MASTER_KEY
