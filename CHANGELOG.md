@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(platform): cover death forensic soma snapshots and supervisor wiring
+- feat(platform): capture death-time soma forensic snapshots
 - feat(infra): expose PITR, Vault auto-unseal, and Kata on Hetzner env
 - feat(infra): optional Kata microVM runtime on Hetzner k3s nodes
 - feat(infra): wire PITR backup and Vault auto-unseal through platform-stack
