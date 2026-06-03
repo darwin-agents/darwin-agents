@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from darwin_dna.machinery.llm_router import LLMError, Tier
+from darwin_dna.machinery.llm_router import LLMBudgetExhausted, LLMError, Tier
 
 
 _PLAN_SYSTEM_FALLBACK = (
@@ -402,12 +402,20 @@ class LiteLLMTransport:
             kwargs["max_tokens"] = max_tokens
         if self._darwin_id is not None:
             # LiteLLM logs ``metadata`` against the call's virtual key in its
-            # spend table and folds it into the cache key; ``tier`` rides
-            # along so per-tier spend stays attributable post-hoc.
+            # spend table; ``tier`` rides along so per-tier spend stays
+            # attributable post-hoc.
             kwargs["metadata"] = {
                 "darwin_id": self._darwin_id,
                 "tier": tier.value,
             }
+            # Cross-tenant cache isolation (doc 13 §Caching: "Cache keys include
+            # darwin_id to prevent any cross-tenant cache pollution"). The
+            # proxy's Redis cache keys off the request body, which does NOT
+            # include ``metadata`` — so two Darwins sending the identical prompt
+            # at the same tier would otherwise share a cache entry. The
+            # per-request ``cache.namespace`` is folded into the key, scoping
+            # every entry to one Darwin. Harmless when the proxy cache is off.
+            kwargs["cache"] = {"namespace": f"darwin:{self._darwin_id}"}
         return kwargs
 
     def _call_with_fallback(
@@ -434,6 +442,15 @@ class LiteLLMTransport:
                 )
                 response = self._invoke_completion(kwargs, self._timeout_for(tier))
             except Exception as exc:
+                if _is_budget_exhaustion(exc):
+                    # Per-key budget is spent — every model in the chain shares
+                    # it, so trying the next one is pointless. Raise the typed
+                    # treasury signal immediately (doc 13). Not a model health
+                    # event, so the breaker is left untouched.
+                    raise LLMBudgetExhausted(
+                        f"virtual-key budget exhausted for tier "
+                        f"{tier.value}: {exc}"
+                    ) from exc
                 last_exc = exc
                 self._breaker.record_failure(model)
                 continue
@@ -479,6 +496,13 @@ class LiteLLMTransport:
                 )
                 response = await self._aprovider_call(kwargs)
             except Exception as exc:
+                if _is_budget_exhaustion(exc):
+                    # See _call_with_fallback: per-key budget is shared across
+                    # the chain — short-circuit with the typed treasury signal.
+                    raise LLMBudgetExhausted(
+                        f"virtual-key budget exhausted for tier "
+                        f"{tier.value}: {exc}"
+                    ) from exc
                 last_exc = exc
                 self._breaker.record_failure(model)
                 continue
@@ -629,11 +653,7 @@ class LiteLLMTransport:
         def parse(result: _CompletionResult) -> dict[str, Any]:
             body = result.text
             words = len(body.split())
-            # Real quality assessment would need a separate eval pass (doc 03's
-            # reflect node could do it later). For now a per-tier default that
-            # matches FakeLLM's convention — 0.72 for reasoning, 0.55 otherwise.
-            # Production deployers should replace with a real grader.
-            quality_score = 0.72 if tier is Tier.REASONING else 0.55
+            quality_score = _grade_long_form(body, words, target_words, tier)
             return {
                 "text": body,
                 "words": words,
@@ -698,6 +718,70 @@ class LiteLLMTransport:
 
 
 # -- helpers --------------------------------------------------------------
+def _grade_long_form(
+    body: str, words: int, target_words: int, tier: Tier
+) -> float:
+    """A cheap, deterministic quality estimate for a written article in
+    ``[0, 1]``. A full eval would need a separate LLM grading pass (doc 03's
+    reflect node could own that later); this is a structural proxy the reflect
+    node can act on today instead of a flat per-tier constant. Three observable
+    signals, each contributing a band:
+
+    - **substance** — produced real text, not an empty/refusal stub;
+    - **structure** — opens with a Markdown heading, as the prompt instructs;
+    - **length adherence** — word count lands near the requested target
+      (a piece half or double the ask is worse than one that hit it).
+
+    The reasoning tier gets a small ceiling bump — same convention the
+    deterministic FakeLLM uses — so a tier-down is visible as a quality dip."""
+    if words == 0:
+        return 0.0
+    score = 0.45  # produced substantive text at all
+    if body.lstrip().startswith("#"):
+        score += 0.15  # followed the heading instruction
+    if target_words > 0:
+        ratio = words / target_words
+        # 1.0 at the target, decaying linearly to 0 by a 2x over/under miss.
+        adherence = max(0.0, 1.0 - abs(ratio - 1.0))
+        score += 0.25 * adherence
+    else:
+        score += 0.25 * 0.5
+    if tier is Tier.REASONING:
+        score += 0.10
+    return round(min(1.0, score), 3)
+
+
+def _status_code_of(exc: BaseException) -> int | None:
+    """Best-effort HTTP status of a provider/proxy exception. LiteLLM and the
+    OpenAI SDK surface it under a few different attribute names depending on
+    the path; try each, then fall back to a digit scan of the message."""
+    for attr in ("status_code", "code", "http_status", "status"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val
+        if isinstance(val, str) and val.isdigit():
+            return int(val)
+    return None
+
+
+def _is_budget_exhaustion(exc: BaseException) -> bool:
+    """True when ``exc`` is the proxy refusing on a spent *virtual-key budget*
+    (doc 13: per-key 429 → treasury check failure), as opposed to a transient
+    rate-limit 429 that a fallback model could still satisfy. The proxy signals
+    budget exhaustion with a 429 whose body names the budget ("ExceededBudget",
+    "budget has been exceeded", "Budget Exceeded"); a plain rate-limit 429 does
+    not. We require BOTH the 429 status and the budget marker so we never
+    short-circuit the fallback chain on an ordinary rate-limit."""
+    text = str(exc).lower()
+    if "budget" not in text:
+        return False
+    if _status_code_of(exc) == 429:
+        return True
+    # LiteLLM's own BudgetExceededError may not carry a 429 status attribute;
+    # its class name + the "exceeded" wording are unambiguous on their own.
+    return "budget" in type(exc).__name__.lower() or "exceeded" in text
+
+
 def _extract_text(response: Any) -> str:
     """Pull message text out of a LiteLLM ``completion`` response (or a
     test mock that mimics the shape). Accepts both object-shaped (real

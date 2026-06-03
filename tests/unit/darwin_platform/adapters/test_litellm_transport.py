@@ -217,7 +217,9 @@ def test_write_long_form_returns_genome_shape():
     )
     assert out["text"].startswith("# Topic")
     assert out["words"] >= 100
-    assert out["quality_score"] == pytest.approx(0.72)  # reasoning default
+    # Structural heuristic (not a flat constant): 0.45 substance + 0.15 heading
+    # + 0.25*adherence(202/500) + 0.10 reasoning-tier bump. See _grade_long_form.
+    assert out["quality_score"] == pytest.approx(0.801)
     assert out["cost_usdc"] == pytest.approx(0.02)
 
 

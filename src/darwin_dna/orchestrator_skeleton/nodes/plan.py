@@ -17,7 +17,7 @@ naive-but-alive Darwin is the Layer 0 bar.
 
 from __future__ import annotations
 
-from ...machinery.llm_router import LLMError, Tier, acomplete
+from ...machinery.llm_router import LLMBudgetExhausted, LLMError, Tier, acomplete
 from ...strategies import StrategyObservation
 
 
@@ -126,6 +126,15 @@ async def run(state, ctx):
                     "untrusted_observations": state.world_observations[-5:],
                 },
             )
+        except LLMBudgetExhausted as exc:
+            # The proxy refused on a spent virtual-key budget (doc 13: a
+            # treasury check failure, not a transient degrade). The planner is
+            # advisory, so the heartbeat still proceeds on the strategy prior —
+            # but we record it under a distinct event so the spend/treasury
+            # monitor can act on it (escalate, or trigger the death sequence if
+            # the wallet is also dry) rather than mistaking it for an ordinary
+            # degraded call.
+            ctx.audit.log_event("plan.llm_budget_exhausted", {"error": str(exc)})
         except LLMError as exc:
             ctx.audit.log_event("plan.llm_degraded", {"error": str(exc)})
 

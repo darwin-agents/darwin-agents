@@ -41,6 +41,19 @@ class TierBudgetExceeded(LLMError):
     'burns LLM money faster than it earns')."""
 
 
+class LLMBudgetExhausted(LLMError):
+    """The platform proxy refused the call because this Darwin's *virtual-key*
+    budget is spent — LiteLLM returns HTTP 429 (docs/engineering/13: "When the
+    Darwin's per-key budget runs out, LiteLLM returns 429. The orchestrator
+    interprets this as a treasury check failure"). Unlike a transient
+    rate-limit 429, retrying another model in the chain cannot help: the budget
+    lives on the key, shared across every model. The transport raises this
+    *instead of* exhausting the fallback chain, and it propagates as a typed
+    treasury signal — the loop records it distinctly so the spend/treasury
+    monitor can escalate or trigger the death sequence rather than treating it
+    as an ordinary degraded heartbeat."""
+
+
 @runtime_checkable
 class LLMTransport(Protocol):
     """The platform-operated gateway, abstracted. The genome never sees a
@@ -143,6 +156,12 @@ class LLMRouter:
         self._check_cap(tier)
         try:
             resp = self._t.complete(tier.value, request)
+        except LLMError:
+            # Already a typed routing signal (e.g. LLMBudgetExhausted) — let it
+            # propagate with its class intact so the loop can tell a treasury
+            # 429 apart from a generic transport hiccup. Rewrapping would flatten
+            # every failure to a bare LLMError and lose that distinction.
+            raise
         except Exception as exc:
             raise LLMError(f"transport failed for tier {tier.value}: {exc}") from exc
         self._calls[tier] += 1
@@ -165,6 +184,9 @@ class LLMRouter:
                 resp = await atransport(tier.value, request)
             else:
                 resp = self._t.complete(tier.value, request)
+        except LLMError:
+            # See complete(): preserve typed signals like LLMBudgetExhausted.
+            raise
         except Exception as exc:
             raise LLMError(f"transport failed for tier {tier.value}: {exc}") from exc
         self._calls[tier] += 1
