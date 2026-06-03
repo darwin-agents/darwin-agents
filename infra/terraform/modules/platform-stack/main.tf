@@ -22,6 +22,14 @@ module "cnpg" {
   instances          = var.database_instances
   storage_size       = var.database_storage_size
   storage_class      = var.storage_class
+
+  # PITR backup (doc 20) — off by default.
+  backup_enabled               = var.database_backup_enabled
+  backup_destination_path      = var.database_backup_destination_path
+  backup_endpoint_url          = var.database_backup_endpoint_url
+  backup_s3_credentials_secret = var.database_backup_s3_credentials_secret
+  backup_retention_policy      = var.database_backup_retention_policy
+  backup_schedule              = var.database_backup_schedule
 }
 
 # Vault: dev mode (in-memory, auto-unseal) for local, OR raft (prod, manual
@@ -39,6 +47,10 @@ module "vault_prod" {
 
   namespace     = var.vault_namespace
   storage_class = var.storage_class
+
+  # Auto-unseal (doc 20) — empty by default = Shamir/manual unseal.
+  seal_config_hcl = var.vault_seal_config_hcl
+  seal_env        = var.vault_seal_env
 }
 
 locals {

@@ -50,3 +50,31 @@ variable "audit_storage_size" {
   description = "PVC size for the audit-log volume on each replica."
   default     = "10Gi"
 }
+
+# -- Auto-unseal (doc 20) ---------------------------------------------------
+# Without a seal stanza Vault uses Shamir: an operator must `vault operator
+# unseal` after every pod restart (the manual runbook). A seal stanza wires
+# auto-unseal so a restarted pod unseals itself from an external key —
+# `vault operator init` is still a one-time step, but restarts no longer
+# need a human. Cloud-agnostic recommended path: Vault *transit* auto-unseal
+# (a small bootstrap Vault, or a managed one, holding the unseal key);
+# cloud KMS (awskms/gcpckms/azurekeyvault) also works where available.
+#
+# Provide the full HCL block — the module injects it verbatim into the raft
+# config — plus any env the seal needs (e.g. VAULT_TOKEN for transit, or
+# AWS_* for awskms), sourced from a Secret so credentials never sit in state.
+variable "seal_config_hcl" {
+  type        = string
+  description = "Raw `seal \"<type>\" { ... }` HCL injected into the Vault config to enable auto-unseal. Empty = Shamir / manual unseal (default)."
+  default     = ""
+}
+
+variable "seal_env" {
+  type = list(object({
+    env_name    = string
+    secret_name = string
+    secret_key  = string
+  }))
+  description = "Env vars the seal stanza needs (e.g. VAULT_TOKEN, AWS_ACCESS_KEY_ID), each sourced from a Kubernetes Secret key. Mapped onto the Vault server pods."
+  default     = []
+}

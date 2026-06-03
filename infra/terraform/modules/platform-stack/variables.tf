@@ -116,6 +116,62 @@ variable "database_instances" {
   default     = 1
 }
 
+# -- Postgres PITR backup (doc 20) ------------------------------------------
+# Forwarded to the cnpg module. Default off so local/kind is unaffected.
+variable "database_backup_enabled" {
+  type        = bool
+  description = "Enable continuous WAL archiving + scheduled base backups to object storage (PITR)."
+  default     = false
+}
+
+variable "database_backup_destination_path" {
+  type        = string
+  description = "S3-style backup destination, e.g. s3://bucket/darwin-pg. Required when database_backup_enabled."
+  default     = ""
+}
+
+variable "database_backup_endpoint_url" {
+  type        = string
+  description = "Object-store endpoint URL (Hetzner/MinIO/etc). Empty = AWS S3 default."
+  default     = ""
+}
+
+variable "database_backup_s3_credentials_secret" {
+  type        = string
+  description = "Secret (in the platform namespace) with keys ACCESS_KEY_ID + ACCESS_SECRET_KEY for the object store."
+  default     = ""
+}
+
+variable "database_backup_retention_policy" {
+  type        = string
+  description = "Backup/WAL retention (CNPG syntax, e.g. 30d)."
+  default     = "30d"
+}
+
+variable "database_backup_schedule" {
+  type        = string
+  description = "Base-backup cron (6-field, with seconds). Default 02:30 UTC daily."
+  default     = "0 30 2 * * *"
+}
+
+# -- Vault auto-unseal (doc 20) ---------------------------------------------
+# Forwarded to vault-prod (raft mode only). Default empty = Shamir/manual.
+variable "vault_seal_config_hcl" {
+  type        = string
+  description = "Raw `seal \"<type>\" { ... }` HCL to enable Vault auto-unseal. Empty = manual unseal."
+  default     = ""
+}
+
+variable "vault_seal_env" {
+  type = list(object({
+    env_name    = string
+    secret_name = string
+    secret_key  = string
+  }))
+  description = "Env the Vault seal stanza needs (e.g. VAULT_TOKEN for transit), each from a Secret key."
+  default     = []
+}
+
 # -- LiteLLM ----------------------------------------------------------------
 
 variable "litellm_master_key" {

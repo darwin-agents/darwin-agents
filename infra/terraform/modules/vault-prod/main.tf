@@ -3,10 +3,12 @@
  * `<release>-internal` Service DNS — the release is named "vault" so the
  * peers are vault-0/1/2.vault-internal:8200.
  *
- * IMPORTANT: wait=false because raft pods report NotReady until an operator
- * unseals them (manual, no KMS). atomic=false so a "not ready in time"
- * doesn't roll the release back. The unseal/init/k8s-auth runbook lives in
- * envs/hetzner/README.md.
+ * IMPORTANT: wait=false because raft pods report NotReady until they are
+ * unsealed. With the default (Shamir) seal an operator unseals manually
+ * after every restart; with `seal_config_hcl` set (auto-unseal) a restarted
+ * pod unseals itself, but the one-time `vault operator init` still applies —
+ * so wait=false / atomic=false stay correct either way. The init/unseal/
+ * k8s-auth runbook lives in envs/hetzner/README.md.
  */
 
 resource "kubernetes_namespace" "this" {
@@ -57,7 +59,9 @@ resource "helm_release" "vault" {
         raft = {
           enabled   = true
           setNodeId = true
-          # NO seal {} stanza → no auto-unseal → manual unseal runbook.
+          # Default: no seal stanza → Shamir → manual unseal runbook.
+          # When seal_config_hcl is set, it is injected below to enable
+          # auto-unseal (doc 20).
           config = <<-HCL
             ui = true
             listener "tcp" {
@@ -72,9 +76,19 @@ resource "helm_release" "vault" {
               retry_join { leader_api_addr = "http://vault-2.vault-internal:8200" }
             }
             service_registration "kubernetes" {}
+            ${var.seal_config_hcl}
           HCL
         }
       }
+      # Credentials the seal stanza needs (transit token / cloud-KMS keys),
+      # sourced from Secrets so they never land in Terraform state.
+      extraSecretEnvironmentVars = [
+        for e in var.seal_env : {
+          envName    = e.env_name
+          secretName = e.secret_name
+          secretKey  = e.secret_key
+        }
+      ]
     }
     # The supervisor uses the Kubernetes auth method + hvac directly, not the
     # agent injector.
