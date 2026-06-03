@@ -152,12 +152,43 @@ def _apply_real_adapters(
         stack.wallet = factories["wallet_factory"](
             darwin_id, clock, stack.vault,
         )
+    # Real LLM transport (doc 13). Applied AFTER the wallet so the transport
+    # bills the live wallet, and BEFORE browser/x402/sandbox for symmetry
+    # with the supervisor's in-process spawn order. The pod authenticates as
+    # its own LiteLLM virtual key — injected by the supervisor as
+    # DARWIN_LITELLM_MASTER_KEY via the per-Darwin Secret, so the proxy meters
+    # this pod's spend separately (the supervisor reconciles it against this
+    # Darwin's ledger). darwin_id rides on every call as request metadata.
+    # NOTE: without this block the pod would keep the deterministic FakeLLM —
+    # the real LiteLLM transport never reached k8s Darwins before.
+    if "llm_transport_factory" in factories:
+        stack.llm = _invoke_pod_llm_factory(
+            factories["llm_transport_factory"], stack.wallet, clock, darwin_id,
+        )
     if "browser_factory" in factories:
         stack.browser = factories["browser_factory"](stack.wallet)
     if "x402_factory" in factories:
         stack.x402_client = factories["x402_factory"](stack.wallet)
     if "sandbox_factory" in factories:
         stack.sandbox = factories["sandbox_factory"](stack.wallet)
+
+
+def _invoke_pod_llm_factory(factory, wallet, clock, darwin_id: str):
+    """Call the LLM transport factory passing only the kwargs it accepts.
+
+    Mirrors the supervisor's ``_invoke_llm_factory``: the real factory takes
+    ``darwin_id`` (for per-request attribution metadata); a bare 2-arg factory
+    (older / test) is called positionally. The pod's virtual key arrives as
+    the LiteLLM api-key env, so ``virtual_key`` is not threaded here."""
+    import inspect
+    kwargs: dict = {}
+    try:
+        params = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "darwin_id" in params:
+        kwargs["darwin_id"] = darwin_id
+    return factory(wallet, clock, **kwargs)
 
 
 # -- control API -----------------------------------------------------------
@@ -243,6 +274,21 @@ class OrchestratorState:
             balance = float(self.stack.wallet.balance_usdc())
         except Exception:
             balance = 0.0
+        # In-process LLM spend (memo ``llm:*``) so the supervisor can
+        # reconcile this pod's spend against the proxy's per-key table
+        # (doc 13 §Observability) without shipping the whole ledger.
+        try:
+            from ..adapters.litellm_admin import ledger_llm_spend_usdc
+            llm_spend = ledger_llm_spend_usdc(self.stack.wallet.movements())
+        except Exception:
+            llm_spend = 0.0
+        # The pod's audit Merkle root so the supervisor can fold it into the
+        # daily fleet anchor (doc 29) — K8s Darwins keep their hash-chained
+        # audit log in the pod, so the root isn't reachable in-process.
+        try:
+            merkle_root = self.runtime.audit.merkle_root()
+        except Exception:
+            merkle_root = None
         return {
             "darwin_id": self.darwin_id,
             "alive": bool(st.alive),
@@ -252,6 +298,8 @@ class OrchestratorState:
             "days_elapsed": float(st.days_elapsed),
             "balance_usdc": balance,
             "death_reason": st.death_reason,
+            "llm_spend_usdc": float(llm_spend),
+            "merkle_root": merkle_root,
         }
 
     def events_records(self) -> list[dict[str, Any]]:
