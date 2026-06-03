@@ -104,7 +104,16 @@ def run(state, ctx):
     if promote:
         if archive is not None:
             archive.record(failure_class, "promoted", reason)
-        state.plan = {"action": "apply_mutation", "failure_class": failure_class}
+        # Forward the validated patch (+ any Path-C neuron proposal) so the
+        # apply step can merge the real diff onto the live soma — without
+        # this the diff was dropped here and apply_mutation could only ever
+        # simulate the fix (docs 03/21; the #16 soma-merge gap).
+        state.plan = {
+            "action": "apply_mutation",
+            "failure_class": failure_class,
+            "patch": patch_dict,
+            "neuron_proposal": p.get("neuron_proposal"),
+        }
         state.route = "apply_mutation"
     else:
         if archive is not None:

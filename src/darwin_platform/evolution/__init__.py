@@ -20,12 +20,22 @@ from .patch_staging import (
     StagingSandbox,
     StagingVerdict,
 )
+from .soma_merge import (
+    DiffApplyError,
+    SomaMergeResult,
+    SomaMerger,
+    apply_unified_diff,
+)
 
 __all__ = [
+    "DiffApplyError",
     "EvalRequest",
     "EvalRunner",
     "PatchStagingService",
+    "SomaMergeResult",
+    "SomaMerger",
     "StagingQuota",
     "StagingSandbox",
     "StagingVerdict",
+    "apply_unified_diff",
 ]

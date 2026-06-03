@@ -3,12 +3,24 @@
 In production the live Darwin is briefly paused at a safe checkpoint and the
 patch is merged into the live soma. Layer 0 itself is *out of scope for
 self-modification* (read for self-reflection, never patched), so the genome
-skeleton records the promotion and clears the recurring-failure counter that
-triggered it — the behavioural effect a soma merge would have had on the
-loop's decision-making — without ever writing genome code.
+never writes its own code; the **platform** performs the file write through
+the optional ``ctx.soma_merge`` hook (a :class:`SomaMerger`, mirroring how
+``ctx.patch_staging`` bridges to the staging service).
+
+Two regimes:
+
+- **Hook wired (Phase 1+).** The validated unified diff is applied to the
+  Darwin's soma tree on disk. The fix counts as *landed* only when the
+  merge succeeds; a failed merge keeps the recurring-failure counter (the
+  fix never reached disk) and is archived as a negative lesson.
+- **No hook (Phase 0).** We record the promotion and clear the
+  recurring-failure counter — the behavioural effect a soma merge would
+  have had on the loop's decision-making — without ever writing code.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 
 def run(state, ctx):
@@ -16,11 +28,41 @@ def run(state, ctx):
     audit_id = ctx.audit.log_intent(
         "mutation.apply", {"failure_class": failure_class}
     )
-    # The patch addressed this class; stop counting it as recurring so the
-    # loop returns to earning instead of re-proposing the same fix.
-    if failure_class in state.recurring_failures:
+
+    # Phase 1+: apply the real diff to the live soma when the platform has
+    # wired the merge hook AND a patch travelled with the plan. ``None``
+    # means no merge was attempted (Phase-0 simulation); a result with
+    # ``merged=False`` means the merge was tried and failed.
+    merge_result = None
+    merge_hook = getattr(ctx, "soma_merge", None)
+    patch_dict = state.plan.get("patch")
+    if merge_hook is not None and patch_dict:
+        merge_result = _merge_soma(patch_dict, failure_class, ctx)
+
+    # The fix "landed" if we either ran the Phase-0 simulation (no merge)
+    # or the real merge succeeded. Only then do we stop counting the class
+    # as recurring — otherwise the loop must keep trying because the fix
+    # never actually reached the soma.
+    fix_landed = merge_result is None or bool(
+        getattr(merge_result, "merged", False)
+    )
+    if fix_landed and failure_class in state.recurring_failures:
         del state.recurring_failures[failure_class]
     state.mutation_gate_open = False
+
+    if merge_result is not None and not merge_result.merged:
+        archive = getattr(ctx, "archive", None)
+        if archive is not None:
+            archive.record(
+                failure_class, "merge_failed",
+                getattr(merge_result, "reason", ""),
+            )
+        ctx.audit.log_event(
+            "mutation.merge_failed",
+            {"failure_class": failure_class,
+             "reason": getattr(merge_result, "reason", ""),
+             "rejected_path": getattr(merge_result, "rejected_path", None)},
+        )
 
     # Path-C (doc 04 phase 3): if the proposal carries a neuron_proposal
     # AND the eval harness scored it favourably, submit + admit it into
@@ -32,18 +74,65 @@ def run(state, ctx):
     if proposal_dict and getattr(ctx, "neuron_admission", None) is not None:
         admitted_neuron = _admit_proposal(proposal_dict, ctx)
 
+    soma_merged = (
+        bool(merge_result.merged) if merge_result is not None else None
+    )
+    merged_paths = (
+        list(merge_result.applied_paths)
+        if merge_result is not None and merge_result.merged
+        else None
+    )
     ctx.audit.log_outcome(
         audit_id, "ok",
-        {"applied": True, "admitted_neuron": admitted_neuron},
+        {"applied": fix_landed, "admitted_neuron": admitted_neuron,
+         "soma_merged": soma_merged, "merged_paths": merged_paths},
     )
     ctx.audit.log_event(
         "mutation.applied",
         {"failure_class": failure_class,
-         "admitted_neuron": admitted_neuron},
+         "admitted_neuron": admitted_neuron,
+         "soma_merged": soma_merged,
+         "merged_paths": merged_paths},
     )
     state.plan = {"action": "mutation_applied"}
     state.route = "check_reproduction"
     return state
+
+
+def _merge_soma(patch_dict: dict, failure_class: str, ctx):
+    """Build a :class:`Patch` from the plan dict and apply it via the
+    platform merge hook. Returns the hook's result (duck-typed: ``.merged``
+    / ``.reason`` / ``.applied_paths`` / ``.rejected_path``), or a
+    failure-shaped namespace if the patch can't be built or the hook raises.
+    Never raises — a self-modification failure must not crash the loop."""
+    try:
+        from ...machinery.patch_validator import FileChange, Patch
+    except Exception:
+        return None
+    try:
+        patch = Patch(
+            rationale=str(patch_dict.get("rationale", "")),
+            changes=[
+                FileChange(path=c["path"], diff=c["diff"])
+                for c in patch_dict.get("changes", [])
+            ],
+        )
+    except Exception as exc:
+        return SimpleNamespace(
+            merged=False, reason=f"patch malformed: {exc}",
+            applied_paths=(), rejected_path=None,
+        )
+    try:
+        return ctx.soma_merge.merge(patch=patch, failure_class=failure_class)
+    except Exception as exc:  # noqa: BLE001 — hook failures are non-fatal
+        ctx.audit.log_event(
+            "mutation.merge_error",
+            {"failure_class": failure_class, "reason": str(exc)[:200]},
+        )
+        return SimpleNamespace(
+            merged=False, reason=f"merge hook raised: {exc}",
+            applied_paths=(), rejected_path=None,
+        )
 
 
 def _admit_proposal(proposal_dict: dict, ctx) -> str | None:

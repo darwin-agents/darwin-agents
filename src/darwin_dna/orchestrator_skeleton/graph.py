@@ -81,6 +81,12 @@ class OrchestratorContext:
     # and an operator-review escalation is filed — it is NOT merged into the
     # live catalog until an operator approves. False = auto-admit (opt-in).
     path_c_require_human_review: bool = True
+    # Phase-1 soma merge hook (docs 03/21). Set by the platform supervisor so
+    # apply_mutation can write a promoted patch's real diff onto the Darwin's
+    # soma tree (``ctx.soma_merge.merge(patch=..., failure_class=...)`` →
+    # SomaMergeResult). Optional — absence keeps the Phase-0 simulation
+    # (clear the recurrence counter without writing code).
+    soma_merge: Any = None
 
 
 # The graph topology, exactly the doc's diagram. Each entry:
