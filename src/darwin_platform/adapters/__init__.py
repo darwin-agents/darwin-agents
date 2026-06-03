@@ -23,6 +23,11 @@ from .litellm_admin import (
     ledger_llm_spend_usdc,
 )
 from .litellm_transport import LiteLLMTransport, TierMapping
+from .vault_namespace import (
+    RealVaultNamespaceBackend,
+    VaultNamespaceError,
+    build_vault_namespace_backend,
+)
 from .sandbox import E2BSandbox, SandboxClient
 from .vault_backend import (
     InMemoryVaultClient,
@@ -41,6 +46,9 @@ from .x402 import HTTPClient, X402Error, X402PaymentClient
 __all__ = [
     "LiteLLMTransport",
     "TierMapping",
+    "RealVaultNamespaceBackend",
+    "VaultNamespaceError",
+    "build_vault_namespace_backend",
     "LiteLLMAdminClient",
     "LiteLLMAdminError",
     "LiteLLMSpendReconciler",
