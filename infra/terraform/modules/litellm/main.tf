@@ -111,7 +111,10 @@ resource "kubernetes_deployment" "this" {
           # holding them in memory (which would lose every Darwin's key on a
           # proxy restart and leave nothing for the platform to reconcile).
           dynamic "env" {
-            for_each = var.database_url != "" ? [1] : []
+            # database_url is sensitive; a for_each derived from a sensitive
+            # value is rejected by Terraform. nonsensitive() on the *boolean*
+            # reveals only whether a DB is configured, never the URL itself.
+            for_each = nonsensitive(var.database_url != "") ? toset(["enabled"]) : toset([])
             content {
               name  = "STORE_MODEL_IN_DB"
               value = "True"

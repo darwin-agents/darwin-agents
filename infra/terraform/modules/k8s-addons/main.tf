@@ -108,7 +108,7 @@ resource "kubernetes_ingress_v1" "platform" {
     # TLS termination at the Ingress. Either cert-manager fills
     # tls_secret_name (via cluster_issuer) or it's pre-provisioned.
     dynamic "tls" {
-      for_each = (var.tls_enabled && var.ingress_host != "") ? [1] : []
+      for_each = (var.tls_enabled && var.ingress_host != "") ? toset(["enabled"]) : toset([])
       content {
         hosts       = [var.ingress_host]
         secret_name = var.tls_secret_name
