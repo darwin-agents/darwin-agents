@@ -1024,6 +1024,20 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
         if budget is not None:
             kwargs["llm_virtual_key_options"] = {"max_budget": float(budget)}
 
+    # -- live price feed (doc 05 §Treasury) ------------------------------
+    # Marks non-USDC holdings to live prices each heartbeat; without it the
+    # genome falls back to cost basis (safe, not live).
+    price_feed_url = getattr(args, "price_feed_url", None) or os.environ.get(
+        "DARWIN_PRICE_FEED_URL"
+    )
+    if price_feed_url:
+        from .adapters.price_oracle import build_price_oracle
+
+        kwargs["price_oracle"] = build_price_oracle(
+            url=price_feed_url,
+            ttl_seconds=float(getattr(args, "price_feed_ttl_seconds", 60.0) or 60.0),
+        )
+
     return kwargs
 
 
@@ -1859,6 +1873,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the read-only dashboard role (by default each organism DB "
              "gets a second SELECT-only LOGIN role for the dashboard's data "
              "browser).",
+    )
+
+    treasury_group = serve.add_argument_group(
+        "treasury price feed (doc 05)",
+        "Mark a trading Darwin's non-USDC holdings to live USDC prices so the "
+        "bankruptcy check sees net worth, not just cash. Omitted → holdings are "
+        "valued at cost basis (safe, not live).",
+    )
+    treasury_group.add_argument(
+        "--price-feed-url", default=None, metavar="URL",
+        help="HTTP price-feed endpoint (CoinGecko simple/price-shaped). "
+             "Env: DARWIN_PRICE_FEED_URL.",
+    )
+    treasury_group.add_argument(
+        "--price-feed-ttl-seconds", default=60.0, type=float, metavar="S",
+        help="How long a quote is cached before re-fetching (default 60s; "
+             "perceive marks holdings every heartbeat).",
     )
 
     browser_group = serve.add_argument_group(

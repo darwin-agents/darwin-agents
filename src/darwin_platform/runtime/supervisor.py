@@ -437,6 +437,7 @@ class Supervisor:
         egress_revoker: Any | None = None,
         dead_darwin_retention_seconds: float = 90.0 * 86400.0,
         content_classifier: Any | None = None,
+        price_oracle: Any | None = None,
         path_c_enabled: bool = False,
         path_c_require_human_review: bool = True,
         drift_detector: DriftDetector | None = None,
@@ -652,6 +653,10 @@ class Supervisor:
         # into each spawned/reproduced Darwin's platform so publishing neurons
         # run a real filter rather than only the deterministic backstop.
         self._content_classifier = content_classifier
+        # Live price feed (doc 05 §Treasury). Injected onto each Darwin's
+        # platform so perceive marks non-USDC holdings against live prices; None
+        # keeps the genome's cost-basis fallback (safe, just not live).
+        self._price_oracle = price_oracle
         self._drift_detector: DriftDetector | None = drift_detector
         self._merkle_anchor: MerkleAnchorPublisher | None = (
             merkle_anchor_publisher
@@ -1336,6 +1341,10 @@ class Supervisor:
             # substring backstop. No-op when unconfigured.
             if self._content_classifier is not None:
                 _platform.content_classifier = self._content_classifier
+            # Live price feed (doc 05): perceive marks holdings against it; the
+            # trading neuron's recorded fills are then valued at live prices.
+            if self._price_oracle is not None:
+                _platform.price_oracle = self._price_oracle
             runtime = boot(
                 _platform, sleep=lambda _: None, hp=self._darwin_hp,
             )
@@ -6260,6 +6269,8 @@ class Supervisor:
                 )
                 if self._content_classifier is not None:
                     child_platform.content_classifier = self._content_classifier
+                if self._price_oracle is not None:
+                    child_platform.price_oracle = self._price_oracle
                 child_runtime = boot(
                     child_platform, sleep=lambda _: None, hp=self._darwin_hp,
                 )
