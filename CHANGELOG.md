@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(platform): cover resource anomaly detector and supervisor wiring
+- feat(platform): detect per-Darwin resource consumption anomalies
+- feat(infra): add Prometheus alerting rules for local compose
+- feat(infra): add CNPG PITR backup variables for object storage
 - test(platform): cover HttpPriceOracle and supervisor injection
 - feat(platform): wire HttpPriceOracle for live holdings valuation
 - test(dna): cover trading operator holdings capability and fill recording
@@ -94,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(terraform): use nonsensitive toset for sensitive for_each
 - fix(dna): thread owner data and grant_token on escalation approve
 - fix(platform): wire real LiteLLM transport in k8s orchestrator pods
 - ci: assert PodDisruptionBudget renders in helm template check
