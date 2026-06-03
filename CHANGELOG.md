@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(infra): expose PITR, Vault auto-unseal, and Kata on Hetzner env
+- feat(infra): optional Kata microVM runtime on Hetzner k3s nodes
+- feat(infra): wire PITR backup and Vault auto-unseal through platform-stack
+- feat(infra): wire local OTel collector, Alertmanager, and supervisor OTLP
+- feat(platform): track egress bytes in resource anomaly detection
+- feat(platform): add OrganismDbReader for operator data browser
 - feat(infra): wire CNPG barmanObjectStore backups and scheduled base backup
 - test(platform): cover resource anomaly detector and supervisor wiring
 - feat(platform): detect per-Darwin resource consumption anomalies
@@ -76,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: align tech stack and deployment docs with as-built choices
 - docs(changelog): reorganize unreleased section newest-first
 - docs: document schema v12 RLS and sync unreleased changelog
 - docs: sync unreleased changelog for LiteLLM virtual keys
