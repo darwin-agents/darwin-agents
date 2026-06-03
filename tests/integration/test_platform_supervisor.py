@@ -331,6 +331,137 @@ async def test_router_marks_responded_and_drops_from_open() -> None:
         await sup.shutdown()
 
 
+# -- sensitive-vault grant loop (doc 16; the #30 gap) ---------------------
+async def _spawn_with_ticket(sup, *, ticket, ticket_class):
+    status = await sup.spawn(opening_usdc=80.0, escalation_auto=None)
+    h = sup._darwins[status.darwin_id]  # noqa: SLF001
+    h.stack.escalation.post(
+        {"ticket": ticket, "neuron": "accounts.manager",
+         "ticket_class": ticket_class}
+    )
+    await _wait_until(lambda: sup.router.get(ticket) is not None)
+    return status, h
+
+
+async def test_approving_kyc_escalation_mints_a_consumable_grant() -> None:
+    """Approving a KYC-class (sensitive-vault) escalation mints a one-time
+    grant, delivers it in the response data, and the Darwin's grant store
+    consumes it exactly once."""
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status, h = await _spawn_with_ticket(
+            sup, ticket="kyc:tick-1", ticket_class="kyc"
+        )
+        await sup.respond_escalation(
+            status.darwin_id, escalation_id="kyc:tick-1",
+            decision="approve", actor="alice",
+        )
+        tk = sup.router.get("kyc:tick-1")
+        token = tk.response_data.get("grant_token")
+        assert token, "approval should deliver a grant token"
+        # One-time: the genome's grant store consumes it exactly once.
+        assert h.stack.vault_grants.consume(token) is True
+        assert h.stack.vault_grants.consume(token) is False
+        # The mint is audited WITHOUT the token value.
+        minted = [
+            e for e in sup.audit_log.entries(darwin_id=status.darwin_id)
+            if e.action == "vault_grant_minted"
+        ]
+        assert len(minted) == 1
+        assert token not in str(minted[0].metadata)
+    finally:
+        await sup.shutdown()
+
+
+async def test_approving_spend_escalation_does_not_mint_grant() -> None:
+    """A spend/APPROVAL escalation must never mint a vault grant."""
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status, h = await _spawn_with_ticket(
+            sup, ticket="spend:tick-1", ticket_class="approval"
+        )
+        await sup.respond_escalation(
+            status.darwin_id, escalation_id="spend:tick-1",
+            decision="approve", data={"note": "ok"},
+        )
+        tk = sup.router.get("spend:tick-1")
+        assert "grant_token" not in tk.response_data
+    finally:
+        await sup.shutdown()
+
+
+async def test_mint_vault_grant_override() -> None:
+    """The explicit override forces/suppresses minting regardless of class."""
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        # Force a mint on a non-KYC ticket.
+        status, h = await _spawn_with_ticket(
+            sup, ticket="approval:tick-1", ticket_class="approval"
+        )
+        await sup.respond_escalation(
+            status.darwin_id, escalation_id="approval:tick-1",
+            decision="approve", mint_vault_grant=True,
+        )
+        assert sup.router.get("approval:tick-1").response_data.get("grant_token")
+
+        # Suppress a mint on a KYC ticket.
+        h.stack.escalation.post(
+            {"ticket": "kyc:tick-2", "neuron": "x", "ticket_class": "kyc"}
+        )
+        await _wait_until(lambda: sup.router.get("kyc:tick-2") is not None)
+        await sup.respond_escalation(
+            status.darwin_id, escalation_id="kyc:tick-2",
+            decision="approve", mint_vault_grant=False,
+        )
+        assert "grant_token" not in sup.router.get("kyc:tick-2").response_data
+    finally:
+        await sup.shutdown()
+
+
+async def test_grant_unlocks_sensitive_read_end_to_end() -> None:
+    """The full doc-16 loop: a sensitive secret is unreadable until the owner
+    approves a KYC escalation; the minted token then unlocks exactly one read."""
+    from darwin_dna.machinery.vault import (
+        TieredVault,
+        VaultAccessError,
+        VaultTier,
+    )
+
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status, h = await _spawn_with_ticket(
+            sup, ticket="kyc:tick-1", ticket_class="kyc"
+        )
+        tv = TieredVault(
+            h.stack.vault, darwin_id=status.darwin_id,
+            grants=h.stack.vault_grants,
+        )
+        tv.put(VaultTier.SENSITIVE, "passport", "PII-XYZ")
+
+        # No token yet → refused.
+        with pytest.raises(VaultAccessError):
+            tv.read(VaultTier.SENSITIVE, "passport", neuron_tags=frozenset())
+
+        await sup.respond_escalation(
+            status.darwin_id, escalation_id="kyc:tick-1",
+            decision="approve", actor="alice",
+        )
+        token = sup.router.get("kyc:tick-1").response_data["grant_token"]
+
+        # Delivered token unlocks the read, exactly once.
+        assert tv.read(
+            VaultTier.SENSITIVE, "passport",
+            neuron_tags=frozenset(), grant_token=token,
+        ) == "PII-XYZ"
+        with pytest.raises(VaultAccessError):
+            tv.read(
+                VaultTier.SENSITIVE, "passport",
+                neuron_tags=frozenset(), grant_token=token,
+            )
+    finally:
+        await sup.shutdown()
+
+
 async def test_router_marks_expired_observationally() -> None:
     """Past-deadline tickets get an EXPIRED label from the router, but the
     router does NOT impose the genome's auto-deny — that's perceive's job."""
