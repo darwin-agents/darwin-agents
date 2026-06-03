@@ -9,26 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat(platform): k8s fleet maintenance reconciles per-pod LLM spend and Merkle anchors from snapshots
-- feat(k8s): inject minted LiteLLM virtual keys via DarwinSpec secret_extras and orchestrator secretKeyRef
-- feat(adapters): RealVaultNamespaceBackend with per-Darwin Vault policies and AppRole path isolation
-- feat(platform): Postgres schema v12 row-level security with tenant_connection and darwin_tenant role
-- feat(llm): per-Darwin LiteLLM virtual keys (doc 13) — `--litellm-virtual-keys` mints one key per Darwin via the proxy's `/key/generate` admin API (`LiteLLMAdminClient`) at spawn instead of every Darwin sharing the master key, scoped to the `darwin_id` (+ optional `--litellm-virtual-key-budget-usdc` ceiling), sealed in the Darwin's vault, and revoked on death; the transport tags every call with `metadata.darwin_id` so the proxy attributes spend + cache per Darwin; a `LiteLLMSpendReconciler` cross-checks the proxy's per-key spend table against each Darwin's in-process LLM debits every maintenance cycle and pages on drift (`--litellm-spend-tolerance-usdc`); terraform/compose now back the proxy with Postgres (`DATABASE_URL` + `STORE_MODEL_IN_DB`, `litellm_database_url`) so virtual keys + the spend table persist
-- feat(compliance): sanctions-list ingestion (`build_local_screener` / `parse_sanctioned_addresses` parse OFAC SDN / EU / UK dumps) via `--sanctions-list-file`, so the offline screener screens against real addresses; independent CDP wallet-level spend policy (`CdpSpendPolicy`: per-tx / per-day caps + allowlist via `--cdp-per-tx-usdc` / `--cdp-per-day-usdc`) as defense-in-depth below the treasury policy
-- feat(platform): fleet-wide incident-response levers (doc 09) — `fleet_pause`/`fleet_resume`, `fleet_spend_lock`, `fleet_block_category`, and `block_counterparty` (runtime sanctions-denylist add), with `/platform/fleet/*` HTTP routes
-- feat(safety): content-safety classifier injection seam wired (Supervisor `content_classifier` → per-Darwin platform → publishing-neuron gate); concrete `KeywordContentClassifier` so the seam is a real filter, not the bare backstop
-- feat(security): KYC gate now enforced on the live spawn + fiat deposit/withdraw paths (was dead code); 18+ age gate (`require_adult`); `/platform/kyc/start|status|webhook` HTTP surface; spawn ToS + 18+ consent capture (enforced in production via `require_spawn_consent`)
-- feat(adapters): BrowserbaseAgentRunner drives the real browser_use Agent on a Browserbase CDP session (async run on an isolated loop), with vision-mode fallback and a captcha→live-view human-takeover handoff
-- feat(infra): egress-proxy per-Darwin revocation kill-switch (`/revoke`/`/unrevoke`) cut on kill/quarantine, plus serve-entrypoint `--bandwidth-soft-gb`/`--bandwidth-hard-gb` quota wiring
-- feat(platform): `--env`/`DARWIN_ENV` and `--egress-proxy-url` flags; production refuses the in-memory FakeSandbox
-- feat(evolution): Path-C neuron self-authoring is OFF by default (doc 04); when enabled, proposals pass through a staging quarantine + mandatory operator review (`path_c_enabled` / `path_c_require_human_review` hyperparameters) before joining the live catalog
-- feat(adapters): Web3ChainClient.wait_for_confirmation for mainnet ledger gating
-- ci: deploy-hetzner workflow for production releases on Hetzner k3s
-- feat(terraform): hetzner env with k3s cluster, hcloud CCM/CSI, and raft Vault
-- feat(terraform): vault-prod raft module and cert-manager on k8s-addons
-- feat(devx): one-command `make dev` for kind stack, image load, and dashboard
-- feat(terraform): add platform-stack and k8s-addons modules for cloud-agnostic compose
-- feat(charts): export POD_NAMESPACE via downward API (chart 0.3.1)
+- feat(infra): enable LiteLLM Prometheus metrics and per-Darwin routing
+- feat(platform): k8s virtual keys, fleet maintenance, and LLM spend reconcile
+- feat(k8s): inject per-Darwin LiteLLM virtual key via control Secret
+- feat(llm): isolate LiteLLM cache per Darwin and surface budget exhaustion
+- feat(adapters): add RealVaultNamespaceBackend for per-Darwin Vault isolation
+- feat(platform): add Postgres RLS schema v12 and tenant connections
+- feat(docker): persist LiteLLM virtual keys via Postgres in compose stack
+- feat(terraform): back LiteLLM with Postgres for virtual keys and spend
+- feat(platform): per-Darwin LiteLLM virtual keys and spend reconciliation
+- feat(adapters): add LiteLLM admin client and per-Darwin metadata tagging
+- feat(charts): add optional PodDisruptionBudget for HA supervisor
+- test(dna): cover AuditLogger.open_intents for dangling payment intents
+- test(platform): update integration suites for fleet, KYC, and consent wiring
+- feat(platform): wire sanctions ingestion, CDP caps, KYC, and fleet flags at serve
+- feat(platform): fleet incident levers and maintenance CRITICAL alerts
+- feat(security): enforce KYC on spawn and fiat paths with HTTP surface
+- feat(evolution): gate Path-C by default and inherit parent dead-ends
+- feat(safety): add KeywordContentClassifier and publishing gate wiring
+- feat(compliance): ingest sanctions lists and add CDP spend policy caps
+- feat(platform): add --env, egress-proxy kill-switch, and browser/sandbox wiring
+- feat(infra): add egress-proxy revocation kill-switch and bandwidth quotas
+- feat(adapters): add BrowserbaseAgentRunner for real browser_use SDK
+- test(platform): cover wallet factory wiring and tx confirmation
+- feat(adapters): add Web3ChainClient.wait_for_confirmation
+- test(platform): cover k8s reconcile adoption and skip paths
+- feat(platform): re-adopt k8s darwins after supervisor restart
+- feat(terraform): add hetzner production environment
+- feat(terraform): add hcloud-bootstrap CCM and CSI module
+- feat(terraform): add cluster-hetzner-k3s module for k3s on Hetzner
+- feat(terraform): add Hetzner LB ingress and cert-manager to k8s-addons
+- feat(terraform): add vault_mode and cloud knobs to platform-stack
+- feat(terraform): add vault-prod module for HA raft Vault
+- feat(devx): add make dev for one-command kind stack and dashboard
+- feat(scripts): add dev-up and dev-down for kind platform loop
+- feat(terraform): add platform-stack composition module
+- feat(terraform): add k8s-addons module for ingress exposure
+- feat(charts): export POD_NAMESPACE via downward API for k8s spawns
 - feat(devx): standardize docker stack env file at repo-root .env
 - feat(platform): stream k8s Darwin events through driver control API
 - feat(terraform): allow dashboard CORS on local kind stack
@@ -37,11 +54,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- docs(engineering): document schema v12 RLS policies, tenant role, and shipped isolation path
-- docs(engineering): correct operational-runbook hazards (signing-key rotation is an API call not a restart; `event:plan` not `intent:plan`; real LLM-tier daily-cap knobs not a nonexistent `planner_tier`; `min_recurring_failures_for_mutation` not a nonexistent recurrence window; Postgres host port 15432); add `--network`/`--env` + new flags to the configuration reference; correct the stale "stub" sanctions docstring
-- docs(engineering): bump data-model reference to schema v11 + document the 9 previously-undocumented tables (preapprovals, omnibus_state/entries, fiat_quotes, harvest_rules, resource_throttles, push_subscriptions, freelancer_registry, processed_webhook_events), bound to the schema by a new contract test
-- refactor(terraform/local): compose kind stack via platform-stack module
-- refactor(terraform): move ingress exposure into k8s-addons module
+- docs(changelog): reorganize unreleased section newest-first
+- docs: document schema v12 RLS and sync unreleased changelog
+- docs: sync unreleased changelog for LiteLLM virtual keys
+- docs: align infra READMEs with shipped local and Hetzner terraform
+- docs: sync unreleased changelog for compliance, fleet, and treasury fixes
+- docs(engineering): sync runbook, config reference, and schema v11 contract
+- docs: sync unreleased changelog for browser, egress, and sandbox
+- docs: sync unreleased changelog for mainnet wallet safety
+- docs: sync unreleased changelog for k8s reconcile on restart
+- docs: sync unreleased changelog for Hetzner production stack
+- docs: sync unreleased changelog for make dev
+- docs: sync unreleased changelog for platform-stack and k8s fixes
+- refactor(terraform/local): compose kind stack via platform-stack
+- refactor(terraform): move ingress out of darwin-platform module
+- docs: sync unreleased changelog for docker web stack and CSP fix
+- docs: sync unreleased changelog for infra consolidation and k8s fixes
 - refactor(terraform): deploy darwin-platform supervisor via Helm chart
 - refactor(infra): consolidate deploy assets under infra/
 - docs(engineering): update backlog for k8s substrate forwarding and SQL splitter
@@ -49,19 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix(platform): wire real LiteLLM transport in k8s orchestrator pods (was FakeLLM)
-- fix(llm): scope LiteLLM Redis cache per Darwin via cache.namespace; raise LLMBudgetExhausted on virtual-key budget 429
-- fix(evolution): a child now inherits the parent's mutation-archive dead-ends at reproduction (was hardcoded to an empty set, breaking the cross-generation negative-lesson path)
-- fix(platform): dead-Darwin data now survives kill (doc 09 #3) — kill DEFERS namespace/organism-DB teardown (90-day retention), a fleet-maintenance reaper destroys only after the window, and `teardown_dead_darwin` is the operator force-delete; shutdown no longer wipes tenant namespaces
-- fix(platform): fleet maintenance now raises CRITICAL alerts (→ PagerDuty) on omnibus-reconciliation discrepancy + Merkle-anchor failure; tightened omnibus reconciliation tolerance to $0.01; open-intent reconciliation surfaces dangling payment intents on restart (`AuditLogger.open_intents`)
-- fix(treasury): route x402 settlement through the full treasury policy (one money door) instead of only a flat client-side cap; HALT the heartbeat on a treasury-engine fault (doc 28) instead of swallowing it as a recoverable crash; correct the trading.operator docstring's false treasury.spend claim
-- fix(platform): construct per-Darwin web3/local-vault Base wallets with the correct Web3ChainClient signature (was a TypeError at spawn); forward `network=`/confirmation gating
-- fix(platform): wire the real `e2b-code-interpreter` sandbox (base `e2b` has no `run_code`); refuse the no-op FakeSandbox in production
-- fix(platform): correct Browser-Use wiring to the real SDK shape (task-at-construction, async run, BrowserSession) — the default browser path could not connect
-- fix(charts): run the egress proxy from `darwin_platform.infra.egress_proxy` (was a non-existent module path → CrashLoopBackOff)
-- fix(platform): gate mainnet wallets on --network and correct Web3ChainClient wiring
-- fix(platform): re-adopt k8s darwins after supervisor restart so APIs stop 404ing
-- fix(platform): return k8s timeline events without handle-id filter
+- fix(platform): wire real LiteLLM transport in k8s orchestrator pods
+- ci: assert PodDisruptionBudget renders in helm template check
+- fix(platform): defer dead-Darwin teardown for 90-day retention
+- fix(treasury): route x402 through treasury policy and surface open intents
+- fix(platform): wire e2b-code-interpreter sandbox and guard production
+- fix(charts): run egress proxy from darwin_platform.infra.egress_proxy
+- fix(platform): gate mainnet wallets on --network and wire Web3ChainClient
+- ci: add deploy-hetzner workflow for release and manual deploys
+- fix(platform): return all k8s pod events without handle-id filter
 - fix(web): probe readyz instead of healthz in connectivity banner
 - fix(web): apply CSP nonces in middleware so production build hydrates
 - fix(platform): forward LiteLLM and Vault env to per-Darwin k8s pods
