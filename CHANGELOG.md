@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(infra): wire CNPG barmanObjectStore backups and scheduled base backup
 - test(platform): cover resource anomaly detector and supervisor wiring
 - feat(platform): detect per-Darwin resource consumption anomalies
 - feat(infra): add Prometheus alerting rules for local compose
