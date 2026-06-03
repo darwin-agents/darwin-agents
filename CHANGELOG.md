@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(treasury): gate bankruptcy on net worth including marked holdings
+- feat(dna): add Holdings and PriceOracle with cost-basis fallback
 - test(platform): cover soma_merge hook wiring and real patch apply path
 - test(evolution): cover SomaMerger diff apply, sandbox, and rollback
 - feat(platform): wire NamespaceProvisioner with real backends at serve
