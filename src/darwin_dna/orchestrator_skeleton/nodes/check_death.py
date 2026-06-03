@@ -29,13 +29,22 @@ def run(state, ctx):
         state.route = "__end__"
         return state
 
-    broke = state.balance_usdc < hp.minimum_viable_balance_usdc
+    # Solvency is NET WORTH, not cash alone (doc 05 §Treasury): cash plus the
+    # USDC-marked value of any non-USDC holdings (set by perceive). With no
+    # holdings ``holdings_value_usdc`` is 0.0, so this is exactly the old
+    # cash-only test — but a cash-poor Darwin sitting on valuable inventory is
+    # no longer wrongly bankrupted. Computed from the live ``balance_usdc`` plus
+    # the marked holdings so it stays correct even before perceive first runs.
+    net_worth = state.balance_usdc + state.holdings_value_usdc
+    broke = net_worth < hp.minimum_viable_balance_usdc
     no_revenue = state.seconds_since_revenue > hp.revenue_grace_window_seconds
 
     if broke and no_revenue:
         state.alive = False
+        held = state.holdings_value_usdc
+        held_note = f" (cash ${state.balance_usdc:.4f} + holdings ${held:.4f})" if held else ""
         state.death_reason = (
-            f"bankruptcy: ${state.balance_usdc:.4f} < min-viable "
+            f"bankruptcy: net worth ${net_worth:.4f}{held_note} < min-viable "
             f"${hp.minimum_viable_balance_usdc:.2f} and no revenue for "
             f"{state.seconds_since_revenue:.0f}s"
         )

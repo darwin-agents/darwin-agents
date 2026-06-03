@@ -121,6 +121,27 @@ def run(state, ctx):
     if callable(ssr):
         state.seconds_since_revenue = float(ssr())
 
+    # Mark non-USDC holdings to USDC (doc 05 §Treasury). ``balance_usdc`` is
+    # cash only; a trading Darwin's inventory is folded into net worth here so
+    # the bankruptcy check below cannot kill a cash-poor-but-holding-rich
+    # Darwin. No-op (0.0) when nothing is held → net worth == cash, unchanged.
+    state.holdings_value_usdc = 0.0
+    holdings = getattr(ctx, "holdings", None)
+    if holdings is not None and not holdings.is_empty:
+        mtm = holdings.mark_to_usdc(getattr(ctx, "price_oracle", None))
+        state.holdings_value_usdc = float(mtm.value_usdc)
+        ctx.audit.log_event(
+            "holdings.marked_to_market",
+            {
+                "value_usdc": state.holdings_value_usdc,
+                "marked": mtm.marked,
+                # Symbols valued at cost basis because the oracle had no quote —
+                # a data gap a real platform should monitor (stale/missing feed).
+                "cost_basis_fallback": mtm.fallback_symbols or None,
+            },
+        )
+    state.net_worth_usdc = state.balance_usdc + state.holdings_value_usdc
+
     # Reconcile the double-entry ledger against the authoritative wallet
     # every heartbeat (doc 05). A drift beyond tolerance halts the Darwin —
     # bail out of perceive immediately, the route is already check_death.

@@ -23,6 +23,7 @@ from ..layers import LayerStack
 from ..machinery.audit_logger import AuditLogger
 from ..machinery.kill_switch import KillSignal, KillSwitch
 from ..machinery.pause_switch import PauseSwitch
+from ..machinery.holdings import Holdings
 from ..machinery.ledger import Ledger
 from ..machinery.llm_router import LLMRouter
 from ..machinery.memory import EpisodicMemory, SemanticMemory
@@ -176,6 +177,22 @@ class DarwinRuntime:
             else EpisodicMemory(hp.episodic_max_entries)
         )
         self.semantic = SemanticMemory(hp.semantic_max_staged)
+        # Non-USDC holdings + price oracle (doc 05 §Treasury). Like the ledger,
+        # the genome default is a fresh empty book — the durable record of what
+        # was bought is the audit chain. A platform with a trading Darwin
+        # injects a persistent holdings substrate + a real price feed (same
+        # surface) via ``platform.holdings`` / ``platform.price_oracle`` so net
+        # worth survives a resume and marks against live prices; absent that,
+        # holdings are empty (net worth == cash) and unpriceable positions fall
+        # back to cost basis. ``is None`` not ``or`` — an empty injected book is
+        # falsy and ``or`` would discard it (see [[optional-substrate-injection-is-not-or]]).
+        _injected_holdings = getattr(platform, "holdings", None)
+        self.holdings = (
+            _injected_holdings
+            if _injected_holdings is not None
+            else Holdings()
+        )
+        self.price_oracle = getattr(platform, "price_oracle", None)
         # The tiered vault wraps the raw per-Darwin namespace and enforces the
         # public/scoped/sensitive read model (doc 16). Each neuron is handed a
         # view bound to its own capability tags, never this object.
@@ -251,6 +268,11 @@ class DarwinRuntime:
             build_neuron_context=self._build_neuron_context,
             clock=clock,
         )
+        # Treasury net-worth seam (doc 05): perceive marks holdings to USDC and
+        # check_death folds the value into the solvency figure. Empty book +
+        # no oracle by default → net worth == cash (unchanged).
+        ctx.holdings = self.holdings
+        ctx.price_oracle = self.price_oracle
         # Path-C plumbing on the context so the orchestrator nodes can
         # submit + admit neuron proposals without reaching past the
         # context bundle into the runtime (doc 04 phase 3).

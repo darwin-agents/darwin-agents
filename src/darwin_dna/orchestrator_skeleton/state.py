@@ -34,6 +34,13 @@ class OrchestratorState(BaseModel):
 
     # economics / environment (filled by perceive)
     balance_usdc: float = 0.0
+    # Non-USDC positions marked to USDC at reconciliation (doc 05 §Treasury).
+    # ``balance_usdc`` is cash only; a trading Darwin's inventory lives here so
+    # the bankruptcy check can see net worth (cash + holdings) and not kill a
+    # Darwin that is cash-poor but holding-rich. 0.0 (the default) when a Darwin
+    # holds nothing — then net worth == cash and behaviour is unchanged.
+    holdings_value_usdc: float = 0.0
+    net_worth_usdc: float = 0.0  # balance_usdc + holdings_value_usdc, for display
     days_elapsed: float = 0.0
     content_pieces: int = 0
     published_pieces: int = 0

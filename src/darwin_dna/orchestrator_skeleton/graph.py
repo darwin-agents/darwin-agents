@@ -87,6 +87,14 @@ class OrchestratorContext:
     # SomaMergeResult). Optional — absence keeps the Phase-0 simulation
     # (clear the recurrence counter without writing code).
     soma_merge: Any = None
+    # Non-USDC holdings + price oracle (doc 05 §Treasury). When a Darwin holds
+    # positions, ``perceive`` marks them to USDC each heartbeat and
+    # ``check_death`` folds the value into the solvency figure so a cash-poor
+    # but holding-rich trading Darwin is not wrongly bankrupted. Both optional:
+    # ``holdings`` None / empty → net worth == cash (unchanged); ``price_oracle``
+    # None → positions valued at cost basis rather than zero.
+    holdings: Any = None  # machinery.Holdings
+    price_oracle: Any = None  # machinery.PriceOracle
 
 
 # The graph topology, exactly the doc's diagram. Each entry:
