@@ -23,6 +23,11 @@ from .litellm_admin import (
     ledger_llm_spend_usdc,
 )
 from .litellm_transport import LiteLLMTransport, TierMapping
+from .organism_db import (
+    OrganismDbError,
+    RealOrganismDbBackend,
+    build_organism_db_backend,
+)
 from .vault_namespace import (
     RealVaultNamespaceBackend,
     VaultNamespaceError,
@@ -49,6 +54,9 @@ __all__ = [
     "RealVaultNamespaceBackend",
     "VaultNamespaceError",
     "build_vault_namespace_backend",
+    "RealOrganismDbBackend",
+    "OrganismDbError",
+    "build_organism_db_backend",
     "LiteLLMAdminClient",
     "LiteLLMAdminError",
     "LiteLLMSpendReconciler",
