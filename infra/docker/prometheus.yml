@@ -12,6 +12,12 @@ global:
     cluster: dev
     service: darwin-platform
 
+# Alerting rules (doc 22). Evaluated every evaluation_interval; mounted into
+# the prometheus container alongside this file. Add an `alerting:` block with
+# an Alertmanager target to route the fired alerts to a pager/ticket.
+rule_files:
+  - /etc/prometheus/alerting_rules.yml
+
 scrape_configs:
   - job_name: darwin-supervisor
     static_configs:

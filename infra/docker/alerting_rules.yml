@@ -1,0 +1,86 @@
+# Prometheus alerting rules for the darwin-platform supervisor (docs/engineering/22).
+#
+# These target the real metric names the supervisor exposes on /metrics (see
+# darwin_platform.api._render_metrics). They are deliberately conservative —
+# every threshold is an operator-visible signal, not a pager-at-3am unless it
+# is genuinely actionable. Wire an Alertmanager (prometheus.yml `alerting:`)
+# to route CRITICAL → page, WARN → ticket.
+#
+# Reload after editing:  curl -X POST http://localhost:9090/-/reload
+
+groups:
+  - name: darwin-platform-availability
+    rules:
+      - alert: SupervisorDown
+        expr: up{job="darwin-supervisor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Darwin supervisor is not scrapeable"
+          description: "The supervisor /metrics endpoint has been down for 2m — the control plane is unreachable."
+
+      - alert: LiteLLMGatewayDown
+        expr: up{job="darwin-litellm"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LiteLLM gateway is down"
+          description: "Every Darwin's LLM calls route through this proxy; 5m down means the fleet's metabolism is stalled."
+
+      - alert: FleetAliveButNotAuditing
+        expr: darwin_platform_darwins > 0 and increase(darwin_platform_audit_entries_total[15m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Living Darwins but no audit writes in 15m"
+          description: "The fleet reports live Darwins yet no audit entries were committed — the drive loop may be wedged."
+
+  - name: darwin-platform-anomaly
+    rules:
+      - alert: CriticalMonitorAlerts
+        expr: increase(darwin_platform_alerts_total{severity="critical"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A CRITICAL monitor alert fired"
+          description: "The supervisor emitted a level-3 alert (spend velocity, resource anomaly, or other) in the last 10m."
+
+      - alert: ElevatedWarnAlerts
+        expr: increase(darwin_platform_alerts_total{severity="warn"}[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained WARN alert volume"
+          description: ">5 WARN alerts in 15m — a Darwin (or the fleet) is drifting toward a limit."
+
+      - alert: ResourceAutoThrottleEngaged
+        expr: sum(darwin_platform_throttle_installed) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auto-throttle is installed on one or more Darwins"
+          description: "A resource cap was installed (likely by the resource-anomaly detector). Review which Darwin over-consumed."
+
+      - alert: SanctionsRefusalSpike
+        expr: increase(darwin_platform_sanctions_refusals_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A payment was refused on sanctions screening"
+          description: "At least one counterparty hit the sanctions denylist in the last 15m — confirm it was not a legitimate destination."
+
+  - name: darwin-platform-backlog
+    rules:
+      - alert: EscalationBacklog
+        expr: darwin_platform_escalations_open > 20
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Escalation backlog is growing"
+          description: ">20 escalations open for 30m — owners are not answering, and parked work (incl. sensitive-vault grants) is stalling."
