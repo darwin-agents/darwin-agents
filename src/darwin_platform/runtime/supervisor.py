@@ -868,6 +868,10 @@ class Supervisor:
             self._leader = leader_election
         self._leader_started = False
         self._leader_watch_task: asyncio.Task | None = None
+        # K8s mode has no per-Darwin in-process drive loop to hang fleet
+        # maintenance off, so a dedicated leader-gated loop drives the
+        # LiteLLM spend reconciliation for pod-hosted Darwins (doc 13).
+        self._k8s_maintenance_task: asyncio.Task | None = None
         # Track which handles have an active drive task so we can
         # cancel/restart en masse on leadership transitions.
         self._observed_leader_state: bool = self._leader.is_leader
@@ -918,6 +922,23 @@ class Supervisor:
         # routes traffic back to this pod.
         loop = asyncio.get_event_loop()
         self._leader_watch_task = loop.create_task(self._watch_leadership())
+        # K8s fleet maintenance loop (docs 13/29/05): LLM-spend reconciliation,
+        # Merkle anchoring, and omnibus reconciliation on the maintenance
+        # interval. Only started in K8s mode with at least one of those
+        # concerns wired — the in-process path drives them from each Darwin's
+        # own _drive loop instead.
+        if (
+            self._k8s_driver is not None
+            and self._k8s_maintenance_task is None
+            and (
+                self._llm_spend_reconciler is not None
+                or self._merkle_anchor is not None
+                or self._omnibus_wallet is not None
+            )
+        ):
+            self._k8s_maintenance_task = loop.create_task(
+                self._k8s_maintenance_loop()
+            )
 
     async def _watch_leadership(self) -> None:
         # Tick frequency: the election impl already does its own
@@ -941,6 +962,38 @@ class Supervisor:
                 for h in list(self._darwins.values()):
                     if h.task is not None and not h.task.done():
                         h.task.cancel()
+
+    async def _k8s_maintenance_loop(self) -> None:
+        """Drive fleet maintenance for K8s-hosted Darwins on the maintenance
+        interval (leader-only). K8s mode has no per-Darwin in-process drive
+        loop, so this is where the fleet-level concerns the in-process path
+        runs from ``_run_fleet_maintenance`` actually fire: LLM-spend
+        reconciliation (doc 13), the daily Merkle anchor (doc 29), and omnibus
+        reconciliation (doc 05). Sleeps in short slices so shutdown cancels
+        promptly even with a long interval."""
+        interval = max(1.0, float(self._maintenance_interval))
+        elapsed = 0.0
+        while not self._closed:
+            try:
+                await asyncio.sleep(min(1.0, interval))
+            except asyncio.CancelledError:
+                break
+            if self._closed:
+                break
+            elapsed += min(1.0, interval)
+            if elapsed < interval:
+                continue
+            elapsed = 0.0
+            if not self._leader.is_leader:
+                continue
+            try:
+                await self._run_k8s_fleet_maintenance(self._clock())
+            except Exception as exc:  # noqa: BLE001 - never kill the loop
+                self._audit.record(
+                    actor="platform.maintenance",
+                    action="fleet_maintenance_failed",
+                    metadata={"reason": str(exc)[:200], "driver": "k8s"},
+                )
 
     async def _resume_from_persistence(self) -> int:
         """Re-spawn every persisted Darwin marked alive. Lossless when a
@@ -1807,18 +1860,27 @@ class Supervisor:
             ))
         return out
 
-    def reconcile_omnibus(self) -> ReconciliationResult | None:
+    def reconcile_omnibus(
+        self, *, sum_override: float | None = None,
+    ) -> ReconciliationResult | None:
         """Daily reconciliation hook. Returns None when no omnibus is
         wired (single-tenant dev). The result carries the discrepancy +
-        a pass/fail flag the ops monitor consumes."""
+        a pass/fail flag the ops monitor consumes.
+
+        ``sum_override`` supplies the summed Darwin-wallet balance when the
+        Darwins aren't in-process (K8s mode reads each pod's balance from its
+        snapshot); the default sums the in-process handles."""
         if self._omnibus_wallet is None:
             return None
-        sum_wallets = 0.0
-        for h in self._darwins.values():
-            try:
-                sum_wallets += float(h.stack.wallet.balance_usdc())
-            except Exception:
-                continue
+        if sum_override is not None:
+            sum_wallets = float(sum_override)
+        else:
+            sum_wallets = 0.0
+            for h in self._darwins.values():
+                try:
+                    sum_wallets += float(h.stack.wallet.balance_usdc())
+                except Exception:
+                    continue
         return self._omnibus_wallet.reconcile(
             sum_of_darwin_wallets=sum_wallets,
         )
@@ -3464,6 +3526,14 @@ class Supervisor:
             except (asyncio.CancelledError, Exception):
                 pass
             self._leader_watch_task = None
+        # Stop the K8s fleet-maintenance loop (doc 13 spend reconciliation).
+        if self._k8s_maintenance_task is not None:
+            self._k8s_maintenance_task.cancel()
+            try:
+                await self._k8s_maintenance_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._k8s_maintenance_task = None
         # Release the advisory lock (or whatever the impl holds) so a
         # waiting follower can win quickly.
         try:
@@ -3564,11 +3634,37 @@ class Supervisor:
         # the supervisor-side id; the snapshot also carries the genome's
         # own identity for cross-reference).
         supervisor_id = _uuid.uuid4().hex[:16]
+        # Mint this Darwin's LiteLLM virtual key (doc 13) BEFORE the pod boots
+        # and seal it into the per-Darwin Secret, so the pod authenticates as
+        # its own key — not the shared fleet master key. FATAL on mint failure
+        # (a pod that fell back to the shared key would re-open the CRITICAL
+        # cross-Darwin attribution hole this closes).
+        secret_extras: dict[str, str] = {}
+        if self._llm_key_minter is not None:
+            from ..k8s.manifests import LITELLM_VIRTUAL_KEY_SECRET_KEY
+
+            try:
+                minted = self._llm_key_minter.generate_key(
+                    darwin_id=supervisor_id, **self._llm_virtual_key_options,
+                )
+            except Exception as exc:  # noqa: BLE001 - audited + re-raised
+                self._audit.record(
+                    actor=actor, action="llm_virtual_key_mint_failed",
+                    darwin_id=supervisor_id,
+                    metadata={"reason": str(exc)[:200], "driver": "k8s"},
+                )
+                raise
+            key = str(minted.get("key") or "")
+            if not key:
+                raise RuntimeError("LiteLLM key minter returned no key")
+            self._llm_virtual_keys[supervisor_id] = key
+            secret_extras[LITELLM_VIRTUAL_KEY_SECRET_KEY] = key
         spec = DarwinSpec(
             darwin_id=supervisor_id,
             opening_usdc=float(opening_usdc),
             escalation_auto=escalation_auto,
             parent_id=parent_id,
+            secret_extras=secret_extras,
         )
         with span(
             "supervisor.spawn_k8s",
@@ -3578,7 +3674,12 @@ class Supervisor:
                 "darwin_id": supervisor_id,
             },
         ):
-            snapshot = await self._k8s_driver.start(spec)
+            try:
+                snapshot = await self._k8s_driver.start(spec)
+            except Exception:
+                # The pod never came up — don't leak the minted virtual key.
+                self._revoke_llm_virtual_key(supervisor_id)
+                raise
         spawned_at = self._clock()
         self._k8s_handles[supervisor_id] = {
             "spawned_at": spawned_at,
@@ -3827,12 +3928,139 @@ class Supervisor:
                 metadata={"reason": str(exc)[:200]},
             )
 
+    def _emit_merkle_anchor(self, roots: list, day_label: str) -> None:
+        """Publish the daily fleet Merkle anchor + audit/alert. Shared by the
+        in-process and K8s maintenance paths — the only difference is where
+        the per-Darwin roots came from (in-process audit vs pod snapshot).
+        No-op when there are no roots (nothing alive to anchor)."""
+        if self._merkle_anchor is None or not roots:
+            return
+        try:
+            anchor = self._merkle_anchor.publish_daily(
+                day_iso=day_label,
+                per_darwin_roots=roots,
+                actor="platform.maintenance",
+            )
+            self._audit.record(
+                actor="platform.maintenance",
+                action="merkle_anchor",
+                metadata={
+                    "day": day_label,
+                    "fleet_root": anchor.fleet_root,
+                    "darwin_count": len(roots),
+                    "anchor_tx": anchor.anchor_tx,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._audit.record(
+                actor="platform.maintenance",
+                action="merkle_anchor_failed",
+                metadata={"reason": str(exc)[:200]},
+            )
+            # P0 (doc 29): a failed anchor breaks the tamper-evidence chain —
+            # page on-call, don't just audit-log it.
+            self._fleet_alert(
+                "merkle_anchor_failed",
+                {"reason": str(exc)[:200], "day": day_label},
+            )
+
+    def _emit_omnibus_reconcile(self, *, sum_override: float | None) -> None:
+        """Reconcile the omnibus wallet against the summed Darwin balances +
+        audit/alert. Shared by the in-process and K8s paths; ``sum_override``
+        supplies the K8s sum (read from pod snapshots)."""
+        if self._omnibus_wallet is None:
+            return
+        try:
+            result = self.reconcile_omnibus(sum_override=sum_override)
+            if result is None:
+                return
+            self._audit.record(
+                actor="platform.maintenance",
+                action=(
+                    "omnibus_reconcile" if result.ok
+                    else "omnibus_reconcile_discrepancy"
+                ),
+                metadata={
+                    "ok": result.ok,
+                    "discrepancy_usdc": result.discrepancy_usdc,
+                    "note": result.note,
+                },
+            )
+            if not result.ok:
+                # P0 (doc 05): the books don't balance against the on-chain
+                # omnibus balance — real money may be missing. Page on-call.
+                self._fleet_alert(
+                    "omnibus_reconcile_discrepancy",
+                    {
+                        "discrepancy_usdc": result.discrepancy_usdc,
+                        "note": result.note,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._audit.record(
+                actor="platform.maintenance",
+                action="omnibus_reconcile_failed",
+                metadata={"reason": str(exc)[:200]},
+            )
+            self._fleet_alert(
+                "omnibus_reconcile_failed", {"reason": str(exc)[:200]},
+            )
+
+    def _emit_llm_reconciliation(self, report: Any) -> None:
+        """Audit + page on one reconciliation report. Shared by the
+        in-process and K8s reconcilers so both treat drift identically."""
+        did = report.darwin_id
+        if report.error is not None:
+            # Proxy unreachable — availability concern, audit only.
+            self._audit.record(
+                actor="platform.maintenance",
+                action="llm_spend_reconcile_unavailable",
+                darwin_id=did,
+                metadata={"reason": report.error},
+            )
+            return
+        if report.within_tolerance:
+            self._audit.record(
+                actor="platform.maintenance",
+                action="llm_spend_reconciled",
+                darwin_id=did,
+                metadata={
+                    "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
+                    "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
+                    "drift_usdc": round(report.drift_usdc, 6),
+                },
+            )
+        else:
+            # The proxy's metered spend and the wallet's LLM debits disagree
+            # beyond tolerance — money may be mis-attributed.
+            self._audit.record(
+                actor="platform.maintenance",
+                action="llm_spend_drift",
+                darwin_id=did,
+                metadata={
+                    "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
+                    "expected_ledger_usdc": round(report.expected_ledger_usdc, 6),
+                    "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
+                    "drift_usdc": round(report.drift_usdc, 6),
+                },
+            )
+            self._fleet_alert(
+                "llm_spend_drift",
+                {
+                    "darwin_id": did,
+                    "drift_usdc": round(report.drift_usdc, 6),
+                    "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
+                    "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
+                },
+            )
+
     def _reconcile_llm_spend(self, now: float) -> None:
-        """Cross-check each live Darwin's proxy-side LLM spend against its
-        in-process LLM debits (doc 13 §Observability). Drift beyond the
+        """Cross-check each in-process Darwin's proxy-side LLM spend against
+        its in-process LLM debits (doc 13 §Observability). Drift beyond the
         reconciler's tolerance is audited + paged — the wallet debit stays
         the authoritative ledger posting, this is the agreement check. Never
-        raises; one Darwin's failure doesn't skip the rest."""
+        raises; one Darwin's failure doesn't skip the rest. The K8s twin is
+        :meth:`_areconcile_llm_spend_k8s` (pods report spend via snapshot)."""
         reconciler = self._llm_spend_reconciler
         if reconciler is None or not self._llm_virtual_keys:
             return
@@ -3858,51 +4086,89 @@ class Supervisor:
                     metadata={"reason": str(exc)[:200]},
                 )
                 continue
-            if report.error is not None:
-                # Proxy unreachable — availability concern, audit only.
+            self._emit_llm_reconciliation(report)
+
+    async def _gather_k8s_snapshots(self) -> dict[str, Any]:
+        """Fetch every live K8s Darwin's snapshot once, caching it on the
+        handle. A pod that can't be reached is audited and omitted (the
+        maintenance steps simply skip it this cycle). Shared by all the K8s
+        fleet-maintenance concerns so they run off one consistent batch."""
+        snaps: dict[str, Any] = {}
+        for did in list(self._k8s_handles):
+            try:
+                snap = await self._k8s_driver.snapshot(did)
+            except Exception as exc:  # noqa: BLE001 - pod unreachable etc.
                 self._audit.record(
                     actor="platform.maintenance",
-                    action="llm_spend_reconcile_unavailable",
+                    action="k8s_snapshot_failed",
                     darwin_id=did,
-                    metadata={"reason": report.error},
+                    metadata={"reason": str(exc)[:200]},
                 )
                 continue
-            if report.within_tolerance:
-                self._audit.record(
-                    actor="platform.maintenance",
-                    action="llm_spend_reconciled",
-                    darwin_id=did,
-                    metadata={
-                        "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
-                        "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
-                        "drift_usdc": round(report.drift_usdc, 6),
-                    },
+            self._k8s_handles[did]["snapshot"] = snap
+            snaps[did] = snap
+        return snaps
+
+    def _reconcile_llm_from_snapshots(self, snaps: dict[str, Any]) -> None:
+        """LLM spend reconciliation off an already-fetched snapshot batch
+        (doc 13). Shared by the K8s LLM-only path and the full K8s fleet
+        maintenance so a snapshot is fetched once per cycle."""
+        reconciler = self._llm_spend_reconciler
+        if reconciler is None or not self._llm_virtual_keys:
+            return
+        for did, key in list(self._llm_virtual_keys.items()):
+            snap = snaps.get(did)
+            if snap is None:
+                continue
+            ledger_spend = float(getattr(snap, "llm_spend_usdc", 0.0) or 0.0)
+            report = reconciler.reconcile_key(
+                darwin_id=did, virtual_key=key, ledger_spend_usdc=ledger_spend,
+            )
+            self._emit_llm_reconciliation(report)
+
+    async def _areconcile_llm_spend_k8s(self) -> None:
+        """K8s twin of :meth:`_reconcile_llm_spend`. Each Darwin runs in its
+        own pod, so its LLM ledger spend can't be read in-process — instead we
+        fetch the pod's snapshot (which carries ``llm_spend_usdc``) and
+        reconcile that against the proxy's per-key spend. Never raises."""
+        if self._k8s_driver is None or self._llm_spend_reconciler is None:
+            return
+        snaps = await self._gather_k8s_snapshots()
+        self._reconcile_llm_from_snapshots(snaps)
+
+    async def _run_k8s_fleet_maintenance(self, now: float) -> None:
+        """Fleet maintenance for K8s-hosted Darwins (doc 13/29/05). The
+        in-process equivalent (:meth:`_run_fleet_maintenance`) is driven from
+        each Darwin's drive loop, which K8s mode doesn't have — so this runs
+        the same concerns off one snapshot batch: LLM-spend reconciliation,
+        the daily Merkle anchor (roots collected from pods), and omnibus
+        reconciliation (balances summed from pods). Never raises."""
+        if self._k8s_driver is None:
+            return
+        snaps = await self._gather_k8s_snapshots()
+        # LLM per-key spend (doc 13).
+        self._reconcile_llm_from_snapshots(snaps)
+        # Daily Merkle anchor (doc 29): collect each pod's audit root.
+        if self._merkle_anchor is not None:
+            day_label = (
+                time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now))
+                + f".{int((now % 1) * 1_000_000):06d}"
+            )
+            roots = [
+                DarwinDailyRoot(
+                    darwin_id=did, day_iso=day_label, root=root,
                 )
-            else:
-                # The proxy's metered spend and the wallet's LLM debits
-                # disagree beyond tolerance — money may be mis-attributed.
-                self._audit.record(
-                    actor="platform.maintenance",
-                    action="llm_spend_drift",
-                    darwin_id=did,
-                    metadata={
-                        "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
-                        "expected_ledger_usdc": round(
-                            report.expected_ledger_usdc, 6,
-                        ),
-                        "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
-                        "drift_usdc": round(report.drift_usdc, 6),
-                    },
-                )
-                self._fleet_alert(
-                    "llm_spend_drift",
-                    {
-                        "darwin_id": did,
-                        "drift_usdc": round(report.drift_usdc, 6),
-                        "proxy_spend_usdc": round(report.proxy_spend_usdc, 6),
-                        "ledger_spend_usdc": round(report.ledger_spend_usdc, 6),
-                    },
-                )
+                for did, snap in snaps.items()
+                if (root := getattr(snap, "merkle_root", None))
+            ]
+            self._emit_merkle_anchor(roots, day_label)
+        # Omnibus reconciliation (doc 05): sum the pods' on-chain balances.
+        if self._omnibus_wallet is not None:
+            total = sum(
+                float(getattr(s, "balance_usdc", 0.0) or 0.0)
+                for s in snaps.values()
+            )
+            self._emit_omnibus_reconcile(sum_override=total)
 
     # -- Phase 2 maintenance cadence (doc 22) ----------------------------
     def _run_maintenance(self, handle: _Handle) -> None:
@@ -3995,72 +4261,11 @@ class Supervisor:
             + f".{int((now % 1) * 1_000_000):06d}"
         )
         if self._merkle_anchor is not None:
-            try:
-                roots = self.collect_daily_merkle_roots(day_label)
-                if roots:
-                    anchor = self._merkle_anchor.publish_daily(
-                        day_iso=day_label,
-                        per_darwin_roots=roots,
-                        actor="platform.maintenance",
-                    )
-                    self._audit.record(
-                        actor="platform.maintenance",
-                        action="merkle_anchor",
-                        metadata={
-                            "day": day_label,
-                            "fleet_root": anchor.fleet_root,
-                            "darwin_count": len(roots),
-                            "anchor_tx": anchor.anchor_tx,
-                        },
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self._audit.record(
-                    actor="platform.maintenance",
-                    action="merkle_anchor_failed",
-                    metadata={"reason": str(exc)[:200]},
-                )
-                # P0 (doc 29): a failed anchor breaks the tamper-evidence
-                # chain — page on-call, don't just audit-log it.
-                self._fleet_alert(
-                    "merkle_anchor_failed",
-                    {"reason": str(exc)[:200], "day": day_label},
-                )
+            self._emit_merkle_anchor(
+                self.collect_daily_merkle_roots(day_label), day_label,
+            )
         if self._omnibus_wallet is not None:
-            try:
-                result = self.reconcile_omnibus()
-                if result is not None:
-                    self._audit.record(
-                        actor="platform.maintenance",
-                        action=(
-                            "omnibus_reconcile" if result.ok
-                            else "omnibus_reconcile_discrepancy"
-                        ),
-                        metadata={
-                            "ok": result.ok,
-                            "discrepancy_usdc": result.discrepancy_usdc,
-                            "note": result.note,
-                        },
-                    )
-                    if not result.ok:
-                        # P0 (doc 05): the books don't balance against the
-                        # on-chain omnibus balance — real money may be
-                        # missing. Page on-call.
-                        self._fleet_alert(
-                            "omnibus_reconcile_discrepancy",
-                            {
-                                "discrepancy_usdc": result.discrepancy_usdc,
-                                "note": result.note,
-                            },
-                        )
-            except Exception as exc:  # noqa: BLE001
-                self._audit.record(
-                    actor="platform.maintenance",
-                    action="omnibus_reconcile_failed",
-                    metadata={"reason": str(exc)[:200]},
-                )
-                self._fleet_alert(
-                    "omnibus_reconcile_failed", {"reason": str(exc)[:200]},
-                )
+            self._emit_omnibus_reconcile(sum_override=None)
         # Open-intent reconciliation: a crash between an on-chain transfer and
         # its log_outcome leaves a dangling payment intent. Surface it (once
         # per darwin, so a restart pages but steady-state doesn't spam).

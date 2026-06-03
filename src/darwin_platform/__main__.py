@@ -975,12 +975,19 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
         in ("1", "true", "yes")
     )
     if _vk_enabled:
-        vk_url = getattr(args, "litellm_url", None) or os.environ.get(
-            "DARWIN_LITELLM_URL"
+        # In k8s mode the supervisor pod carries the proxy URL + admin key
+        # under DARWIN_POD_LITELLM_* (it forwards them to pods); in-process
+        # mode uses the DARWIN_LITELLM_* / CLI names. Accept either so the
+        # minter works in both.
+        vk_url = (
+            getattr(args, "litellm_url", None)
+            or os.environ.get("DARWIN_LITELLM_URL")
+            or os.environ.get("DARWIN_POD_LITELLM_URL")
         )
         vk_master = (
             getattr(args, "litellm_master_key", None)
             or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
+            or os.environ.get("DARWIN_POD_LITELLM_KEY")
         )
         if not vk_url:
             print(
@@ -1217,6 +1224,15 @@ def _build_k8s_driver(args: argparse.Namespace):
     # pod and the K8s driver hands them off to spawned orchestrators.
     # Each entry maps "what the supervisor pod sees" → "what the
     # orchestrator's _build_real_factories looks for".
+    # Per-Darwin LiteLLM virtual keys (doc 13): when enabled, the supervisor
+    # mints one key per pod and injects it as DARWIN_LITELLM_MASTER_KEY via the
+    # per-Darwin Secret (build_deployment, secretKeyRef). Forwarding the shared
+    # fleet master key here too would collide on that env name AND defeat the
+    # isolation, so omit it — pods never see the fleet master key.
+    _vk_enabled = getattr(args, "litellm_virtual_keys", False) or (
+        os.environ.get("DARWIN_LITELLM_VIRTUAL_KEYS", "").lower()
+        in ("1", "true", "yes")
+    )
     pod_extra_env: list[dict[str, Any]] = []
     for supervisor_key, pod_key in (
         ("DARWIN_POD_LITELLM_URL", "DARWIN_LITELLM_URL"),
@@ -1224,6 +1240,8 @@ def _build_k8s_driver(args: argparse.Namespace):
         ("DARWIN_POD_VAULT_ADDR", "DARWIN_VAULT_URL"),
         ("DARWIN_POD_VAULT_TOKEN", "DARWIN_VAULT_TOKEN"),
     ):
+        if _vk_enabled and pod_key == "DARWIN_LITELLM_MASTER_KEY":
+            continue  # per-pod virtual key supplies this via secretKeyRef
         value = os.environ.get(supervisor_key)
         if value:
             pod_extra_env.append({"name": pod_key, "value": value})
