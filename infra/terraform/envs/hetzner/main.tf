@@ -32,6 +32,11 @@ module "cluster" {
   kubeconfig_path     = "${path.module}/.kubeconfig"
   ssh_public_key      = var.ssh_public_key
   ssh_private_key     = var.ssh_private_key
+
+  # Kata true-microVM runtime on nodes (doc 17). Off by default → gVisor
+  # only; requires nested virt. See README §5b.
+  kata_enabled = var.kata_enabled
+  kata_release = var.kata_release
 }
 
 # Inline creds from the cluster outputs (unknown at plan, resolved at apply) —
@@ -87,6 +92,17 @@ module "platform_stack" {
   storage_class         = module.hcloud_bootstrap.storage_class # hcloud-volumes
   database_storage_size = "10Gi"
   database_instances    = 1 # bump to >=3 for HA Postgres
+
+  # Vault auto-unseal (doc 20, README §4b). Empty = manual unseal (default).
+  vault_seal_config_hcl = var.vault_seal_config_hcl
+  vault_seal_env        = var.vault_seal_env
+
+  # Postgres PITR backup (doc 20, README §6). Off by default.
+  database_backup_enabled               = var.database_backup_enabled
+  database_backup_destination_path      = var.database_backup_destination_path
+  database_backup_endpoint_url          = var.database_backup_endpoint_url
+  database_backup_s3_credentials_secret = var.database_backup_s3_credentials_secret
+  database_backup_retention_policy      = var.database_backup_retention_policy
 
   # gVisor isolation: nodes carry the runsc shim (cloud-init); the chart
   # creates the RuntimeClass named "gvisor" → handler runsc.

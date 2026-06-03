@@ -93,3 +93,64 @@ variable "acme_server" {
   description = "ACME directory. Default Let's Encrypt PROD; switch to staging (https://acme-staging-v02.api.letsencrypt.org/directory) while validating to avoid rate limits."
   default     = "https://acme-v02.api.letsencrypt.org/directory"
 }
+
+# -- Postgres PITR backup (doc 20; see README §6). All off by default. ------
+variable "database_backup_enabled" {
+  type        = bool
+  description = "Enable Postgres PITR (WAL archiving + scheduled base backups to object storage)."
+  default     = false
+}
+
+variable "database_backup_destination_path" {
+  type        = string
+  description = "S3-style backup destination, e.g. s3://bucket/darwin-pg."
+  default     = ""
+}
+
+variable "database_backup_endpoint_url" {
+  type        = string
+  description = "Object-store endpoint URL (e.g. Hetzner Object Storage). Empty = AWS S3 default."
+  default     = ""
+}
+
+variable "database_backup_s3_credentials_secret" {
+  type        = string
+  description = "Secret (namespace darwin) with ACCESS_KEY_ID + ACCESS_SECRET_KEY for the object store."
+  default     = ""
+}
+
+variable "database_backup_retention_policy" {
+  type        = string
+  description = "Backup/WAL retention (CNPG syntax, e.g. 30d)."
+  default     = "30d"
+}
+
+# -- Vault auto-unseal (doc 20; see README §4b). Empty = manual unseal. ------
+variable "vault_seal_config_hcl" {
+  type        = string
+  description = "Raw `seal \"<type>\" { ... }` HCL to enable Vault auto-unseal."
+  default     = ""
+}
+
+variable "vault_seal_env" {
+  type = list(object({
+    env_name    = string
+    secret_name = string
+    secret_key  = string
+  }))
+  description = "Env the Vault seal stanza needs (e.g. VAULT_TOKEN), each from a Secret key."
+  default     = []
+}
+
+# -- Kata true microVMs (doc 17; see README §5b). Needs nested virt. ---------
+variable "kata_enabled" {
+  type        = bool
+  description = "Install Kata + register the containerd `kata` handler on nodes. Requires /dev/kvm. Default off → gVisor only."
+  default     = false
+}
+
+variable "kata_release" {
+  type        = string
+  description = "Pinned kata-containers release for the kata-static bundle (only used when kata_enabled)."
+  default     = "3.21.0"
+}

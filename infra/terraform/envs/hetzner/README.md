@@ -102,13 +102,114 @@ authenticate via the Kubernetes auth method (`auth_method=kubernetes`, role
 > separate custodians. Never in this cluster, in git, or in the state bucket.
 > Losing the key threshold = permanently sealed data.
 
-## 5. Verify gVisor
+### 4b. Auto-unseal (optional, doc 20)
+
+Manual unseal means a human after every pod restart. To make restarts
+self-heal, configure a **seal stanza** so Vault unseals from an external key.
+Cloud-agnostic recommended path: **transit auto-unseal** against a small
+bootstrap Vault (or any Vault you trust) that holds the unseal key.
+
+`terraform.tfvars`:
+
+```hcl
+vault_seal_config_hcl = <<-HCL
+  seal "transit" {
+    address    = "https://unsealer.example.com:8200"
+    key_name   = "darwin-autounseal"
+    mount_path = "transit/"
+  }
+HCL
+# Source the seal's credentials from a Secret (never in tfvars/state):
+#   kubectl -n vault create secret generic vault-seal --from-literal=token=<transit-token>
+vault_seal_env = [
+  { env_name = "VAULT_TOKEN", secret_name = "vault-seal", secret_key = "token" },
+]
+```
+
+`vault operator init` is still a one-time step; thereafter a restarted pod
+unseals itself (no human). With auto-unseal the init produces *recovery* keys
+rather than unseal keys. (Cloud KMS — `seal "awskms"|"gcpckms"|"azurekeyvault"`
+— works the same way where a KMS is available.)
+
+## 5. Verify gVisor (default per-Darwin isolation)
 
 ```bash
 kubectl get runtimeclass gvisor                 # handler: runsc
 # Spawn a darwin and confirm its orchestrator pod runs under gVisor:
 kubectl -n darwin-<id> get pod -o jsonpath='{.items[0].spec.runtimeClassName}'   # gvisor
 ```
+
+gVisor (a userspace kernel) is the default because Hetzner Cloud VMs have **no
+nested virtualization**. Per-neuron *code execution* gets a second, stronger
+boundary via E2B Firecracker microVMs (the production sandbox adapter).
+
+### 5b. Kata true microVMs (optional, doc 17)
+
+For a hardware-virtualized boundary (each pod in its own QEMU microVM), enable
+Kata — but **only on nested-virt-capable nodes** (`/dev/kvm` present: bare
+metal or an instance type with KVM passthrough; stock Hetzner Cloud shared/
+dedicated vCPU does not qualify). The node bootstrap installs Kata + registers
+the containerd `kata` handler when `kata_enabled=true`; point the runtime class
+at it:
+
+```hcl
+# cluster module:
+kata_enabled = true            # installs kata-static + containerd `kata` handler
+# platform-stack:
+runtime_class   = "kata"       # per-Darwin pods → runtimeClassName: kata
+runtime_handler = "kata"
+```
+
+```bash
+kubectl get runtimeclass kata
+kubectl -n darwin-<id> get pod -o jsonpath='{.items[0].spec.runtimeClassName}'   # kata
+```
+
+If `/dev/kvm` is absent the node logs a skip (it does NOT fail to boot); pods
+requesting `runtimeClassName: kata` then stay Pending — keep gVisor in that case.
+
+## 6. Postgres PITR (optional, doc 20)
+
+Continuous WAL archiving + scheduled base backups to S3-compatible object
+storage give point-in-time recovery. Create a bucket + a credentials Secret in
+the platform namespace, then enable it:
+
+```bash
+kubectl -n darwin create secret generic pg-backup-s3 \
+  --from-literal=ACCESS_KEY_ID=<key> --from-literal=ACCESS_SECRET_KEY=<secret>
+```
+
+```hcl
+# platform-stack:
+database_backup_enabled               = true
+database_backup_destination_path      = "s3://my-bucket/darwin-pg"
+database_backup_endpoint_url          = "https://fsn1.your-objectstorage.com"  # Hetzner Object Storage
+database_backup_s3_credentials_secret = "pg-backup-s3"
+database_backup_retention_policy      = "30d"
+```
+
+CNPG archives WAL continuously and takes a base backup daily (and once
+immediately). **Restore** to a point in time = bootstrap a *new* Cluster with
+`bootstrap.recovery` pointing at the same object store and a
+`recoveryTarget.targetTime`:
+
+```yaml
+spec:
+  bootstrap:
+    recovery:
+      source: darwin-platform-db
+      recoveryTarget: { targetTime: "2026-06-03 12:00:00+00" }
+  externalClusters:
+    - name: darwin-platform-db
+      barmanObjectStore:
+        destinationPath: s3://my-bucket/darwin-pg
+        endpointURL: https://fsn1.your-objectstorage.com
+        s3Credentials:
+          accessKeyId:     { name: pg-backup-s3, key: ACCESS_KEY_ID }
+          secretAccessKey: { name: pg-backup-s3, key: ACCESS_SECRET_KEY }
+```
+
+Verify backups: `kubectl -n darwin get backups.postgresql.cnpg.io`.
 
 ## Teardown
 
