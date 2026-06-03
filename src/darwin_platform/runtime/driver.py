@@ -50,6 +50,13 @@ class DarwinSpec:
     # orchestrator pod should honour. Avoid putting secrets here; use the
     # K8s driver's per-Darwin Secret instead.
     extra_env: dict[str, str] = field(default_factory=dict)
+    # Per-spawn secret values, merged into the per-Darwin Secret (the K8s
+    # driver projects them into the pod). This is the channel for the
+    # supervisor-minted LiteLLM virtual key (doc 13): minted before
+    # start(), passed here, surfaced to the pod as DARWIN_LITELLM_MASTER_KEY
+    # via secretKeyRef so the pod authenticates as its own key — never the
+    # shared fleet master key. The in-process driver ignores this.
+    secret_extras: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,17 @@ class DarwinSnapshot:
     days_elapsed: float
     balance_usdc: float
     death_reason: str | None = None
+    # Cumulative in-process LLM debits (memo ``llm:*``) the pod has booked,
+    # in USDC. The supervisor reconciles this against the proxy's per-key
+    # spend table (doc 13 §Observability) for K8s Darwins, the same way the
+    # in-process path reconciles against ``wallet.movements()``.
+    llm_spend_usdc: float = 0.0
+    # The pod's current audit Merkle root (doc 29). In K8s mode each Darwin's
+    # hash-chained audit log lives in its pod, so the supervisor collects the
+    # roots via snapshot to publish the daily fleet Merkle anchor — the
+    # in-process path reads ``runtime.audit.merkle_root()`` directly. ``None``
+    # when the pod can't produce one (kept out of the anchor).
+    merkle_root: str | None = None
 
 
 @runtime_checkable

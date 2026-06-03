@@ -17,6 +17,7 @@ from darwin_platform.k8s.manifests import (
     NAMESPACE_LABEL_MANAGED_BY,
     POD_LABEL_COMPONENT,
     POD_LABEL_DARWIN_ID,
+    LITELLM_VIRTUAL_KEY_SECRET_KEY,
     DarwinPodConfig,
     build_bundle,
     build_configmap,
@@ -28,6 +29,50 @@ from darwin_platform.k8s.manifests import (
     build_service,
     namespace_name,
 )
+
+
+def test_litellm_virtual_key_injected_as_master_key_env():
+    """When the supervisor seals a per-Darwin virtual key into the Secret
+    (doc 13), the deployment surfaces it as DARWIN_LITELLM_MASTER_KEY via a
+    secretKeyRef — so the pod authenticates as its own key, not a shared one."""
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+        litellm_virtual_key=True,
+    )
+    env = d["spec"]["template"]["spec"]["containers"][0]["env"]
+    by_name = {e["name"]: e for e in env}
+    ref = by_name["DARWIN_LITELLM_MASTER_KEY"]["valueFrom"]["secretKeyRef"]
+    assert ref == {
+        "name": "darwin-control", "key": LITELLM_VIRTUAL_KEY_SECRET_KEY,
+    }
+
+
+def test_no_virtual_key_env_when_disabled():
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+    )
+    env = d["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert all(e["name"] != "DARWIN_LITELLM_MASTER_KEY" for e in env)
+
+
+def test_build_bundle_seals_virtual_key_into_secret_and_env():
+    bundle = build_bundle(
+        darwin_id="abc123", namespace_prefix="darwin-", opening_usdc=1.0,
+        escalation_auto="approve", parent_id=None, manifest_json=None,
+        layer_blobs={}, layer_names=[], control_token="tok",
+        config=DarwinPodConfig(),
+        secret_extras={LITELLM_VIRTUAL_KEY_SECRET_KEY: "sk-darwin-9"},
+    )
+    # The key is in the Secret (base64) ...
+    import base64
+    raw = bundle.secret["data"][LITELLM_VIRTUAL_KEY_SECRET_KEY]
+    assert base64.b64decode(raw).decode() == "sk-darwin-9"
+    # ... and the deployment references it as the master-key env.
+    env = bundle.deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    by_name = {e["name"]: e for e in env}
+    assert "valueFrom" in by_name["DARWIN_LITELLM_MASTER_KEY"]
 
 
 DARWIN_ID = "abcdef0123456789"

@@ -133,6 +133,51 @@ async def test_start_creates_every_resource_in_order():
 
 
 @pytest.mark.asyncio
+async def test_start_merges_per_spawn_secret_extras_into_secret():
+    """The supervisor passes the minted LiteLLM virtual key via
+    DarwinSpec.secret_extras; the driver must merge it into the per-Darwin
+    Secret so the pod can read it (doc 13)."""
+    import base64
+    from darwin_platform.k8s.manifests import LITELLM_VIRTUAL_KEY_SECRET_KEY
+
+    api = _RecordingApi()
+    control = _RecordingControl(become_ready_after=1)
+    driver = K8sDarwinDriver(
+        api=api, control_client=control,
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+    await driver.start(DarwinSpec(
+        darwin_id="d-vk", opening_usdc=50.0,
+        secret_extras={LITELLM_VIRTUAL_KEY_SECRET_KEY: "sk-darwin-7"},
+    ))
+    secret_body = next(b for (k, _ns, b) in api.created if k == "secret")
+    raw = secret_body["data"][LITELLM_VIRTUAL_KEY_SECRET_KEY]
+    assert base64.b64decode(raw).decode() == "sk-darwin-7"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_parses_llm_spend_usdc():
+    api = _RecordingApi()
+
+    class _SpendControl(_RecordingControl):
+        async def snapshot(self, base_url, token, darwin_id):
+            return {
+                "darwin_id": darwin_id, "alive": True, "paused": False,
+                "killed": False, "tick": 1, "days_elapsed": 0.1,
+                "balance_usdc": 100.0, "llm_spend_usdc": 3.25,
+                "merkle_root": "deadbeef",
+            }
+
+    driver = K8sDarwinDriver(
+        api=api, control_client=_SpendControl(become_ready_after=1),
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+    snap = await driver.start(DarwinSpec(darwin_id="d-s", opening_usdc=50.0))
+    assert snap.llm_spend_usdc == 3.25
+    assert snap.merkle_root == "deadbeef"
+
+
+@pytest.mark.asyncio
 async def test_start_rolls_back_namespace_on_failure():
     api = _RecordingApi(fail_on={"deployment"})
     control = _RecordingControl()

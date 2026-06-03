@@ -55,6 +55,12 @@ POD_LABEL_COMPONENT = "darwin.io/component"
 CONTROL_API_PORT = 8001
 LANCEDB_PORT = 9999
 
+# Secret key (within the per-Darwin ``darwin-control`` Secret) under which the
+# supervisor stores this Darwin's minted LiteLLM virtual key (doc 13). The
+# deployment surfaces it as the DARWIN_LITELLM_MASTER_KEY env via secretKeyRef
+# so the pod authenticates as its own key, never the shared fleet master key.
+LITELLM_VIRTUAL_KEY_SECRET_KEY = "litellm_virtual_key"
+
 
 @dataclass(frozen=True)
 class DarwinPodConfig:
@@ -310,6 +316,7 @@ def build_deployment(
     opening_usdc: float,
     escalation_auto: str | None,
     database_url_secret_ref: tuple[str, str] | None = None,
+    litellm_virtual_key: bool = False,
 ) -> dict[str, Any]:
     """Orchestrator pod = the genome's heart. One Deployment, one
     replica (per-Darwin singleton; HA is at the supervisor layer via the
@@ -340,6 +347,22 @@ def build_deployment(
             "name": "DATABASE_URL",
             "valueFrom": {
                 "secretKeyRef": {"name": secret_name, "key": secret_key},
+            },
+        })
+    # Per-Darwin LiteLLM virtual key (doc 13). Sourced from this Darwin's own
+    # ``darwin-control`` Secret and surfaced as DARWIN_LITELLM_MASTER_KEY, so
+    # every LiteLLM call the pod makes (chat + embeddings) authenticates as
+    # the Darwin's own key. The supervisor omits the shared fleet master key
+    # from config.extra_env when virtual keys are on, so there is no env-name
+    # collision.
+    if litellm_virtual_key:
+        env.append({
+            "name": "DARWIN_LITELLM_MASTER_KEY",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "darwin-control",
+                    "key": LITELLM_VIRTUAL_KEY_SECRET_KEY,
+                },
             },
         })
     env.extend(list(config.extra_env))
@@ -667,6 +690,11 @@ def build_bundle(
     database_url_secret_ref: tuple[str, str] | None = None,
     spawned_at: float | None = None,
 ) -> DarwinManifestBundle:
+    # The pod authenticates LiteLLM as its own virtual key when the supervisor
+    # sealed one into the per-Darwin Secret (doc 13).
+    has_virtual_key = bool(
+        secret_extras and secret_extras.get(LITELLM_VIRTUAL_KEY_SECRET_KEY)
+    )
     """Helper composing every per-Darwin object. The driver applies them
     in order: namespace, then configmap/secret/pvc, then service, then
     deployment, then network policy."""
@@ -704,6 +732,7 @@ def build_bundle(
             opening_usdc=opening_usdc,
             escalation_auto=escalation_auto,
             database_url_secret_ref=database_url_secret_ref,
+            litellm_virtual_key=has_virtual_key,
         ),
         network_policy=build_network_policy(
             darwin_id=darwin_id, namespace=namespace, config=config,

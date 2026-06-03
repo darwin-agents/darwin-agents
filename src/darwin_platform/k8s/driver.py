@@ -156,6 +156,9 @@ class K8sDarwinDriver:
                 f"darwin {spec.darwin_id!r} is already running in this driver"
             )
         token = _new_control_token()
+        # Per-spawn secret values (e.g. the supervisor-minted LiteLLM virtual
+        # key) override / extend the driver-level defaults for this Darwin.
+        merged_secret_extras = {**self._secret_extras, **spec.secret_extras}
         bundle: DarwinManifestBundle = build_bundle(
             darwin_id=spec.darwin_id,
             namespace_prefix=self._prefix,
@@ -167,7 +170,7 @@ class K8sDarwinDriver:
             layer_names=spec.layer_names,
             control_token=token,
             config=self._config,
-            secret_extras=self._secret_extras,
+            secret_extras=merged_secret_extras,
             database_url_secret_ref=self._db_secret_ref,
             spawned_at=self._clock(),
         )
@@ -404,6 +407,8 @@ class K8sDarwinDriver:
             days_elapsed=float(data.get("days_elapsed", 0.0)),
             balance_usdc=float(data.get("balance_usdc", 0.0)),
             death_reason=data.get("death_reason"),
+            llm_spend_usdc=float(data.get("llm_spend_usdc", 0.0) or 0.0),
+            merkle_root=(data.get("merkle_root") or None),
         )
 
 
