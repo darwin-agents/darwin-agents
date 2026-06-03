@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): wire NamespaceProvisioner with real backends at serve
+- feat(k8s): add DriverK8sNamespaceBackend for provisioner teardown
+- feat(adapters): add RealOrganismDbBackend for per-Darwin Postgres databases
+- feat(platform): wire per-Darwin SomaMerger on genome apply_mutation context
+- feat(evolution): apply promoted patches to live soma via soma_merge hook
 - feat(infra): enable LiteLLM Prometheus metrics and per-Darwin routing
 - feat(platform): k8s virtual keys, fleet maintenance, and LLM spend reconcile
 - feat(k8s): inject per-Darwin LiteLLM virtual key via control Secret
