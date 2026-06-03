@@ -72,7 +72,12 @@ def _resolve_escalations(state, ctx) -> None:
         decision = resp.get("decision")
         if decision in ("approve", "data"):
             task = dict(esc["task"])
-            if decision == "data" and isinstance(resp.get("data"), dict):
+            # Thread any owner-supplied data into the resumed task payload.
+            # Both "data" (owner answered a question) and "approve" (owner
+            # approved + the platform may have attached a one-time vault
+            # grant token, doc 16) carry it through so the retrying neuron
+            # sees e.g. ``payload["grant_token"]`` for a sensitive read.
+            if isinstance(resp.get("data"), dict) and resp["data"]:
                 payload = dict(task.get("payload", {}))
                 payload.update(resp["data"])
                 task["payload"] = payload
