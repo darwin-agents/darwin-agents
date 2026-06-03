@@ -18,6 +18,7 @@ from .accounts_manager import AccountsManager
 from .ads_manager import AdsManager
 from .analytics_measurer import AnalyticsMeasurer
 from .browser_operator import BrowserOperator
+from .compliance_kyc import ComplianceKycSubmitter
 from .content_publisher import ContentPublisher
 from .content_writer import ContentWriter
 from .infrastructure_provisioner import InfrastructureProvisioner, ProvisionPort
@@ -56,5 +57,6 @@ def build_catalog(
         AdsManager(),
         TradingOperator(),
         SupportResponder(),
+        ComplianceKycSubmitter(),
     ]
     return load_catalog(neurons)

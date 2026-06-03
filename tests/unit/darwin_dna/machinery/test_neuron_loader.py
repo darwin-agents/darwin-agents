@@ -29,13 +29,14 @@ def test_founding_catalog_loads():
 
     cat = build_catalog(wallet=_Wallet(), provision=_Prov())
     # The full founding catalog per doc 04: write/publish/browse/pay/
-    # vault/provision/measure/scout/accounts/ads/trading/support.
+    # vault/provision/measure/scout/accounts/ads/trading/support, plus the
+    # compliance.kyc_submitter that closes the sensitive-read grant loop.
     expected = {
         "content.writer", "content.publisher", "browser.operator",
         "payments.facilitator", "vault.writer", "infrastructure.provisioner",
         "analytics.measurer", "research.scout",
         "accounts.manager", "ads.manager", "trading.operator",
-        "support.responder",
+        "support.responder", "compliance.kyc_submitter",
     }
     assert set(cat) == expected
 
