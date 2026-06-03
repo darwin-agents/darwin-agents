@@ -149,6 +149,19 @@ class K8sDarwinDriver:
         self._secret_extras = dict(secret_extras or {})
         self._handles: dict[str, _K8sHandle] = {}
 
+    @property
+    def api(self) -> KubernetesApi:
+        """The underlying KubernetesApi. Exposed so the tenant
+        NamespaceProvisioner's :class:`DriverK8sNamespaceBackend` can reuse the
+        same client for its tolerant teardown sweep (doc 22)."""
+        return self._api
+
+    @property
+    def namespace_prefix(self) -> str:
+        """The driver's namespace prefix — the provisioner's K8s backend must
+        derive names with the same prefix so they line up."""
+        return self._prefix
+
     # -- lifecycle -------------------------------------------------------
     async def start(self, spec: DarwinSpec) -> DarwinSnapshot:
         if spec.darwin_id in self._handles:

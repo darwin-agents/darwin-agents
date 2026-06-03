@@ -32,9 +32,11 @@ from .manifests import (
     build_secret,
     build_service,
 )
+from .namespace_backend import DriverK8sNamespaceBackend
 
 __all__ = [
     "K8sDarwinDriver",
+    "DriverK8sNamespaceBackend",
     "NAMESPACE_LABEL_DARWIN_ID",
     "NAMESPACE_LABEL_MANAGED_BY",
     "build_configmap",
