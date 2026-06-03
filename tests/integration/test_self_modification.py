@@ -134,6 +134,82 @@ def test_apply_clears_the_recurrence_and_closes_the_gate():
     assert st.route == "check_reproduction"
 
 
+# --- #16 real soma merge: evaluate forwards the patch, apply writes it -------
+def test_evaluate_forwards_patch_into_apply_plan():
+    """A promote verdict must carry the validated patch (+ any neuron
+    proposal) into the apply plan — otherwise apply_mutation has nothing to
+    merge and self-modification stays simulated."""
+    ctx = _ctx(_LLM(None))
+    valid_patch = {"rationale": "anything",
+                   "changes": [{"path": "soma/strategies/x.py",
+                                "diff": "+    pass\n"}]}
+    st = OrchestratorState()
+    st.plan = {"failure_class": "flaky_io", "patch": valid_patch,
+               "recurrence": 10, "neuron_proposal": None,
+               "behavior_delta": {"kind": "backoff",
+                                  "failure_class": "flaky_io",
+                                  "after_failures": 2}}
+    evaluate_mutation.run(st, ctx)
+    assert st.route == "apply_mutation"
+    assert st.plan["patch"] == valid_patch
+
+
+def _merge_hook(tmp_path):
+    from darwin_platform.evolution import SomaMerger
+    (tmp_path / "soma" / "strategies").mkdir(parents=True)
+    (tmp_path / "soma" / "strategies" / "x.py").write_text(
+        "def f():\n    return 1\n"
+    )
+    return SomaMerger(tmp_path)
+
+
+_REAL_DIFF = (
+    "--- a/soma/strategies/x.py\n+++ b/soma/strategies/x.py\n"
+    "@@ -1,2 +1,3 @@\n def f():\n-    return 1\n+    # backoff\n+    return 2\n"
+)
+
+
+def test_apply_merges_real_patch_when_hook_wired(tmp_path):
+    merger = _merge_hook(tmp_path)
+    ctx = _ctx(_LLM(None))
+    ctx.soma_merge = merger
+    st = OrchestratorState()
+    st.recurring_failures = {"flaky_io": 5}
+    st.plan = {"failure_class": "flaky_io",
+               "patch": {"rationale": "fix",
+                         "changes": [{"path": "soma/strategies/x.py",
+                                      "diff": _REAL_DIFF}]}}
+    apply_mutation.run(st, ctx)
+    # The real diff is on disk and the fix counts as landed.
+    assert (tmp_path / "soma" / "strategies" / "x.py").read_text() == (
+        "def f():\n    # backoff\n    return 2\n"
+    )
+    assert "flaky_io" not in st.recurring_failures
+    assert st.route == "check_reproduction"
+
+
+def test_apply_keeps_counter_when_merge_fails(tmp_path):
+    """A merge that fails (the diff doesn't apply) must NOT clear the
+    recurrence counter — the fix never reached the soma, so the loop has to
+    keep trying."""
+    merger = _merge_hook(tmp_path)
+    ctx = _ctx(_LLM(None))
+    ctx.soma_merge = merger
+    st = OrchestratorState()
+    st.recurring_failures = {"flaky_io": 5}
+    st.plan = {"failure_class": "flaky_io",
+               "patch": {"rationale": "x",
+                         "changes": [{"path": "soma/strategies/x.py",
+                                      "diff": "@@ -1,1 +1,1 @@\n-NOPE\n+y\n"}]}}
+    apply_mutation.run(st, ctx)
+    # File untouched, counter kept.
+    assert (tmp_path / "soma" / "strategies" / "x.py").read_text() == (
+        "def f():\n    return 1\n"
+    )
+    assert st.recurring_failures.get("flaky_io") == 5
+    assert st.route == "check_reproduction"
+
+
 # --- end-to-end through the real loop ---------------------------------------
 class _Flaky(BaseNeuron):
     name = "probe.flaky"

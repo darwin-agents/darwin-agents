@@ -37,6 +37,35 @@ async def test_supervisor_pins_patch_staging_hook_on_ctx():
         await sup.shutdown(kill_running=True)
 
 
+async def test_no_soma_merge_hook_without_soma_root():
+    """Without a configured soma root the merge hook is absent — the genome
+    keeps the Phase-0 simulation (#16)."""
+    sup = Supervisor(heartbeat_seconds=0.001)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    try:
+        ctx = sup._darwins[status.darwin_id].runtime._ctx  # noqa: SLF001
+        assert getattr(ctx, "soma_merge", None) is None
+        assert sup.soma_merger_for(status.darwin_id) is None
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+async def test_supervisor_pins_per_darwin_soma_merge_hook(tmp_path):
+    """With a soma root, spawn installs a per-Darwin merger rooted under
+    ``<soma_root>/<darwin_id>`` on the genome's ctx (#16)."""
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    try:
+        ctx = sup._darwins[status.darwin_id].runtime._ctx  # noqa: SLF001
+        assert callable(ctx.soma_merge.merge)
+        merger = sup.soma_merger_for(status.darwin_id)
+        assert merger is not None
+        # Rooted per-Darwin so one tenant can't touch another's soma.
+        assert merger.root == (tmp_path / status.darwin_id).resolve()
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
 @pytest.mark.asyncio
 async def test_lineage_tree_endpoint_shape():
     sup = Supervisor(heartbeat_seconds=0.001)
