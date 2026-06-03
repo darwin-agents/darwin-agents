@@ -40,6 +40,8 @@ Design constraints:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import posixpath
 import re
@@ -171,6 +173,50 @@ class SomaMergeResult:
         }
 
 
+@dataclass(frozen=True)
+class SomaForensicSnapshot:
+    """Outcome of a death-time forensic capture of the whole soma tree.
+
+    ``merge`` keeps *mutation-time* rollback snapshots in memory during a
+    Darwin's life (one per applied patch, evictable, gone when the organism
+    dies). This is the complementary *death-time* artifact: the entire soma
+    tree, persisted to disk under the forensics root, so an operator doing a
+    post-mortem can read exactly what code was running at the moment of
+    death — independent of whether any mutation was ever applied.
+
+    ``digest`` is a fingerprint over every ``(relpath, sha256(bytes))`` pair
+    in deterministic path order, so two snapshots can be compared (or a
+    leaked soma matched back to a death) without diffing file-by-file.
+    ``captured`` is False with ``failure`` set when the capture could not be
+    written — forensic capture is best-effort and never raises on the death
+    path."""
+
+    captured: bool
+    reason: str
+    snapshot_id: str
+    path: str | None
+    darwin_id: str
+    file_count: int
+    total_bytes: int
+    captured_at: float
+    digest: str
+    failure: str = ""
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "captured": self.captured,
+            "reason": self.reason,
+            "snapshot_id": self.snapshot_id,
+            "path": self.path,
+            "darwin_id": self.darwin_id,
+            "file_count": self.file_count,
+            "total_bytes": self.total_bytes,
+            "captured_at": self.captured_at,
+            "digest": self.digest,
+            "failure": self.failure,
+        }
+
+
 class SomaMerger:
     """Apply a validated :class:`Patch` to a Darwin's soma tree on disk.
 
@@ -191,6 +237,7 @@ class SomaMerger:
         clock: Callable[[], float] = time.time,
         applier: Callable[..., str] = apply_unified_diff,
         snapshot_cap: int = 64,
+        forensics_root: str | Path | None = None,
     ) -> None:
         self._root = Path(soma_root).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
@@ -199,6 +246,15 @@ class SomaMerger:
         self._snapshot_cap = max(1, int(snapshot_cap))
         # snapshot_id -> {relpath: original_text_or_None(=file did not exist)}
         self._snapshots: dict[str, dict[str, str | None]] = {}
+        # Where death-time forensic snapshots are persisted. Default is a
+        # sibling of the per-Darwin soma root (``<soma_root>/_forensics/<id>``)
+        # so the artifact survives the merger object and never pollutes the
+        # organism's own tree. Created lazily on first capture.
+        self._forensics_root = (
+            Path(forensics_root).resolve()
+            if forensics_root is not None
+            else self._root.parent / "_forensics" / self._root.name
+        )
 
     @property
     def root(self) -> Path:
@@ -295,6 +351,97 @@ class SomaMerger:
             return False
         self._restore(snap)
         return True
+
+    # -- death-time forensics ---------------------------------------------
+    def forensic_snapshot(
+        self,
+        *,
+        reason: str,
+        darwin_id: str = "",
+        captured_at: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SomaForensicSnapshot:
+        """Capture the *entire* soma tree as it stands right now and persist
+        it for post-mortem forensics. Called from the death sequence (doc 05)
+        when a Darwin dies or is killed.
+
+        Unlike :meth:`merge`'s in-memory rollback snapshots — which only hold
+        the files a patch *touched* and vanish with the organism — this walks
+        every file under the soma root, records each one's content and SHA-256,
+        and writes a self-describing JSON manifest to the forensics root. The
+        manifest is keyed by a millisecond ``snapshot_id`` and carries a
+        ``soma_digest`` fingerprint over the whole tree.
+
+        Never raises: a capture failure returns ``captured=False`` with the
+        cause in ``failure`` rather than crashing the death/kill path."""
+        ts = float(self._clock() if captured_at is None else captured_at)
+        snapshot_id = f"death-{int(ts * 1000)}"
+        try:
+            contents: dict[str, str | None] = {}
+            file_meta: dict[str, dict[str, Any]] = {}
+            total_bytes = 0
+            fingerprint = hashlib.sha256()
+            for abspath in sorted(
+                p for p in self._root.rglob("*") if p.is_file()
+            ):
+                # Never fold the forensics store into its own snapshot if a
+                # caller rooted it under the soma tree.
+                if self._forensics_root in abspath.parents:
+                    continue
+                rel = abspath.relative_to(self._root).as_posix()
+                raw = abspath.read_bytes()
+                total_bytes += len(raw)
+                sha = hashlib.sha256(raw).hexdigest()
+                fingerprint.update(rel.encode("utf-8"))
+                fingerprint.update(sha.encode("ascii"))
+                try:
+                    text: str | None = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    # A non-UTF-8 soma file (unexpected for source) — keep the
+                    # integrity hash but don't inline undecodable bytes.
+                    text = None
+                contents[rel] = text
+                file_meta[rel] = {
+                    "sha256": sha, "bytes": len(raw), "binary": text is None,
+                }
+
+            soma_digest = fingerprint.hexdigest()
+            manifest = {
+                "schema": "darwin-platform.soma-forensic/1",
+                "snapshot_id": snapshot_id,
+                "darwin_id": darwin_id,
+                "reason": reason,
+                "captured_at": ts,
+                "soma_root": str(self._root),
+                "file_count": len(contents),
+                "total_bytes": total_bytes,
+                "soma_digest": soma_digest,
+                # The mutation history that was live at death — its rollback
+                # snapshots are in-memory only, so naming them here is the
+                # last record that they existed.
+                "mutation_snapshot_ids": list(self._snapshots),
+                "metadata": dict(metadata or {}),
+                "files": file_meta,
+                "contents": contents,
+            }
+            self._forensics_root.mkdir(parents=True, exist_ok=True)
+            out = self._forensics_root / f"{snapshot_id}.json"
+            self._atomic_write(
+                out, json.dumps(manifest, indent=2, sort_keys=True)
+            )
+            return SomaForensicSnapshot(
+                captured=True, reason=reason, snapshot_id=snapshot_id,
+                path=str(out), darwin_id=darwin_id,
+                file_count=len(contents), total_bytes=total_bytes,
+                captured_at=ts, digest=soma_digest,
+            )
+        except Exception as exc:  # noqa: BLE001 — capture must never crash death
+            return SomaForensicSnapshot(
+                captured=False, reason=reason, snapshot_id=snapshot_id,
+                path=None, darwin_id=darwin_id, file_count=0,
+                total_bytes=0, captured_at=ts, digest="",
+                failure=f"{type(exc).__name__}: {exc}",
+            )
 
     # -- helpers -----------------------------------------------------------
     def _within_root(self, abspath: Path) -> bool:

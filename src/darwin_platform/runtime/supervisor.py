@@ -326,6 +326,10 @@ class _Handle:
     children_observed: int = 0
     reproduce_requested: bool = False
     killed: bool = False
+    # Set once the death-time forensic soma snapshot has been captured for
+    # this Darwin, so the kill path and the drive-loop death path don't each
+    # write one (doc 05 death sequence). Idempotent guard.
+    forensics_captured: bool = False
     task: asyncio.Task | None = None
     # Tickets we have already routed to the genome's inbox so we don't
     # double-respond. Indexed by ticket id.
@@ -1893,6 +1897,63 @@ class Supervisor:
         been spawned."""
         return self._soma_mergers.get(darwin_id)
 
+    def _capture_death_forensics(self, handle: _Handle, *, reason: str) -> None:
+        """Snapshot the dead Darwin's soma for post-mortem forensics (doc 05
+        death sequence). ``soma_merge`` keeps mutation-time rollback snapshots
+        *during* life, but those are in-memory and die with the organism;
+        this persists the whole soma tree as it stood at the moment of death
+        so an operator can inspect exactly what code was running.
+
+        Best-effort + idempotent: only fires once per Darwin, no-ops when no
+        soma root is configured (sim/dev), and never raises — a forensic
+        write must not interfere with the death/kill path."""
+        if handle.forensics_captured:
+            return
+        merger = self._soma_mergers.get(handle.darwin_id)
+        if merger is None:
+            return
+        handle.forensics_captured = True
+        try:
+            st = handle.runtime.state
+            try:
+                balance = float(handle.stack.wallet.balance_usdc())
+            except Exception:
+                balance = None
+            snap = merger.forensic_snapshot(
+                reason=reason,
+                darwin_id=handle.darwin_id,
+                captured_at=float(self._clock()),
+                metadata={
+                    "death_reason": getattr(st, "death_reason", None),
+                    "killed": handle.killed,
+                    "tick": getattr(st, "tick", None),
+                    "generation": getattr(st, "generation", None),
+                    "balance_usdc": balance,
+                    "parent_id": handle.parent_id,
+                    "owner_subject": handle.owner_subject,
+                },
+            )
+        except Exception:
+            # Capture itself swallows its errors, but guard the metadata
+            # gathering too — death must complete regardless.
+            return
+        try:
+            self._audit.record(
+                actor="supervisor", action="soma_forensic_snapshot",
+                darwin_id=handle.darwin_id,
+                metadata={
+                    "reason": reason,
+                    "captured": snap.captured,
+                    "snapshot_id": snap.snapshot_id,
+                    "path": snap.path,
+                    "file_count": snap.file_count,
+                    "soma_digest": snap.digest,
+                    "failure": snap.failure,
+                },
+            )
+        except Exception:
+            pass
+
     @property
     def patch_staging(self) -> PatchStagingService:
         """Read-only handle for ops/snapshots + tests."""
@@ -3048,6 +3109,11 @@ class Supervisor:
             # owning user's omnibus balance. Recording-only; the on-chain
             # reconciliation is operator-driven.
             self._sweep_dead_darwin_to_omnibus(h)
+            # Snapshot the soma at the moment of kill for post-mortem
+            # forensics (doc 05). The on-disk soma is already in its final
+            # state — a kill mutates no code — so capturing now is correct;
+            # the drive loop's later death-path call is idempotent.
+            self._capture_death_forensics(h, reason=reason)
 
     # -- force reproduction (doc 08: POST /darwins/{id}/reproduce/force) --
     async def force_reproduce(
@@ -4858,6 +4924,13 @@ class Supervisor:
                 if not runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)
+            # The loop exited because the organism stopped being alive —
+            # natural death (bankruptcy) or a kill the genome has now halted
+            # on. Snapshot the soma for post-mortem forensics before the
+            # handle is reaped (idempotent: a no-op if kill() already did it).
+            self._capture_death_forensics(
+                handle, reason=runtime.state.death_reason or "death",
+            )
         except asyncio.CancelledError:
             # Best-effort: try to halt cleanly. The kill flag may already be
             # set; if not, set it so the genome anchors a final record on its

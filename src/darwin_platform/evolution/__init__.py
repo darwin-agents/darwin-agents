@@ -22,6 +22,7 @@ from .patch_staging import (
 )
 from .soma_merge import (
     DiffApplyError,
+    SomaForensicSnapshot,
     SomaMergeResult,
     SomaMerger,
     apply_unified_diff,
@@ -32,6 +33,7 @@ __all__ = [
     "EvalRequest",
     "EvalRunner",
     "PatchStagingService",
+    "SomaForensicSnapshot",
     "SomaMergeResult",
     "SomaMerger",
     "StagingQuota",
