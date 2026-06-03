@@ -209,6 +209,22 @@ def test_virtual_keys_factory_accepts_darwin_id_and_key():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_price_oracle_injected_into_darwin_platform():
+    """A price oracle handed to the supervisor reaches each Darwin's platform,
+    so perceive marks holdings against live prices (doc 05 §Treasury)."""
+    from darwin_platform.adapters.price_oracle import HttpPriceOracle
+
+    oracle = HttpPriceOracle(quote_fn=lambda _id: 1.0)
+    sup = Supervisor(heartbeat_seconds=0.0, price_oracle=oracle)
+    try:
+        status = await sup.spawn(opening_usdc=100.0, actor="test")
+        ctx = sup._darwins[status.darwin_id].runtime._ctx  # noqa: SLF001
+        assert ctx.price_oracle is oracle
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
 async def test_maintenance_noop_without_services():
     """No drift detector, no merkle publisher → _run_maintenance is a
     safe no-op and the drive loop is unaffected."""
