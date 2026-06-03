@@ -61,7 +61,7 @@ This means Darwins can't talk to each other directly even if they wanted to. If 
 
 There are two distinct classes of data, with different ownership:
 
-**Platform-level data** — billing, audit log, control-plane state, ledger entries, escalation tickets, lineage metadata, supervisor state. The platform owns this. It lives in the **platform Postgres** with shared tables + RLS policies enforcing `darwin_id = current_setting('app.current_darwin_id')`. Every database connection sets the GUC at session start; a query that forgets returns zero rows.
+**Platform-level data** — billing, audit log, control-plane state, ledger entries, escalation tickets, lineage metadata, supervisor state. The platform owns this. It lives in the **platform Postgres** with shared tables + RLS policies enforcing `darwin_id = current_setting('app.current_darwin_id')`. Every database connection sets the GUC at session start; a query that forgets returns zero rows. *(Implemented in schema v12 — `_migrate_v12_enable_rls` + `PersistenceStore.tenant_connection` / `ensure_tenant_role`; see [`23-data-model-reference.md`](23-data-model-reference.md) §"RLS policies".)*
 
 **Organism-level data** — whatever the Darwin's business is actually about. Customer records, content drafts, subscriber emails, product inventory, support ticket history. The Darwin owns this; it provisions its own databases on demand. See "The Darwin's own databases" below.
 

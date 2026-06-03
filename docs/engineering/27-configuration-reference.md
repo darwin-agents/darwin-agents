@@ -27,6 +27,8 @@ darwin-platform signing-key  # Print the platform's signing public key (PEM)
 | `--cdp-per-tx-usdc` / `--cdp-per-day-usdc` | — | `None` | Independent per-transaction / per-day USDC caps enforced at the CDP wallet adapter (doc 24 defense-in-depth, below the treasury policy). |
 | `--browserbase-live-view-url` | `BROWSERBASE_LIVE_VIEW_URL` | `None` | Browserbase session live-view URL surfaced to the owner on a captcha wall for human takeover (doc 15). |
 
+> **Tenant isolation (Postgres only).** With a `postgresql://` DSN, schema v12 enables row-level security on every `darwin_id`-keyed platform table (doc 23). The control-plane DB role **must** be a superuser or carry `BYPASSRLS` — otherwise `FORCE ROW LEVEL SECURITY` gates the supervisor itself and it sees no rows. The per-Darwin data path (dashboard read-only window, scoped readers) goes through the restricted `darwin_tenant` role provisioned by `PersistenceStore.ensure_tenant_role()`. SQLite has no RLS — single-process dev only.
+
 ## `serve` — real wallet (doc 17)
 
 `RealWallet` replaces `FakeWallet` whenever a non-fake wallet provider is selected. Pick one of three backends with `--wallet-provider`:

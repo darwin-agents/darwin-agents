@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): k8s fleet maintenance reconciles per-pod LLM spend and Merkle anchors from snapshots
+- feat(k8s): inject minted LiteLLM virtual keys via DarwinSpec secret_extras and orchestrator secretKeyRef
+- feat(adapters): RealVaultNamespaceBackend with per-Darwin Vault policies and AppRole path isolation
+- feat(platform): Postgres schema v12 row-level security with tenant_connection and darwin_tenant role
 - feat(llm): per-Darwin LiteLLM virtual keys (doc 13) — `--litellm-virtual-keys` mints one key per Darwin via the proxy's `/key/generate` admin API (`LiteLLMAdminClient`) at spawn instead of every Darwin sharing the master key, scoped to the `darwin_id` (+ optional `--litellm-virtual-key-budget-usdc` ceiling), sealed in the Darwin's vault, and revoked on death; the transport tags every call with `metadata.darwin_id` so the proxy attributes spend + cache per Darwin; a `LiteLLMSpendReconciler` cross-checks the proxy's per-key spend table against each Darwin's in-process LLM debits every maintenance cycle and pages on drift (`--litellm-spend-tolerance-usdc`); terraform/compose now back the proxy with Postgres (`DATABASE_URL` + `STORE_MODEL_IN_DB`, `litellm_database_url`) so virtual keys + the spend table persist
 - feat(compliance): sanctions-list ingestion (`build_local_screener` / `parse_sanctioned_addresses` parse OFAC SDN / EU / UK dumps) via `--sanctions-list-file`, so the offline screener screens against real addresses; independent CDP wallet-level spend policy (`CdpSpendPolicy`: per-tx / per-day caps + allowlist via `--cdp-per-tx-usdc` / `--cdp-per-day-usdc`) as defense-in-depth below the treasury policy
 - feat(platform): fleet-wide incident-response levers (doc 09) — `fleet_pause`/`fleet_resume`, `fleet_spend_lock`, `fleet_block_category`, and `block_counterparty` (runtime sanctions-denylist add), with `/platform/fleet/*` HTTP routes
@@ -33,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs(engineering): document schema v12 RLS policies, tenant role, and shipped isolation path
 - docs(engineering): correct operational-runbook hazards (signing-key rotation is an API call not a restart; `event:plan` not `intent:plan`; real LLM-tier daily-cap knobs not a nonexistent `planner_tier`; `min_recurring_failures_for_mutation` not a nonexistent recurrence window; Postgres host port 15432); add `--network`/`--env` + new flags to the configuration reference; correct the stale "stub" sanctions docstring
 - docs(engineering): bump data-model reference to schema v11 + document the 9 previously-undocumented tables (preapprovals, omnibus_state/entries, fiat_quotes, harvest_rules, resource_throttles, push_subscriptions, freelancer_registry, processed_webhook_events), bound to the schema by a new contract test
 - refactor(terraform/local): compose kind stack via platform-stack module
@@ -44,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): wire real LiteLLM transport in k8s orchestrator pods (was FakeLLM)
+- fix(llm): scope LiteLLM Redis cache per Darwin via cache.namespace; raise LLMBudgetExhausted on virtual-key budget 429
 - fix(evolution): a child now inherits the parent's mutation-archive dead-ends at reproduction (was hardcoded to an empty set, breaking the cross-generation negative-lesson path)
 - fix(platform): dead-Darwin data now survives kill (doc 09 #3) — kill DEFERS namespace/organism-DB teardown (90-day retention), a fleet-maintenance reaper destroys only after the window, and `teardown_dead_darwin` is the operator force-delete; shutdown no longer wipes tenant namespaces
 - fix(platform): fleet maintenance now raises CRITICAL alerts (→ PagerDuty) on omnibus-reconciliation discrepancy + Merkle-anchor failure; tightened omnibus reconciliation tolerance to $0.01; open-intent reconciliation surfaces dangling payment intents on restart (`AuditLogger.open_intents`)

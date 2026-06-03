@@ -11,7 +11,7 @@ Two classes of data exist, as specified in [`07-isolation-and-multi-tenancy.md`]
 
 The schema lives in [`src/darwin_platform/runtime/persistence.py`](../../src/darwin_platform/runtime/persistence.py) as a template string substituting type flavors per backend (`REAL` for SQLite, `DOUBLE PRECISION` for Postgres; `INTEGER PRIMARY KEY AUTOINCREMENT` vs. `BIGSERIAL PRIMARY KEY`).
 
-Current schema version: **11** (tracked in the `schema_version` table).
+Current schema version: **12** (tracked in the `schema_version` table).
 
 > This reference is bound to the code by a contract test
 > (`tests/integration/test_schema_doc_contract.py`): every table the schema
@@ -479,17 +479,25 @@ Current indexes (Phase 0–1, application-level filtering):
 | `darwin_audit_records` | `ts` | Time-range queries for replay |
 | `platform_retired_keys` | `drain_until` | Expiry scan for key cleanup |
 
-### Phase 2 RLS policies (planned)
+### RLS policies (implemented, schema v12, Postgres)
 
-When the platform moves to Postgres with real multi-tenancy:
+Schema v12 (`_migrate_v12_enable_rls` in `persistence.py`) enables row-level security on every `darwin_id`-keyed platform table — `audit_entries`, `billing_ledgers`, `routed_tickets`, `monitor_alerts`, `darwin_lifecycle`, `darwin_audit_records`, `darwin_checkpoints`, `darwin_manifests`, `darwin_preapprovals`, `harvest_rules`, `resource_throttles`:
 
 ```sql
 ALTER TABLE darwin_audit_records ENABLE ROW LEVEL SECURITY;
-CREATE POLICY darwin_audit_owner ON darwin_audit_records
-    USING (darwin_id = current_setting('app.current_darwin_id'));
+ALTER TABLE darwin_audit_records FORCE  ROW LEVEL SECURITY;
+CREATE POLICY darwin_audit_records_tenant_isolation ON darwin_audit_records
+    USING (darwin_id = current_setting('app.current_darwin_id', true));
 ```
 
-Every session sets the GUC (`SET app.current_darwin_id = '...'`) at connection time. A query that omits the filter returns zero rows, not other tenants' data.
+`FORCE` applies the policy even to the table owner, so isolation doesn't depend on the application connecting as a non-owner. The policy has no separate `WITH CHECK`, so Postgres reuses the `USING` clause for INSERTs too — a scoped session can neither read nor write another tenant's rows. The `true` second arg to `current_setting` makes an unset GUC resolve to NULL (so `darwin_id = NULL` → NULL → no rows) instead of raising.
+
+**Two connection roles:**
+
+- **Control plane** (the supervisor / `PersistenceStore`) connects as a superuser or `BYPASSRLS` role and sees every tenant's rows — it *is* the platform. ⚠️ In production the platform role **must** carry `BYPASSRLS` (or be a superuser); a plain owner role would be gated by `FORCE` and the control plane would see nothing.
+- **Per-Darwin** access uses `PersistenceStore.tenant_connection(darwin_id)`, which `SET ROLE`s to the restricted `NOSUPERUSER NOBYPASSRLS` `darwin_tenant` role (provisioned by `ensure_tenant_role()`) and installs `app.current_darwin_id` via `set_config`. This is the seam for the dashboard's read-only "window into the Darwin's data" and any future scoped neuron reader.
+
+A session that drops to `darwin_tenant` but forgets to set the GUC returns zero rows, not other tenants' data — exactly the doc-07 promise. SQLite (single-process dev backend) has no RLS; there the migration is a no-op and isolation stays application-level.
 
 ## Migration strategy
 
