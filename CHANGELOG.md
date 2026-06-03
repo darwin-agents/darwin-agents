@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(dna): cover trading operator holdings capability and fill recording
+- feat(dna): record trading fills in holdings for net-worth solvency
 - test(platform): cover sensitive vault grant minting and consumption
 - test(dna): cover perceive threading grant_token on escalation approve
 - feat(dna): add compliance.kyc_submitter for sensitive vault grant loop
