@@ -61,6 +61,18 @@ LANCEDB_PORT = 9999
 # so the pod authenticates as its own key, never the shared fleet master key.
 LITELLM_VIRTUAL_KEY_SECRET_KEY = "litellm_virtual_key"
 
+# Secret keys (within the per-Darwin ``darwin-control`` Secret) under which the
+# supervisor seals this Darwin's tenant-namespace credentials (doc 22): the
+# per-Darwin Vault AppRole (role_id + secret_id) the NamespaceProvisioner
+# minted, and its private organism-DB DSN. The deployment surfaces them as the
+# env vars ``_build_real_factories`` already reads (``DARWIN_VAULT_ROLE_ID`` /
+# ``DARWIN_VAULT_SECRET_ID`` → AppRole auth, auto-selected) so the pod
+# authenticates to Vault as its OWN scoped identity — refused by Vault on any
+# other Darwin's paths — instead of carrying the shared fleet root token.
+VAULT_APPROLE_ROLE_ID_SECRET_KEY = "vault_approle_role_id"
+VAULT_APPROLE_SECRET_ID_SECRET_KEY = "vault_approle_secret_id"
+ORGANISM_DB_DSN_SECRET_KEY = "organism_db_dsn"
+
 
 @dataclass(frozen=True)
 class DarwinPodConfig:
@@ -317,6 +329,8 @@ def build_deployment(
     escalation_auto: str | None,
     database_url_secret_ref: tuple[str, str] | None = None,
     litellm_virtual_key: bool = False,
+    vault_approle: bool = False,
+    organism_db_dsn: bool = False,
 ) -> dict[str, Any]:
     """Orchestrator pod = the genome's heart. One Deployment, one
     replica (per-Darwin singleton; HA is at the supervisor layer via the
@@ -362,6 +376,44 @@ def build_deployment(
                 "secretKeyRef": {
                     "name": "darwin-control",
                     "key": LITELLM_VIRTUAL_KEY_SECRET_KEY,
+                },
+            },
+        })
+    # Per-Darwin Vault AppRole (doc 22). Surfaced under the exact env names
+    # ``_build_real_factories`` reads (DARWIN_VAULT_ROLE_ID / _SECRET_ID), which
+    # auto-selects ``auth_method=approle`` — so the pod's HvacVaultClient logs
+    # in as this Darwin's own scoped role, refused by Vault on other Darwins'
+    # paths. The supervisor omits the shared fleet root token from the pod's env
+    # when this is on, so the pod never holds a cross-tenant credential.
+    if vault_approle:
+        env.append({
+            "name": "DARWIN_VAULT_ROLE_ID",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "darwin-control",
+                    "key": VAULT_APPROLE_ROLE_ID_SECRET_KEY,
+                },
+            },
+        })
+        env.append({
+            "name": "DARWIN_VAULT_SECRET_ID",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "darwin-control",
+                    "key": VAULT_APPROLE_SECRET_ID_SECRET_KEY,
+                },
+            },
+        })
+    # Per-Darwin organism DB DSN (doc 22). Delivered to the pod for the
+    # organism-data reader (dashboard / business-data neurons) to consume; the
+    # private database + owner role were provisioned by the NamespaceProvisioner.
+    if organism_db_dsn:
+        env.append({
+            "name": "DARWIN_ORGANISM_DB_DSN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "darwin-control",
+                    "key": ORGANISM_DB_DSN_SECRET_KEY,
                 },
             },
         })
@@ -695,6 +747,16 @@ def build_bundle(
     has_virtual_key = bool(
         secret_extras and secret_extras.get(LITELLM_VIRTUAL_KEY_SECRET_KEY)
     )
+    # The pod authenticates to Vault as its own AppRole / has its own organism
+    # DB when the NamespaceProvisioner sealed those into the Secret (doc 22).
+    has_vault_approle = bool(
+        secret_extras
+        and secret_extras.get(VAULT_APPROLE_ROLE_ID_SECRET_KEY)
+        and secret_extras.get(VAULT_APPROLE_SECRET_ID_SECRET_KEY)
+    )
+    has_organism_db = bool(
+        secret_extras and secret_extras.get(ORGANISM_DB_DSN_SECRET_KEY)
+    )
     """Helper composing every per-Darwin object. The driver applies them
     in order: namespace, then configmap/secret/pvc, then service, then
     deployment, then network policy."""
@@ -733,6 +795,8 @@ def build_bundle(
             escalation_auto=escalation_auto,
             database_url_secret_ref=database_url_secret_ref,
             litellm_virtual_key=has_virtual_key,
+            vault_approle=has_vault_approle,
+            organism_db_dsn=has_organism_db,
         ),
         network_policy=build_network_policy(
             darwin_id=darwin_id, namespace=namespace, config=config,

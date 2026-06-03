@@ -18,6 +18,9 @@ from darwin_platform.k8s.manifests import (
     POD_LABEL_COMPONENT,
     POD_LABEL_DARWIN_ID,
     LITELLM_VIRTUAL_KEY_SECRET_KEY,
+    ORGANISM_DB_DSN_SECRET_KEY,
+    VAULT_APPROLE_ROLE_ID_SECRET_KEY,
+    VAULT_APPROLE_SECRET_ID_SECRET_KEY,
     DarwinPodConfig,
     build_bundle,
     build_configmap,
@@ -73,6 +76,71 @@ def test_build_bundle_seals_virtual_key_into_secret_and_env():
     env = bundle.deployment["spec"]["template"]["spec"]["containers"][0]["env"]
     by_name = {e["name"]: e for e in env}
     assert "valueFrom" in by_name["DARWIN_LITELLM_MASTER_KEY"]
+
+
+def test_vault_approle_injected_as_role_and_secret_id_env():
+    """With tenant namespaces, the per-Darwin AppRole creds are surfaced under
+    the exact env names _build_real_factories reads (auto-selecting approle),
+    so the pod authenticates to Vault as its own scoped identity (doc 22)."""
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+        vault_approle=True,
+    )
+    env = d["spec"]["template"]["spec"]["containers"][0]["env"]
+    by_name = {e["name"]: e for e in env}
+    assert by_name["DARWIN_VAULT_ROLE_ID"]["valueFrom"]["secretKeyRef"] == {
+        "name": "darwin-control", "key": VAULT_APPROLE_ROLE_ID_SECRET_KEY,
+    }
+    assert by_name["DARWIN_VAULT_SECRET_ID"]["valueFrom"]["secretKeyRef"] == {
+        "name": "darwin-control", "key": VAULT_APPROLE_SECRET_ID_SECRET_KEY,
+    }
+
+
+def test_organism_db_dsn_injected_when_present():
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+        organism_db_dsn=True,
+    )
+    by_name = {e["name"]: e
+               for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert by_name["DARWIN_ORGANISM_DB_DSN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "darwin-control", "key": ORGANISM_DB_DSN_SECRET_KEY,
+    }
+
+
+def test_no_vault_approle_env_by_default():
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+    )
+    names = {e["name"] for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "DARWIN_VAULT_ROLE_ID" not in names
+    assert "DARWIN_VAULT_SECRET_ID" not in names
+    assert "DARWIN_ORGANISM_DB_DSN" not in names
+
+
+def test_build_bundle_seals_approle_and_dsn_into_secret_and_env():
+    import base64
+
+    bundle = build_bundle(
+        darwin_id="abc123", namespace_prefix="darwin-", opening_usdc=1.0,
+        escalation_auto="approve", parent_id=None, manifest_json=None,
+        layer_blobs={}, layer_names=[], control_token="tok",
+        config=DarwinPodConfig(),
+        secret_extras={
+            VAULT_APPROLE_ROLE_ID_SECRET_KEY: "role-xyz",
+            VAULT_APPROLE_SECRET_ID_SECRET_KEY: "secret-xyz",
+            ORGANISM_DB_DSN_SECRET_KEY: "postgresql://role:pw@db/organism_x",
+        },
+    )
+    data = bundle.secret["data"]
+    assert base64.b64decode(data[VAULT_APPROLE_SECRET_ID_SECRET_KEY]).decode() == "secret-xyz"
+    by_name = {e["name"]: e
+               for e in bundle.deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "valueFrom" in by_name["DARWIN_VAULT_ROLE_ID"]
+    assert "valueFrom" in by_name["DARWIN_ORGANISM_DB_DSN"]
 
 
 DARWIN_ID = "abcdef0123456789"

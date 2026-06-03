@@ -1309,6 +1309,7 @@ def _build_k8s_driver(args: argparse.Namespace):
         os.environ.get("DARWIN_LITELLM_VIRTUAL_KEYS", "").lower()
         in ("1", "true", "yes")
     )
+    _tenant_ns = getattr(args, "tenant_namespaces", False)
     pod_extra_env: list[dict[str, Any]] = []
     for supervisor_key, pod_key in (
         ("DARWIN_POD_LITELLM_URL", "DARWIN_LITELLM_URL"),
@@ -1318,6 +1319,11 @@ def _build_k8s_driver(args: argparse.Namespace):
     ):
         if _vk_enabled and pod_key == "DARWIN_LITELLM_MASTER_KEY":
             continue  # per-pod virtual key supplies this via secretKeyRef
+        if _tenant_ns and pod_key == "DARWIN_VAULT_TOKEN":
+            # With tenant namespaces the pod authenticates via its own per-Darwin
+            # AppRole (injected through the Secret); never hand it the shared
+            # fleet root token (doc 22 — the pod must hold no cross-tenant cred).
+            continue
         value = os.environ.get(supervisor_key)
         if value:
             pod_extra_env.append({"name": pod_key, "value": value})

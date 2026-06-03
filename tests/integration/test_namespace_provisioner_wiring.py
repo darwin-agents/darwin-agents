@@ -140,6 +140,32 @@ async def test_k8s_spawn_provisions_tenant_namespace():
         await sup.shutdown()
 
 
+async def test_k8s_spawn_injects_vault_approle_into_pod_secret():
+    """The provisioned per-Darwin AppRole + organism DSN are sealed into the
+    DarwinSpec.secret_extras the driver projects into the pod's Secret — so the
+    pod authenticates to Vault as its own scoped identity (doc 22)."""
+    from darwin_platform.k8s.manifests import (
+        ORGANISM_DB_DSN_SECRET_KEY,
+        VAULT_APPROLE_ROLE_ID_SECRET_KEY,
+        VAULT_APPROLE_SECRET_ID_SECRET_KEY,
+    )
+
+    driver = _FakeK8sDriver()
+    prov = _stub_provisioner()
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0, namespace_provisioner=prov,
+    )
+    try:
+        await sup.spawn(opening_usdc=50.0)
+        spec = driver.started[0]
+        extras = spec.secret_extras
+        assert extras[VAULT_APPROLE_ROLE_ID_SECRET_KEY]
+        assert extras[VAULT_APPROLE_SECRET_ID_SECRET_KEY]
+        assert extras[ORGANISM_DB_DSN_SECRET_KEY]
+    finally:
+        await sup.shutdown()
+
+
 async def test_k8s_spawn_tears_down_tenant_when_pod_start_fails():
     class _FailingDriver(_FakeK8sDriver):
         async def start(self, spec):

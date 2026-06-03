@@ -279,6 +279,12 @@ class NamespaceProvisioner:
         # this layer; the lazy wallet-factory path handles it instead).
         self._wallet_minters: dict[str, Any] = dict(wallet_keypair_minters or {})
         self._tenants: dict[str, TenantNamespace] = {}
+        # One-shot bootstrap secrets the caller must hand to the orchestrator
+        # pod's Secret bundle (doc 22): the AppRole ``secret_id`` (deliberately
+        # NOT recorded on TenantNamespace / audited) + the organism DSN. Keyed
+        # by darwin_id; drained exactly once via :meth:`consume_pod_bootstrap`
+        # so it does not linger after the pod has it.
+        self._pod_bootstrap: dict[str, dict[str, str]] = {}
 
     def provision(
         self,
@@ -386,6 +392,15 @@ class NamespaceProvisioner:
             },
         )
         self._tenants[darwin_id] = tenant
+        # Stash the bootstrap secrets for the spawn caller to inject into the
+        # pod (consumed once). The secret_id + DSN carry credentials, so they
+        # live only here transiently — never on TenantNamespace or in the audit.
+        self._pod_bootstrap[darwin_id] = {
+            "vault_role_id": str(approle["role_id"]),
+            "vault_secret_id": str(approle["secret_id"]),
+            "vault_namespace": str(vault_ns),
+            "organism_db_dsn": str(dsn),
+        }
         self._audit("tenant_provisioned", actor, {
             "darwin_id": darwin_id,
             "k8s_namespace": ns,
@@ -460,6 +475,8 @@ class NamespaceProvisioner:
             self._k8s.delete_namespace(namespace=tenant.k8s_namespace)
         except Exception as exc:
             errors.append(f"k8s:{exc}")
+        # Drop any unconsumed bootstrap secret so it never outlives the tenant.
+        self._pod_bootstrap.pop(darwin_id, None)
         if errors:
             tenant.status = TenantNamespaceStatus.ERROR
             tenant.last_error = "; ".join(errors)
@@ -468,6 +485,15 @@ class NamespaceProvisioner:
         self._audit("tenant_torn_down", actor, {
             "darwin_id": darwin_id, "errors": errors or None,
         })
+
+    def consume_pod_bootstrap(self, darwin_id: str) -> dict[str, str] | None:
+        """Pop the one-shot pod bootstrap secrets for ``darwin_id`` (AppRole
+        ``role_id``/``secret_id``, vault namespace, organism DSN), or ``None``
+        if already consumed / never provisioned. The spawn caller injects these
+        into the orchestrator pod's Secret so the pod authenticates to Vault as
+        its own scoped identity. Drained once so the secret material does not
+        outlive its delivery."""
+        return self._pod_bootstrap.pop(darwin_id, None)
 
     def get(self, darwin_id: str) -> TenantNamespace | None:
         return self._tenants.get(darwin_id)

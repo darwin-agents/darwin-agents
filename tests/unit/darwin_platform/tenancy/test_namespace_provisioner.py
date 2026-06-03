@@ -107,6 +107,36 @@ def test_teardown_unknown_darwin_is_noop():
     assert p.all() == []
 
 
+def test_pod_bootstrap_carries_approle_and_dsn_consumed_once():
+    p = _build()
+    p.provision(darwin_id="abc-1")
+    boot = p.consume_pod_bootstrap("abc-1")
+    assert boot is not None
+    assert boot["vault_role_id"] and boot["vault_secret_id"]
+    assert boot["organism_db_dsn"]
+    # One-shot: a second consume yields nothing (secret material isn't retained).
+    assert p.consume_pod_bootstrap("abc-1") is None
+
+
+def test_secret_id_never_recorded_on_tenant_namespace():
+    p = _build()
+    tenant = p.provision(darwin_id="abc-1")
+    boot = p.consume_pod_bootstrap("abc-1")
+    secret_id = boot["vault_secret_id"]
+    # The secret_id must not leak through the serialisable / audited record.
+    blob = str(tenant.to_json())
+    assert secret_id not in blob
+    assert "approle_role_id" in tenant.metadata  # role_id is safe to record
+    assert "secret_id" not in tenant.metadata
+
+
+def test_teardown_clears_unconsumed_bootstrap():
+    p = _build()
+    p.provision(darwin_id="abc-1")
+    p.teardown(darwin_id="abc-1")  # never consumed
+    assert p.consume_pod_bootstrap("abc-1") is None
+
+
 def test_audit_recorder_captures_provision_event():
     recorded = []
     p = NamespaceProvisioner(

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -3083,11 +3084,23 @@ class Supervisor:
         decision: str,
         data: dict[str, Any] | None = None,
         actor: str = "anonymous",
+        mint_vault_grant: bool | None = None,
     ) -> None:
         """Route an owner decision to the genome's escalation inbox AND
         record it on the platform-side router. Two writes — the inbox is
         what the genome polls in ``perceive``; the router is what the
-        dashboard reads. They must agree."""
+        dashboard reads. They must agree.
+
+        Sensitive-vault loop (doc 16): when the owner *approves* a
+        sensitive-vault request (a KYC-class ticket — the tier whose reads
+        require a fresh owner grant), the platform mints a one-time grant
+        token into the Darwin's :class:`OwnerGrantStore`, writes it to the
+        vault grant path, and threads it back to the genome in the response
+        ``data`` so the retrying neuron can present it to
+        ``TieredVault.read(SENSITIVE, grant_token=…)``. The token
+        self-destructs after one read. ``mint_vault_grant`` overrides the
+        auto (by-ticket-class) decision: True forces a mint, False suppresses
+        it. The token value is never written to the audit log."""
         if decision not in ("approve", "deny", "data"):
             raise SupervisorError(f"unknown decision: {decision}")
         with span(
@@ -3097,14 +3110,72 @@ class Supervisor:
         ) as s:
             h = self._get(darwin_id)
             annotate_span_with_runtime(s, h.runtime)
-            h.stack.escalation.respond(escalation_id, decision, data or {})
-            self._router.mark_responded(escalation_id, decision, data or {})
+            out_data = dict(data or {})
+            granted = False
+            if decision == "approve" and self._should_mint_vault_grant(
+                escalation_id, mint_vault_grant
+            ):
+                token = self._mint_vault_grant(h, escalation_id)
+                if token is not None:
+                    out_data["grant_token"] = token
+                    granted = True
+            h.stack.escalation.respond(escalation_id, decision, out_data)
+            self._router.mark_responded(escalation_id, decision, out_data)
             h.handled_responses.add(escalation_id)
             self._audit.record(
                 actor=actor, action="respond_escalation",
                 darwin_id=darwin_id,
-                metadata={"escalation_id": escalation_id, "decision": decision},
+                metadata={"escalation_id": escalation_id, "decision": decision,
+                          "vault_grant_minted": granted},
             )
+
+    def _should_mint_vault_grant(
+        self, escalation_id: str, override: bool | None
+    ) -> bool:
+        """Decide whether an approval should mint a sensitive-vault grant.
+        Explicit ``override`` wins; otherwise auto-detect by ticket class —
+        KYC is the sensitive-vault tier (doc 16). A spend/APPROVAL ticket
+        must never mint a vault grant."""
+        if override is not None:
+            return bool(override)
+        routed = self._router.get(escalation_id)
+        if routed is None:
+            return False
+        try:
+            return routed.ticket_class.value == "kyc"
+        except Exception:  # noqa: BLE001 — unknown class → don't mint
+            return False
+
+    def _mint_vault_grant(
+        self, handle: "_Handle", escalation_id: str
+    ) -> str | None:
+        """Mint a one-time owner grant token into the Darwin's grant store
+        and write it to the vault grant path (doc 16). Returns the token, or
+        None when the stack has no grant store. The token value is never
+        logged — only the fact that a grant was minted."""
+        store = getattr(handle.stack, "vault_grants", None)
+        grant = getattr(store, "grant", None)
+        if not callable(grant):
+            return None
+        token = secrets.token_urlsafe(32)
+        grant(token)
+        # doc 16: the platform writes the one-time token at
+        # darwins/{id}/escalations/{eid}/grant for forensic traceability.
+        # Best-effort — the authoritative check is the grant store's consume.
+        raw_put = getattr(getattr(handle.stack, "vault", None), "put", None)
+        if callable(raw_put):
+            did = str(handle.darwin_id).replace("/", "_")
+            eid = str(escalation_id).replace("/", "_")
+            try:
+                raw_put(f"darwins/{did}/escalations/{eid}/grant", token)
+            except Exception:  # noqa: BLE001 — forensic write is non-critical
+                pass
+        self._audit.record(
+            actor="platform", action="vault_grant_minted",
+            darwin_id=handle.darwin_id,
+            metadata={"escalation_id": escalation_id},  # NOT the token
+        )
+        return token
 
     # -- lineage (doc 08: GET /darwins/{id}/lineage) ----------------------
     async def lineage(self, darwin_id: str) -> dict[str, Any]:
@@ -3737,6 +3808,32 @@ class Supervisor:
                     metadata={"reason": str(exc)[:200], "driver": "k8s"},
                 )
                 raise
+            # Seal the provisioned per-Darwin Vault AppRole + organism DSN into
+            # the pod's Secret bundle (doc 22) so the pod authenticates to Vault
+            # as its own scoped identity instead of the shared fleet token. The
+            # bootstrap is consumed once; the secret_id is never logged.
+            consume = getattr(
+                self._namespace_provisioner, "consume_pod_bootstrap", None,
+            )
+            boot = consume(supervisor_id) if callable(consume) else None
+            if boot:
+                from ..k8s.manifests import (
+                    ORGANISM_DB_DSN_SECRET_KEY,
+                    VAULT_APPROLE_ROLE_ID_SECRET_KEY,
+                    VAULT_APPROLE_SECRET_ID_SECRET_KEY,
+                )
+
+                if boot.get("vault_role_id") and boot.get("vault_secret_id"):
+                    secret_extras[VAULT_APPROLE_ROLE_ID_SECRET_KEY] = boot[
+                        "vault_role_id"
+                    ]
+                    secret_extras[VAULT_APPROLE_SECRET_ID_SECRET_KEY] = boot[
+                        "vault_secret_id"
+                    ]
+                if boot.get("organism_db_dsn"):
+                    secret_extras[ORGANISM_DB_DSN_SECRET_KEY] = boot[
+                        "organism_db_dsn"
+                    ]
         spec = DarwinSpec(
             darwin_id=supervisor_id,
             opening_usdc=float(opening_usdc),
