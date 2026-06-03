@@ -8,6 +8,14 @@ from .eval_harness import (
     evaluate_mutation_candidate,
 )
 from .fitness import FitnessScore, FitnessWindow, compute_fitness
+from .holdings import (
+    Holdings,
+    MarkToMarket,
+    Position,
+    PriceOracle,
+    StaticPriceOracle,
+    net_worth_usdc,
+)
 from .kill_switch import KillSignal, KillSwitch, KillSwitchSource
 from .ledger import Ledger, LedgerEntry, LedgerError
 from .llm_router import LLMError, LLMRouter, LLMTransport, Tier, TierBudgetExceeded
@@ -54,6 +62,12 @@ __all__ = [
     "Ledger",
     "LedgerEntry",
     "LedgerError",
+    "Holdings",
+    "Position",
+    "MarkToMarket",
+    "PriceOracle",
+    "StaticPriceOracle",
+    "net_worth_usdc",
     "LLMError",
     "LLMRouter",
     "LLMTransport",
