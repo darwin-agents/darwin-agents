@@ -48,3 +48,39 @@ cat > /var/lib/rancher/k3s/agent/etc/containerd/runsc.toml <<'RUNSC_TOML'
 [runsc_config]
   platform = "systrap"
 RUNSC_TOML
+%{ if kata_enabled ~}
+
+# --- install Kata Containers (true microVMs) ---------------------------------
+# Stronger isolation than gVisor: each pod runs in its own QEMU microVM.
+# REQUIRES nested virtualization (/dev/kvm) on the node — this block aborts
+# the runtime install (but NOT node boot) if KVM is absent, so a misconfigured
+# instance type degrades to "kata handler missing" rather than a broken node.
+KATA_RELEASE="${kata_release}"
+if [ -e /dev/kvm ]; then
+  case "$(uname -m)" in
+    aarch64|arm64) KATA_ARCH="arm64" ;;
+    x86_64|amd64)  KATA_ARCH="amd64" ;;
+    *)             KATA_ARCH="" ;;
+  esac
+  if [ -n "$KATA_ARCH" ]; then
+    kata_tmp="$(mktemp -d)"; cd "$kata_tmp"
+    KATA_URL="https://github.com/kata-containers/kata-containers/releases/download/$KATA_RELEASE/kata-static-$KATA_RELEASE-$KATA_ARCH.tar.xz"
+    if curl -fsSL -o kata-static.tar.xz "$KATA_URL"; then
+      # The bundle roots at ./opt/kata; extract straight to /.
+      tar -xJf kata-static.tar.xz -C /
+      ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+      # Register the `kata` runtime handler (QEMU) in k3s's containerd.
+      cat >> /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl <<'KATA_TMPL'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]
+  runtime_type = "io.containerd.kata.v2"
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata.options]
+  ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration.toml"
+KATA_TMPL
+    fi
+    cd /; rm -rf "$kata_tmp"
+  fi
+else
+  echo "kata_enabled but /dev/kvm is absent — skipping Kata install (node lacks nested virt; pods using runtimeClassName=kata will not schedule here)" >&2
+fi
+%{ endif ~}

@@ -18,6 +18,8 @@ locals {
 
   node_common = templatefile("${path.module}/templates/node-common.sh.tftpl", {
     gvisor_release = var.gvisor_release
+    kata_enabled   = var.kata_enabled
+    kata_release   = var.kata_release
   })
 
   cp_user_data = templatefile("${path.module}/templates/server.sh.tftpl", {

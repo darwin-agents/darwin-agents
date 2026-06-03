@@ -63,6 +63,27 @@ variable "gvisor_release" {
   default     = "20260525"
 }
 
+# -- Kata Containers (true microVMs, doc 17) --------------------------------
+# gVisor (above) is the DEFAULT per-Darwin isolation: a userspace kernel that
+# needs no nested virtualization, so it runs on stock Hetzner Cloud VMs. Kata
+# gives a stronger boundary — each pod in its own hardware-virtualized microVM
+# (QEMU) — but REQUIRES nested virtualization (/dev/kvm), which Hetzner Cloud
+# shared/dedicated vCPU instances do NOT expose. Enable this ONLY on
+# nested-virt-capable nodes (bare metal, or a provider/instance type with KVM
+# passthrough). When enabled, set the platform-stack runtime_class="kata" +
+# runtime_handler="kata" so per-Darwin pods schedule onto the microVM runtime.
+variable "kata_enabled" {
+  type        = bool
+  description = "Install Kata Containers + register the containerd `kata` runtime handler on every node. Requires nested virtualization (/dev/kvm). Default off → gVisor only."
+  default     = false
+}
+
+variable "kata_release" {
+  type        = string
+  description = "Pinned kata-containers release tag for the kata-static bundle (https://github.com/kata-containers/kata-containers/releases). Only used when kata_enabled."
+  default     = "3.21.0"
+}
+
 variable "network_cidr" {
   type        = string
   description = "CIDR for the private Hetzner network."
