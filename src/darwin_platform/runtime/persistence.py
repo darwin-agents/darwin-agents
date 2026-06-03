@@ -41,10 +41,12 @@ time.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from darwin_dna.constitution import TicketClass
 
@@ -340,7 +342,43 @@ CREATE TABLE IF NOT EXISTS processed_webhook_events (
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 11
+CURRENT_SCHEMA_VERSION: int = 12
+
+# Platform tables that carry a single ``darwin_id`` tenant column and are
+# therefore subject to row-level security (doc 07 §"Data isolation",
+# doc 23 §"Phase 2 RLS policies"). The v12 migration enables RLS on each
+# and installs a policy that scopes every row to
+# ``current_setting('app.current_darwin_id')`` — a session that forgets to
+# set that GUC sees zero rows instead of another tenant's data.
+#
+# Tables keyed by a non-``darwin_id`` tenant identity (``tokens`` →
+# owned_darwins, ``lineage_edges`` → parent/child, ``freelancer_registry``
+# / ``push_subscriptions`` → owner_subject) and platform-wide singletons
+# (omnibus, fiat quotes, webhook dedup, signing key) are deliberately NOT
+# in this list — they have no single darwin_id to scope on.
+_RLS_TENANT_TABLES: tuple[str, ...] = (
+    "audit_entries",
+    "billing_ledgers",
+    "routed_tickets",
+    "monitor_alerts",
+    "darwin_lifecycle",
+    "darwin_audit_records",
+    "darwin_checkpoints",
+    "darwin_manifests",
+    "darwin_preapprovals",
+    "harvest_rules",
+    "resource_throttles",
+)
+
+# The Postgres GUC the RLS policies read. A per-Darwin connection installs
+# it (``SET app.current_darwin_id = '<id>'``) before issuing queries; the
+# platform control plane connects as a BYPASSRLS / superuser role and sees
+# every tenant's rows.
+_RLS_GUC: str = "app.current_darwin_id"
+# Default name of the restricted (NOBYPASSRLS) role a per-Darwin connection
+# assumes via ``SET ROLE`` before installing the GUC. Provisioned by
+# :meth:`PersistenceStore.ensure_tenant_role`.
+DEFAULT_TENANT_ROLE: str = "darwin_tenant"
 # String tag for the code that opened the DB. Tests can override; in
 # real deployments this lets a forensic audit confirm which release
 # touched a row.
@@ -426,6 +464,20 @@ class _SqliteBackend(_Backend):
 # looping, and ride through a brief failover.
 _PG_RECONNECT_ATTEMPTS = 5
 _PG_RECONNECT_BASE_DELAY = 1.0
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(name: str, *, what: str) -> str:
+    """Reject anything that isn't a plain SQL identifier. Role names are
+    interpolated into DDL (they can't be bound parameters), so this guards
+    the one place user-supplied text reaches the SQL string."""
+    if not _IDENTIFIER_RE.match(name or ""):
+        raise ValueError(
+            f"invalid {what} {name!r}: must match [A-Za-z_][A-Za-z0-9_]*"
+        )
+    return name
 
 
 def _split_sql_statements(script: str) -> list[str]:
@@ -820,6 +872,107 @@ class PersistenceStore:
         return PersistentMonitor(
             self._backend, quotas=quotas, sink=sink, clock=clock
         )
+
+    # -- tenant isolation (Postgres RLS, doc 07 / doc 23) -----------------
+    def ensure_tenant_role(
+        self,
+        role: str = DEFAULT_TENANT_ROLE,
+        *,
+        password: str | None = None,
+        login: bool = False,
+    ) -> None:
+        """Provision the restricted Postgres role a per-Darwin connection
+        assumes to be subject to the RLS policies installed by the v12
+        migration.
+
+        Idempotent. Creates ``role`` ``NOSUPERUSER NOBYPASSRLS`` if it is
+        absent, (re)asserts those security-relevant attributes on every
+        call (a role that somehow gained ``BYPASSRLS`` would silently
+        defeat tenant isolation), and grants it the per-tenant table
+        privileges plus schema + sequence usage. When ``login`` is set it
+        also grants ``LOGIN`` (+ optional ``password``) so a dashboard or
+        sandbox can connect *directly* as the role instead of reaching it
+        via ``SET ROLE`` from a privileged session.
+
+        No-op on SQLite (no roles, no row-level security)."""
+        if self._backend.kind != "postgres":
+            return
+        role = _validate_identifier(role, what="role name")
+        if password is not None and "?" in password:
+            # The backend translates ``?`` → ``%s`` and a role password
+            # can't be a bound parameter in DDL, so a literal ``?`` would
+            # be corrupted. Reject rather than silently mangle it.
+            raise ValueError("tenant role password must not contain '?'")
+        backend = self._backend
+        with backend:
+            exists = backend.execute(
+                "SELECT 1 FROM pg_roles WHERE rolname = ?", (role,)
+            ).fetchone()
+            if not exists:
+                backend.execute(
+                    f'CREATE ROLE "{role}" '
+                    "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOLOGIN"
+                )
+            backend.execute(f'ALTER ROLE "{role}" NOSUPERUSER NOBYPASSRLS')
+            backend.execute(
+                f'ALTER ROLE "{role}" {"LOGIN" if login else "NOLOGIN"}'
+            )
+            if password is not None:
+                esc = password.replace("'", "''")
+                backend.execute(f"ALTER ROLE \"{role}\" PASSWORD '{esc}'")
+            backend.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+            for table in _RLS_TENANT_TABLES:
+                backend.execute(
+                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} "
+                    f'TO "{role}"'
+                )
+            backend.execute(
+                "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public "
+                f'TO "{role}"'
+            )
+
+    @contextmanager
+    def tenant_connection(
+        self, darwin_id: str, *, role: str = DEFAULT_TENANT_ROLE
+    ) -> Iterator[Any]:
+        """Yield a fresh psycopg connection scoped to a single Darwin via
+        row-level security.
+
+        Models the per-Darwin data path (the dashboard's read-only "window
+        into the Darwin's data", a neuron's scoped reader): ``SET ROLE``
+        drops from the privileged connecting role to the ``NOBYPASSRLS``
+        ``role`` so the RLS policies bite, then ``app.current_darwin_id``
+        is installed so they resolve to this Darwin's rows. A query that
+        reaches another tenant's rows returns empty; an INSERT for another
+        tenant is rejected by the policy's reused ``USING`` check.
+
+        Postgres-only — raises on SQLite, which has no row-level security.
+        The connection is closed on context exit."""
+        if self._backend.kind != "postgres":
+            raise RuntimeError(
+                "tenant_connection requires the Postgres backend; SQLite "
+                "has no row-level security"
+            )
+        role = _validate_identifier(role, what="role name")
+        import psycopg
+        from psycopg.rows import dict_row
+
+        conn = psycopg.connect(
+            str(self._spec), autocommit=True, row_factory=dict_row
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f'SET ROLE "{role}"')
+                # set_config(name, value, is_local=false) → session-scoped,
+                # parameterizable (unlike the SET statement), so the
+                # darwin_id can be safely bound rather than interpolated.
+                cur.execute(
+                    "SELECT set_config(%s, %s, false)",
+                    (_RLS_GUC, str(darwin_id)),
+                )
+            yield conn
+        finally:
+            conn.close()
 
     def close(self) -> None:
         try:
@@ -2417,7 +2570,49 @@ _MIGRATIONS: dict[int, Any] = {
     # 11: push_subscriptions table — covered by CREATE TABLE IF NOT EXISTS,
     # so no ALTER needed; the bump just ensures opened DBs from older code
     # get the version row updated.
+    12: lambda backend: _migrate_v12_enable_rls(backend),
 }
+
+
+def _migrate_v12_enable_rls(backend: _Backend) -> None:
+    """v12: enable Postgres row-level security on every ``darwin_id``-keyed
+    platform table (doc 07 §"Data isolation", doc 23 §"Phase 2 RLS").
+
+    For each tenant table we:
+
+    - ``ENABLE ROW LEVEL SECURITY`` — turn the feature on.
+    - ``FORCE ROW LEVEL SECURITY`` — apply the policy even to the table
+      *owner*, so a non-superuser application role that happens to own the
+      tables can't accidentally read across tenants. The platform control
+      plane therefore connects as a superuser or ``BYPASSRLS`` role (both
+      bypass RLS entirely); a per-Darwin connection drops to a restricted
+      role via ``SET ROLE`` (see :meth:`PersistenceStore.tenant_connection`).
+    - install a single ``USING`` policy scoping rows to the
+      ``app.current_darwin_id`` GUC. With no ``WITH CHECK`` clause Postgres
+      reuses ``USING`` for INSERTs too, so a scoped session can neither read
+      nor write another tenant's rows. The ``true`` second arg to
+      ``current_setting`` makes an *unset* GUC return NULL (rather than
+      erroring) — ``darwin_id = NULL`` is NULL, so a connection that forgets
+      to set the GUC sees zero rows, exactly as doc 07 promises.
+
+    SQLite has no row-level security; there the migration is a no-op and
+    tenant isolation stays application-level (SQLite is the single-process
+    dev backend, not the multi-tenant production one).
+
+    Idempotent: ``DROP POLICY IF EXISTS`` precedes each ``CREATE POLICY`` so
+    re-running (e.g. after a partial migration) is safe.
+    """
+    if backend.kind != "postgres":
+        return
+    for table in _RLS_TENANT_TABLES:
+        policy = f"{table}_tenant_isolation"
+        backend.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        backend.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+        backend.execute(f"DROP POLICY IF EXISTS {policy} ON {table}")
+        backend.execute(
+            f"CREATE POLICY {policy} ON {table} "
+            f"USING (darwin_id = current_setting('{_RLS_GUC}', true))"
+        )
 
 
 def _migrate_v6_preapproval_use_counter(backend: _Backend) -> None:
