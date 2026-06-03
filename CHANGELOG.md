@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): inject tenant Vault AppRole and organism DB into k8s pods
 - feat(treasury): gate bankruptcy on net worth including marked holdings
 - feat(dna): add Holdings and PriceOracle with cost-basis fallback
 - test(platform): cover soma_merge hook wiring and real patch apply path
@@ -86,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(dna): thread owner data and grant_token on escalation approve
 - fix(platform): wire real LiteLLM transport in k8s orchestrator pods
 - ci: assert PodDisruptionBudget renders in helm template check
 - fix(platform): defer dead-Darwin teardown for 90-day retention
