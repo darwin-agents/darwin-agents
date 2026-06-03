@@ -137,6 +137,35 @@ def test_teardown_clears_unconsumed_bootstrap():
     assert p.consume_pod_bootstrap("abc-1") is None
 
 
+def test_provision_surfaces_readonly_dsn_when_backend_exposes_it():
+    class _RoBackend(StubOrganismDbBackend):
+        def __init__(self):
+            super().__init__()
+            self.readonly_credentials = {}
+
+        def create_database(self, *, darwin_id):
+            db, role, dsn = super().create_database(darwin_id=darwin_id)
+            self.readonly_credentials[db] = {
+                "role": f"{role}_ro", "password": "p",
+                "dsn": f"postgresql://{role}_ro:p@db/{db}",
+            }
+            return db, role, dsn
+
+    p = _build(db=_RoBackend())
+    p.provision(darwin_id="abc-1")
+    ro = p.organism_readonly_dsn("abc-1")
+    assert ro is not None and "_ro:" in ro
+    # Cleared on teardown (it carries a credential).
+    p.teardown(darwin_id="abc-1")
+    assert p.organism_readonly_dsn("abc-1") is None
+
+
+def test_readonly_dsn_none_when_backend_has_no_ro_role():
+    p = _build()  # StubOrganismDbBackend has no readonly_credentials
+    p.provision(darwin_id="abc-1")
+    assert p.organism_readonly_dsn("abc-1") is None
+
+
 def test_audit_recorder_captures_provision_event():
     recorded = []
     p = NamespaceProvisioner(

@@ -1915,6 +1915,46 @@ class Supervisor:
     def namespace_provisioner(self) -> NamespaceProvisioner | None:
         return self._namespace_provisioner
 
+    # -- organism data browser (doc 08) -----------------------------------
+    def organism_reader_for(self, darwin_id: str):
+        """Build a read-only :class:`OrganismDbReader` for ``darwin_id``'s
+        organism database, or ``None`` when tenant namespaces aren't provisioned
+        or the backend exposed no read-only role. The reader connects with the
+        SELECT-only dashboard role so the operator data browser can show a
+        Darwin's *business* data without any write capability."""
+        prov = self._namespace_provisioner
+        if prov is None:
+            return None
+        getter = getattr(prov, "organism_readonly_dsn", None)
+        dsn = getter(darwin_id) if callable(getter) else None
+        if not dsn:
+            return None
+        from ..adapters.organism_reader import OrganismDbReader
+
+        return OrganismDbReader(dsn=dsn)
+
+    def list_organism_tables(self, darwin_id: str) -> list[str]:
+        """Public-schema tables in ``darwin_id``'s organism database."""
+        reader = self.organism_reader_for(darwin_id)
+        if reader is None:
+            raise SupervisorError(
+                f"no organism database reader for {darwin_id!r} "
+                "(tenant namespaces not provisioned)"
+            )
+        return reader.list_tables()
+
+    def read_organism_rows(
+        self, darwin_id: str, table: str, *, limit: int = 50, offset: int = 0,
+    ) -> dict[str, Any]:
+        """A bounded, read-only page of rows from one organism table."""
+        reader = self.organism_reader_for(darwin_id)
+        if reader is None:
+            raise SupervisorError(
+                f"no organism database reader for {darwin_id!r} "
+                "(tenant namespaces not provisioned)"
+            )
+        return reader.read_rows(table, limit=limit, offset=offset)
+
     @property
     def drift_detector(self) -> DriftDetector | None:
         return self._drift_detector

@@ -28,6 +28,11 @@ from .organism_db import (
     RealOrganismDbBackend,
     build_organism_db_backend,
 )
+from .organism_reader import (
+    OrganismDbReader,
+    OrganismReaderError,
+    build_organism_reader,
+)
 from .price_oracle import HttpPriceOracle, build_price_oracle
 from .vault_namespace import (
     RealVaultNamespaceBackend,
@@ -60,6 +65,9 @@ __all__ = [
     "build_organism_db_backend",
     "HttpPriceOracle",
     "build_price_oracle",
+    "OrganismDbReader",
+    "OrganismReaderError",
+    "build_organism_reader",
     "LiteLLMAdminClient",
     "LiteLLMAdminError",
     "LiteLLMSpendReconciler",

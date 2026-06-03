@@ -285,6 +285,9 @@ class NamespaceProvisioner:
         # by darwin_id; drained exactly once via :meth:`consume_pod_bootstrap`
         # so it does not linger after the pod has it.
         self._pod_bootstrap: dict[str, dict[str, str]] = {}
+        # Per-Darwin read-only organism DSN (for the operator data browser).
+        # Holds a credential, so it lives only here — never on TenantNamespace.
+        self._organism_readonly_dsn: dict[str, str] = {}
 
     def provision(
         self,
@@ -327,6 +330,18 @@ class NamespaceProvisioner:
                 namespace=vault_ns, path=connection_ref,
                 value={"dsn": dsn, "role": db_role, "database": db_name},
             )
+            # If the backend provisioned a read-only dashboard role, capture its
+            # DSN so the operator data browser can read this Darwin's business
+            # data through the SELECT-only role (doc 08). Best-effort: the
+            # protocol only promises the owner tuple; a stub backend has none.
+            ro_creds = getattr(self._db, "readonly_credentials", None)
+            ro_dsn = ((ro_creds or {}).get(db_name) or {}).get("dsn")
+            if ro_dsn:
+                self._organism_readonly_dsn[darwin_id] = str(ro_dsn)
+                self._safe(lambda: self._vault.write_secret(
+                    namespace=vault_ns, path="kv/organism/readonly_dsn",
+                    value={"dsn": str(ro_dsn)},
+                ))
         except Exception as exc:
             # Rollback the prior steps. Failures in rollback are
             # best-effort — the operator is alerted via the audit log.
@@ -477,6 +492,7 @@ class NamespaceProvisioner:
             errors.append(f"k8s:{exc}")
         # Drop any unconsumed bootstrap secret so it never outlives the tenant.
         self._pod_bootstrap.pop(darwin_id, None)
+        self._organism_readonly_dsn.pop(darwin_id, None)
         if errors:
             tenant.status = TenantNamespaceStatus.ERROR
             tenant.last_error = "; ".join(errors)
@@ -494,6 +510,12 @@ class NamespaceProvisioner:
         its own scoped identity. Drained once so the secret material does not
         outlive its delivery."""
         return self._pod_bootstrap.pop(darwin_id, None)
+
+    def organism_readonly_dsn(self, darwin_id: str) -> str | None:
+        """The read-only DSN for ``darwin_id``'s organism database, or ``None``
+        if not provisioned / the backend has no read-only role. The operator
+        data browser builds an :class:`OrganismDbReader` from this."""
+        return self._organism_readonly_dsn.get(darwin_id)
 
     def get(self, darwin_id: str) -> TenantNamespace | None:
         return self._tenants.get(darwin_id)

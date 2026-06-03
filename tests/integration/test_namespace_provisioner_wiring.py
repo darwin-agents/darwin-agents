@@ -166,6 +166,52 @@ async def test_k8s_spawn_injects_vault_approle_into_pod_secret():
         await sup.shutdown()
 
 
+async def test_organism_reader_built_from_provisioner_readonly_dsn():
+    """The supervisor builds a read-only OrganismDbReader from the per-Darwin
+    read-only DSN the provisioner surfaced (doc 08 data browser)."""
+    from darwin_platform.adapters.organism_reader import OrganismDbReader
+
+    class _RoOrganismBackend(StubOrganismDbBackend):
+        def __init__(self):
+            super().__init__()
+            self.readonly_credentials = {}
+
+        def create_database(self, *, darwin_id):
+            db, role, dsn = super().create_database(darwin_id=darwin_id)
+            self.readonly_credentials[db] = {
+                "role": f"{role}_ro", "password": "p",
+                "dsn": f"postgresql://{role}_ro:p@db/{db}",
+            }
+            return db, role, dsn
+
+    prov = NamespaceProvisioner(
+        k8s=StubK8sBackend(), vault=StubVaultNamespaceBackend(),
+        organism_db=_RoOrganismBackend(),
+    )
+    sup = Supervisor(heartbeat_seconds=0.0, namespace_provisioner=prov)
+    try:
+        status = await sup.spawn(opening_usdc=10.0)
+        did = status.darwin_id
+        reader = sup.organism_reader_for(did)
+        assert isinstance(reader, OrganismDbReader)
+        # Built from the SELECT-only role's DSN, not the owner's.
+        assert "_ro:" in reader._dsn  # noqa: SLF001
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+async def test_organism_reader_none_without_provisioner():
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status = await sup.spawn(opening_usdc=10.0)
+        assert sup.organism_reader_for(status.darwin_id) is None
+        import pytest as _pytest
+        with _pytest.raises(Exception):
+            sup.list_organism_tables(status.darwin_id)
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
 async def test_k8s_spawn_tears_down_tenant_when_pod_start_fails():
     class _FailingDriver(_FakeK8sDriver):
         async def start(self, spec):
