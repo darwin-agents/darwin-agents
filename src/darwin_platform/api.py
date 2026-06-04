@@ -1181,6 +1181,26 @@ def build_app(
             raise HTTPException(404, str(exc))
         return {"throttles": [r.to_json() for r in rows]}
 
+    # -- deployment capabilities (dashboard UI gating) --------------------
+    @app.get("/platform/capabilities")
+    async def platform_capabilities(
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, bool]:
+        # What features this deployment exposes AND the caller may use here.
+        # The dashboard hides tabs that would only ever 403/409: the organism
+        # data browser (needs tenant namespaces + operator scope) and the
+        # forensics viewer (needs a configured soma root + operator scope).
+        # Any authenticated token may read it; the gated booleans fold in the
+        # caller's operator scope so an owner token sees them False.
+        caps = _sup(request).platform_capabilities()
+        is_operator = ctx.has_scope(PLATFORM_OPERATOR)
+        return {
+            **caps,
+            "organism_browser": caps["tenant_namespaces"] and is_operator,
+            "forensics_viewer": caps["soma_forensics"] and is_operator,
+        }
+
     # -- post-mortem soma forensics (doc 05) -------------------------------
     @app.get("/platform/darwins/{darwin_id}/forensics")
     async def list_soma_forensics(
@@ -1208,6 +1228,56 @@ def build_app(
             return _sup(request).read_soma_forensic(darwin_id, snapshot_id)
         except SupervisorError as exc:
             raise HTTPException(404, str(exc))
+
+    # -- organism data browser (docs 08, 22) ------------------------------
+    @app.get("/platform/darwins/{darwin_id}/organism/tables")
+    async def list_organism_tables(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        # Operator data browser: the public tables in a Darwin's *business*
+        # database, read through the SELECT-only dashboard role. A Darwin
+        # without provisioned tenant namespaces has no organism DB -> 409.
+        from .adapters.organism_reader import OrganismReaderError
+
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            tables = _sup(request).list_organism_tables(darwin_id)
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        except OrganismReaderError as exc:
+            raise HTTPException(502, str(exc))
+        return {"darwin_id": darwin_id, "tables": tables}
+
+    @app.get("/platform/darwins/{darwin_id}/organism/tables/{table}/rows")
+    async def read_organism_rows(
+        darwin_id: str,
+        table: str,
+        request: Request,
+        limit: int = Query(50, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        # A bounded, read-only page of one organism table. The table name is
+        # validated as an identifier by the reader (it can't be a bound param);
+        # an invalid name or read failure is a 400/502, not a 500.
+        from .adapters.organism_reader import OrganismReaderError
+
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            page = _sup(request).read_organism_rows(
+                darwin_id, table, limit=limit, offset=offset,
+            )
+        except SupervisorError as exc:
+            raise HTTPException(409, str(exc))
+        except OrganismReaderError as exc:
+            # Invalid identifier is a client error; a connection/read failure
+            # is upstream. Both carry the reader's message, never the DSN.
+            msg = str(exc)
+            status = 400 if "invalid" in msg else 502
+            raise HTTPException(status, msg)
+        return {"darwin_id": darwin_id, **page}
 
     # -- fiat ramp (doc 17) -------------------------------------------------
     @app.post("/platform/fiat/deposit_quote")

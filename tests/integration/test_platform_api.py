@@ -178,6 +178,84 @@ async def test_ledger_summary_export(client) -> None:
     assert r.status_code == 404
 
 
+async def test_platform_capabilities(client) -> None:
+    """The dashboard-gating capabilities endpoint. A single-tenant in-process
+    supervisor exposes neither tenant namespaces nor forensics, so the gated
+    flags are False even though the no-auth test client carries every scope."""
+    c, _sup = client
+    r = await c.get("/platform/capabilities")
+    assert r.status_code == 200, r.text
+    caps = r.json()
+    assert caps["tenant_namespaces"] is False
+    assert caps["soma_forensics"] is False
+    assert caps["organism_browser"] is False
+    assert caps["forensics_viewer"] is False
+
+
+async def test_organism_data_browser_routes(client) -> None:
+    """The operator organism data browser (docs 08, 22): tables + a bounded,
+    read-only page of rows, through the SELECT-only reader. An unprovisioned
+    Darwin (no tenant namespaces) returns 409; an invalid table name 400."""
+    from darwin_platform.adapters.organism_reader import OrganismDbReader
+
+    c, sup = client
+    r = await c.post("/darwins", json={"opening_usdc": 60.0})
+    did = r.json()["darwin_id"]
+
+    # No tenant namespaces provisioned -> no organism DB -> 409 (not 500).
+    r = await c.get(f"/platform/darwins/{did}/organism/tables")
+    assert r.status_code == 409, r.text
+
+    # Inject a reader backed by a fake connection so the route is exercised
+    # end-to-end without a real Postgres.
+    class _Cur:
+        def __init__(self) -> None:
+            self.description = [("id",), ("note",)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            self._sql = sql
+
+        def fetchall(self):
+            if "information_schema" in self._sql:
+                return [{"table_name": "orders"}, {"table_name": "invoices"}]
+            return [{"id": 1, "note": "hi"}, {"id": 2, "note": "yo"}]
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            pass
+
+    reader = OrganismDbReader(dsn="postgres://ro@x/db", connect=lambda _dsn: _Conn())
+    sup.organism_reader_for = lambda _did: reader  # type: ignore[assignment]
+
+    r = await c.get(f"/platform/darwins/{did}/organism/tables")
+    assert r.status_code == 200, r.text
+    assert r.json()["tables"] == ["orders", "invoices"]
+
+    r = await c.get(
+        f"/platform/darwins/{did}/organism/tables/orders/rows?limit=10&offset=0"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["table"] == "orders"
+    assert body["columns"] == ["id", "note"]
+    assert body["rows"][0] == {"id": 1, "note": "hi"}
+
+    # Invalid identifier is refused before any query -> 400, not 500.
+    r = await c.get(
+        f"/platform/darwins/{did}/organism/tables/bad%20name/rows"
+    )
+    assert r.status_code == 400, r.text
+
+
 async def test_escalation_response_endpoint(client) -> None:
     c, sup = client
     r = await c.post(
