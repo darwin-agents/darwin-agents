@@ -128,7 +128,7 @@ This is the source of truth for:
 - The user's dashboard ("today your Darwin earned $X and spent $Y")
 - The fitness function (profit-since-last-reproduction)
 - The death trigger (treasury balance reaches floor)
-- Tax reporting (we hand the user a CSV at year-end)
+- Tax reporting (we hand the user a year-end CSV + a jurisdiction-neutral annual summary; they file — see doc 17 §Compliance)
 - Audit (every transaction reconstructable)
 
 The ledger is **not** the source of truth for the balance itself — the wallet on-chain is. The ledger is reconciled against the wallet every heartbeat. A mismatch larger than a configured tolerance halts the Darwin.

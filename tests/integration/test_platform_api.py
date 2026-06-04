@@ -154,6 +154,30 @@ async def test_ledger_csv_export(client) -> None:
     assert r.status_code == 404
 
 
+async def test_ledger_summary_export(client) -> None:
+    """The doc-05/17 jurisdiction-neutral annual summary export."""
+    c, sup = client
+    r = await c.post("/darwins", json={"opening_usdc": 60.0})
+    did = r.json()["darwin_id"]
+    h = sup._darwins[did]  # noqa: SLF001
+    await _wait_until(lambda: h.runtime.state.tick >= 5)
+
+    r = await c.get(f"/darwins/{did}/ledger/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["currency"] == "USDC"
+    assert "total_in_usdc" in body and "net_usdc" in body
+    assert isinstance(body["by_category"], dict)
+    assert body["period"]["year"] is None
+
+    r = await c.get(f"/darwins/{did}/ledger/summary?year=2024")
+    assert r.status_code == 200
+    assert r.json()["period"]["year"] == 2024
+
+    r = await c.get("/darwins/does-not-exist/ledger/summary")
+    assert r.status_code == 404
+
+
 async def test_escalation_response_endpoint(client) -> None:
     c, sup = client
     r = await c.post(

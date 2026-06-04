@@ -3468,6 +3468,21 @@ class Supervisor:
         h = self._get(darwin_id)
         return movements_to_csv(list(h.stack.wallet.movements()))
 
+    async def ledger_summary(
+        self, darwin_id: str, *, year: int | None = None,
+    ) -> dict[str, Any]:
+        """A jurisdiction-neutral accounting summary of one Darwin's
+        ledger (docs 05, 17) — totals (in/out/net) + per-category
+        breakdown for a tax ``year`` (UTC), or lifetime when ``year`` is
+        omitted. The owner hands this to their accountant / tax tool; the
+        platform does not file taxes or generate statutory forms."""
+        from ..payments.ledger_export import movements_to_summary
+
+        h = self._get(darwin_id)
+        return movements_to_summary(
+            list(h.stack.wallet.movements()), year=year
+        )
+
     # -- events (doc 08: GET /darwins/{id}/events) ------------------------
     async def events(
         self,

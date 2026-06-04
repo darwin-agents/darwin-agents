@@ -1019,6 +1019,24 @@ def build_app(
             },
         )
 
+    @app.get("/darwins/{darwin_id}/ledger/summary")
+    async def ledger_summary(
+        darwin_id: str,
+        request: Request,
+        year: int | None = None,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        """Jurisdiction-neutral accounting summary (docs 05, 17): totals
+        (in/out/net) + per-category breakdown for a tax ``year`` (UTC), or
+        lifetime when omitted. The owner hands this to their accountant;
+        the platform does not file taxes or generate statutory forms."""
+        _require_scope(ctx, OWNER)
+        _require_owns(ctx, darwin_id)
+        try:
+            return await _sup(request).ledger_summary(darwin_id, year=year)
+        except UnknownDarwin as exc:
+            raise HTTPException(404, str(exc))
+
     @app.get("/darwins/{darwin_id}/events")
     async def events(
         darwin_id: str,
