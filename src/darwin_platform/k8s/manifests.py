@@ -55,6 +55,15 @@ POD_LABEL_COMPONENT = "darwin.io/component"
 CONTROL_API_PORT = 8001
 LANCEDB_PORT = 9999
 
+# In-pod mount point for the mutable soma tree (docs 03/21/05). When soma-merge
+# is enabled, a volume is mounted here and the orchestrator is launched with
+# ``--soma-root`` pointing at it, so apply_mutation writes promoted patches to
+# disk + the death forensic captures real soma contents. The volume is a
+# per-Darwin PVC by default (promoted self-mods survive a pod restart); set
+# ``DarwinPodConfig.soma_storage_size=""`` to fall back to an ephemeral
+# emptyDir for stacks without a dynamic storage provisioner.
+SOMA_MOUNT_PATH = "/var/lib/darwin/soma"
+
 # Secret key (within the per-Darwin ``darwin-control`` Secret) under which the
 # supervisor stores this Darwin's minted LiteLLM virtual key (doc 13). The
 # deployment surfaces it as the DARWIN_LITELLM_MASTER_KEY env via secretKeyRef
@@ -91,6 +100,15 @@ class DarwinPodConfig:
     lancedb_image: str = "lancedb/lancedb:latest"
     lancedb_storage_size: str = "1Gi"
     lancedb_storage_class: str | None = None
+    # Mutable soma tree (docs 03/21/05). When soma-merge is enabled the pod
+    # gets a per-Darwin PVC so promoted self-modifications SURVIVE a pod
+    # restart (the genome keeps its evolved code, not just within one pod's
+    # life). Set ``soma_storage_size=""`` to fall back to an ephemeral
+    # emptyDir — for local/kind stacks without a dynamic storage provisioner,
+    # where forensics still work (the supervisor pulls before reap) but
+    # restarts reset the soma.
+    soma_storage_size: str = "1Gi"
+    soma_storage_class: str | None = None
     # Resources for the orchestrator container. The orchestrator loads the
     # genome + LLM/adapter SDKs at boot; 1Gi OOM-killed it on the local
     # k8s stack (crash loop, exit 137), so the floor is 2Gi. Override via
@@ -284,6 +302,38 @@ def build_pvc(
     }
 
 
+def build_soma_pvc(
+    *,
+    darwin_id: str,
+    namespace: str,
+    config: DarwinPodConfig,
+) -> dict[str, Any]:
+    """Per-Darwin soma volume (docs 03/21/05). ReadWriteOnce — the
+    orchestrator is the only writer. Persists the soma tree (the patches
+    apply_mutation lands) across pod restarts so the genome keeps its evolved
+    code; it rides the dead-Darwin retention window with the rest of the
+    namespace and is destroyed on teardown."""
+    spec: dict[str, Any] = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {"requests": {"storage": config.soma_storage_size}},
+    }
+    if config.soma_storage_class:
+        spec["storageClassName"] = config.soma_storage_class
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": "darwin-soma",
+            "namespace": namespace,
+            "labels": {
+                NAMESPACE_LABEL_MANAGED_BY: "darwin-platform",
+                NAMESPACE_LABEL_DARWIN_ID: darwin_id,
+            },
+        },
+        "spec": spec,
+    }
+
+
 def build_service(
     *,
     darwin_id: str,
@@ -331,6 +381,7 @@ def build_deployment(
     litellm_virtual_key: bool = False,
     vault_approle: bool = False,
     organism_db_dsn: bool = False,
+    soma_enabled: bool = False,
 ) -> dict[str, Any]:
     """Orchestrator pod = the genome's heart. One Deployment, one
     replica (per-Darwin singleton; HA is at the supervisor layer via the
@@ -350,6 +401,11 @@ def build_deployment(
     ]
     if escalation_auto is not None:
         args.extend(["--escalation-auto", escalation_auto])
+    # Real soma merge + death forensics (docs 03/21/05). The supervisor enables
+    # this when it's configured with a soma root; the pod writes its soma tree
+    # to the SOMA_MOUNT_PATH emptyDir below.
+    if soma_enabled:
+        args.extend(["--soma-root", SOMA_MOUNT_PATH])
 
     env: list[dict[str, Any]] = [
         {"name": "DARWIN_ID", "value": darwin_id},
@@ -466,6 +522,10 @@ def build_deployment(
              "readOnly": True},
         ],
     }
+    if soma_enabled:
+        orchestrator_container["volumeMounts"].append(
+            {"name": "darwin-soma", "mountPath": SOMA_MOUNT_PATH},
+        )
 
     lancedb_container = {
         "name": "lancedb",
@@ -515,6 +575,18 @@ def build_deployment(
             "name": "darwin-lancedb",
             "persistentVolumeClaim": {"claimName": "darwin-lancedb"},
         })
+    if soma_enabled:
+        # Persistent by default: a per-Darwin PVC so promoted self-mods
+        # survive a pod restart. emptyDir only when soma storage is explicitly
+        # disabled (local/kind stacks with no dynamic provisioner) — forensics
+        # still work (pulled before reap), but a restart resets the soma.
+        if config.soma_storage_size:
+            volumes.append({
+                "name": "darwin-soma",
+                "persistentVolumeClaim": {"claimName": "darwin-soma"},
+            })
+        else:
+            volumes.append({"name": "darwin-soma", "emptyDir": {}})
 
     pod_spec: dict[str, Any] = {
         "serviceAccountName": config.service_account_name or "default",
@@ -724,6 +796,9 @@ class DarwinManifestBundle:
     service: dict[str, Any]
     deployment: dict[str, Any]
     network_policy: dict[str, Any]
+    # Per-Darwin soma PVC, present only when soma-merge is enabled AND
+    # persistent (the default). None → the pod uses an emptyDir (or no soma).
+    soma_pvc: dict[str, Any] | None = None
 
 
 def build_bundle(
@@ -741,6 +816,7 @@ def build_bundle(
     secret_extras: dict[str, str] | None = None,
     database_url_secret_ref: tuple[str, str] | None = None,
     spawned_at: float | None = None,
+    soma_enabled: bool = False,
 ) -> DarwinManifestBundle:
     # The pod authenticates LiteLLM as its own virtual key when the supervisor
     # sealed one into the per-Darwin Secret (doc 13).
@@ -797,8 +873,18 @@ def build_bundle(
             litellm_virtual_key=has_virtual_key,
             vault_approle=has_vault_approle,
             organism_db_dsn=has_organism_db,
+            soma_enabled=soma_enabled,
         ),
         network_policy=build_network_policy(
             darwin_id=darwin_id, namespace=namespace, config=config,
+        ),
+        # A persistent soma PVC only when soma-merge is on AND storage is
+        # configured; an empty size opts into the ephemeral emptyDir instead.
+        soma_pvc=(
+            build_soma_pvc(
+                darwin_id=darwin_id, namespace=namespace, config=config,
+            )
+            if soma_enabled and config.soma_storage_size
+            else None
         ),
     )

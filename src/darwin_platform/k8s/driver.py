@@ -186,6 +186,7 @@ class K8sDarwinDriver:
             secret_extras=merged_secret_extras,
             database_url_secret_ref=self._db_secret_ref,
             spawned_at=self._clock(),
+            soma_enabled=spec.soma_enabled,
         )
         namespace = bundle.namespace["metadata"]["name"]
         try:
@@ -195,6 +196,12 @@ class K8sDarwinDriver:
             self._api.create_namespaced_persistent_volume_claim(
                 namespace, bundle.pvc,
             )
+            if bundle.soma_pvc is not None:
+                # Persistent soma tree (docs 03/21/05): survives pod restarts
+                # so the genome keeps its promoted self-modifications.
+                self._api.create_namespaced_persistent_volume_claim(
+                    namespace, bundle.soma_pvc,
+                )
             self._api.create_namespaced_service(namespace, bundle.service)
             self._api.create_namespaced_deployment(namespace, bundle.deployment)
             self._api.create_namespaced_network_policy(

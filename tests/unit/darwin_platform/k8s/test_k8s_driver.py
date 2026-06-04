@@ -224,6 +224,41 @@ async def test_snapshot_uses_control_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_soma_enabled_spec_creates_persistent_soma_pvc():
+    """A soma-enabled spawn provisions the per-Darwin soma PVC (alongside the
+    lancedb PVC) so promoted self-mods survive a pod restart."""
+    api = _RecordingApi()
+    control = _RecordingControl(become_ready_after=1)
+    driver = K8sDarwinDriver(
+        api=api, control_client=control,
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+    await driver.start(DarwinSpec(
+        darwin_id="d-soma", opening_usdc=50.0, soma_enabled=True,
+    ))
+    pvc_names = [
+        b["metadata"]["name"] for (k, _ns, b) in api.created if k == "pvc"
+    ]
+    assert "darwin-soma" in pvc_names
+    assert "darwin-lancedb" in pvc_names
+
+
+@pytest.mark.asyncio
+async def test_soma_disabled_spec_creates_no_soma_pvc():
+    api = _RecordingApi()
+    control = _RecordingControl(become_ready_after=1)
+    driver = K8sDarwinDriver(
+        api=api, control_client=control,
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+    await driver.start(DarwinSpec(darwin_id="d-nosoma", opening_usdc=50.0))
+    pvc_names = [
+        b["metadata"]["name"] for (k, _ns, b) in api.created if k == "pvc"
+    ]
+    assert "darwin-soma" not in pvc_names
+
+
+@pytest.mark.asyncio
 async def test_forensics_reads_pod_control_endpoint():
     api = _RecordingApi()
 

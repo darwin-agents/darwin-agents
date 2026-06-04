@@ -387,35 +387,9 @@ class SomaMerger:
         ts = float(self._clock() if captured_at is None else captured_at)
         snapshot_id = f"death-{int(ts * 1000)}"
         try:
-            contents: dict[str, str | None] = {}
-            file_meta: dict[str, dict[str, Any]] = {}
-            total_bytes = 0
-            fingerprint = hashlib.sha256()
-            for abspath in sorted(
-                p for p in self._root.rglob("*") if p.is_file()
-            ):
-                # Never fold the forensics store into its own snapshot if a
-                # caller rooted it under the soma tree.
-                if self._forensics_root in abspath.parents:
-                    continue
-                rel = abspath.relative_to(self._root).as_posix()
-                raw = abspath.read_bytes()
-                total_bytes += len(raw)
-                sha = hashlib.sha256(raw).hexdigest()
-                fingerprint.update(rel.encode("utf-8"))
-                fingerprint.update(sha.encode("ascii"))
-                try:
-                    text: str | None = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    # A non-UTF-8 soma file (unexpected for source) — keep the
-                    # integrity hash but don't inline undecodable bytes.
-                    text = None
-                contents[rel] = text
-                file_meta[rel] = {
-                    "sha256": sha, "bytes": len(raw), "binary": text is None,
-                }
-
-            soma_digest = fingerprint.hexdigest()
+            contents, file_meta, total_bytes, soma_digest = (
+                self._walk_soma_tree()
+            )
             manifest = {
                 "schema": "darwin-platform.soma-forensic/1",
                 "snapshot_id": snapshot_id,
@@ -452,6 +426,55 @@ class SomaMerger:
                 total_bytes=0, captured_at=ts, digest="",
                 failure=f"{type(exc).__name__}: {exc}",
             )
+
+    def _walk_soma_tree(
+        self,
+    ) -> tuple[dict[str, str | None], dict[str, dict[str, Any]], int, str]:
+        """Read every file under the soma root: (contents, per-file metadata,
+        total bytes, tree fingerprint). The fingerprint is SHA-256 over every
+        ``(relpath, sha256(bytes))`` pair in path order. Shared by
+        :meth:`forensic_snapshot` (which persists) and
+        :meth:`soma_tree_contents` (read-only)."""
+        contents: dict[str, str | None] = {}
+        file_meta: dict[str, dict[str, Any]] = {}
+        total_bytes = 0
+        fingerprint = hashlib.sha256()
+        for abspath in sorted(p for p in self._root.rglob("*") if p.is_file()):
+            # Never fold the forensics store into its own snapshot if a
+            # caller rooted it under the soma tree.
+            if self._forensics_root in abspath.parents:
+                continue
+            rel = abspath.relative_to(self._root).as_posix()
+            raw = abspath.read_bytes()
+            total_bytes += len(raw)
+            sha = hashlib.sha256(raw).hexdigest()
+            fingerprint.update(rel.encode("utf-8"))
+            fingerprint.update(sha.encode("ascii"))
+            try:
+                text: str | None = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # A non-UTF-8 soma file (unexpected for source) — keep the
+                # integrity hash but don't inline undecodable bytes.
+                text = None
+            contents[rel] = text
+            file_meta[rel] = {
+                "sha256": sha, "bytes": len(raw), "binary": text is None,
+            }
+        return contents, file_meta, total_bytes, fingerprint.hexdigest()
+
+    def soma_tree_contents(self) -> dict[str, Any]:
+        """The live soma tree (contents + per-file SHA-256 + tree fingerprint)
+        WITHOUT persisting a snapshot file. A k8s pod uses this to embed its
+        real soma in the death manifest it ships to the supervisor — the
+        supervisor persists; the pod doesn't write its own forensic file."""
+        contents, file_meta, total_bytes, digest = self._walk_soma_tree()
+        return {
+            "contents": contents,
+            "files": file_meta,
+            "total_bytes": total_bytes,
+            "soma_digest": digest,
+            "file_count": len(contents),
+        }
 
     def record_external_forensic(
         self, manifest: dict[str, Any], *, captured_at: float | None = None,

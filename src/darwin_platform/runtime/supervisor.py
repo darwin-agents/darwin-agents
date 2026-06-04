@@ -1981,6 +1981,19 @@ class Supervisor:
     def namespace_provisioner(self) -> NamespaceProvisioner | None:
         return self._namespace_provisioner
 
+    def platform_capabilities(self) -> dict[str, bool]:
+        """Deployment-level feature availability, for the dashboard to gate
+        its UI on. These reflect how the supervisor was *constructed* — not
+        per-user authorization (the HTTP layer adds the operator-scope check
+        on top). A single-tenant / in-process deployment has no per-Darwin
+        organism database (``tenant_namespaces`` False) and, unless launched
+        with ``--soma-root``, captures no death forensics."""
+        return {
+            "tenant_namespaces": self._namespace_provisioner is not None,
+            "soma_forensics": self._soma_root is not None,
+            "k8s": self._k8s_driver is not None,
+        }
+
     # -- organism data browser (doc 08) -----------------------------------
     def organism_reader_for(self, darwin_id: str):
         """Build a read-only :class:`OrganismDbReader` for ``darwin_id``'s
@@ -4090,6 +4103,11 @@ class Supervisor:
             escalation_auto=escalation_auto,
             parent_id=parent_id,
             secret_extras=secret_extras,
+            # Enable real on-disk soma merge + soma-content death forensics in
+            # the pod when the platform is configured with a soma root (docs
+            # 03/21/05). Without it the pod keeps the Phase-0 simulation and
+            # the k8s forensic is the signed layer fingerprint only.
+            soma_enabled=self._soma_root is not None,
         )
         with span(
             "supervisor.spawn_k8s",

@@ -1377,6 +1377,11 @@ def _build_k8s_driver(args: argparse.Namespace):
         lancedb_image=getattr(args, "k8s_lancedb_image", "lancedb/lancedb:latest"),
         lancedb_storage_size=getattr(args, "k8s_lancedb_storage_size", None) or "1Gi",
         lancedb_storage_class=getattr(args, "k8s_lancedb_storage_class", None) or None,
+        # Soma PVC sizing (docs 03/21/05). Empty string → ephemeral emptyDir
+        # (no provisioner). Use getattr(default=...) not `or` so an explicit
+        # "" reaches the manifest builder unchanged.
+        soma_storage_size=getattr(args, "k8s_soma_storage_size", "1Gi"),
+        soma_storage_class=getattr(args, "k8s_soma_storage_class", None) or None,
         orchestrator_memory_limit=(
             getattr(args, "k8s_orchestrator_memory", None) or "2Gi"
         ),
@@ -2345,6 +2350,18 @@ def build_parser() -> argparse.ArgumentParser:
     k8s_group.add_argument(
         "--k8s-lancedb-storage-class", default=None,
         help="StorageClass for the LanceDB PVC. Empty → cluster default.",
+    )
+    k8s_group.add_argument(
+        "--k8s-soma-storage-size", default="1Gi",
+        help=(
+            "PVC size for the per-Darwin soma tree, persisting promoted "
+            "self-mods across pod restarts (default: 1Gi). Empty string → "
+            "ephemeral emptyDir (for stacks without a storage provisioner)."
+        ),
+    )
+    k8s_group.add_argument(
+        "--k8s-soma-storage-class", default=None,
+        help="StorageClass for the soma PVC. Empty → cluster default.",
     )
     k8s_group.add_argument(
         "--k8s-postgres-namespace", default=None,

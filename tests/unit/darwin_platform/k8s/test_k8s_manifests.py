@@ -78,6 +78,85 @@ def test_build_bundle_seals_virtual_key_into_secret_and_env():
     assert "valueFrom" in by_name["DARWIN_LITELLM_MASTER_KEY"]
 
 
+def test_soma_enabled_mounts_persistent_volume_and_arg():
+    """With soma-merge enabled the pod gets the --soma-root arg + a writable
+    soma volume mounted; by default that volume is a PVC so promoted self-mods
+    survive a pod restart (docs 03/21/05)."""
+    from darwin_platform.k8s.manifests import SOMA_MOUNT_PATH
+
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+        soma_enabled=True,
+    )
+    spec = d["spec"]["template"]["spec"]
+    orch = spec["containers"][0]
+    assert ["--soma-root", SOMA_MOUNT_PATH] == orch["args"][-2:]
+    assert any(
+        m["name"] == "darwin-soma" and m["mountPath"] == SOMA_MOUNT_PATH
+        for m in orch["volumeMounts"]
+    )
+    soma_vol = next(v for v in spec["volumes"] if v["name"] == "darwin-soma")
+    assert soma_vol["persistentVolumeClaim"]["claimName"] == "darwin-soma"
+
+
+def test_soma_falls_back_to_emptydir_when_storage_disabled():
+    # No storage provisioner (e.g. local/kind): opt into ephemeral soma.
+    cfg = DarwinPodConfig(soma_storage_size="")
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=cfg, opening_usdc=1.0, escalation_auto="approve",
+        soma_enabled=True,
+    )
+    spec = d["spec"]["template"]["spec"]
+    soma_vol = next(v for v in spec["volumes"] if v["name"] == "darwin-soma")
+    assert "emptyDir" in soma_vol
+
+
+def test_no_soma_volume_or_arg_by_default():
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+    )
+    spec = d["spec"]["template"]["spec"]
+    assert "--soma-root" not in spec["containers"][0]["args"]
+    assert all(v["name"] != "darwin-soma" for v in spec["volumes"])
+
+
+def test_build_bundle_threads_soma_enabled_and_builds_pvc():
+    bundle = build_bundle(
+        darwin_id="abc123", namespace_prefix="darwin-", opening_usdc=1.0,
+        escalation_auto="approve", parent_id=None, manifest_json=None,
+        layer_blobs={}, layer_names=[], control_token="tok",
+        config=DarwinPodConfig(), soma_enabled=True,
+    )
+    args = bundle.deployment["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert "--soma-root" in args
+    # The persistent soma PVC is part of the bundle.
+    assert bundle.soma_pvc is not None
+    assert bundle.soma_pvc["metadata"]["name"] == "darwin-soma"
+    assert bundle.soma_pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+
+
+def test_build_bundle_no_soma_pvc_when_disabled_or_ephemeral():
+    # soma off → no PVC.
+    off = build_bundle(
+        darwin_id="a", namespace_prefix="darwin-", opening_usdc=1.0,
+        escalation_auto="approve", parent_id=None, manifest_json=None,
+        layer_blobs={}, layer_names=[], control_token="t",
+        config=DarwinPodConfig(),
+    )
+    assert off.soma_pvc is None
+    # soma on but storage disabled (emptyDir) → no PVC.
+    ephemeral = build_bundle(
+        darwin_id="a", namespace_prefix="darwin-", opening_usdc=1.0,
+        escalation_auto="approve", parent_id=None, manifest_json=None,
+        layer_blobs={}, layer_names=[], control_token="t",
+        config=DarwinPodConfig(soma_storage_size=""), soma_enabled=True,
+    )
+    assert ephemeral.soma_pvc is None
+
+
 def test_vault_approle_injected_as_role_and_secret_id_env():
     """With tenant namespaces, the per-Darwin AppRole creds are surfaced under
     the exact env names _build_real_factories reads (auto-selecting approle),

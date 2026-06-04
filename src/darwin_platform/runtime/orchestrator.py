@@ -174,6 +174,25 @@ def _apply_real_adapters(
         stack.sandbox = factories["sandbox_factory"](stack.wallet)
 
 
+def _install_pod_soma_merge(runtime, soma_root, darwin_id: str, clock):
+    """Pin a per-Darwin :class:`SomaMerger` on the genome's ctx so
+    apply_mutation writes promoted patches to ``<soma_root>/<darwin_id>`` on
+    the pod's filesystem. Mirrors the supervisor's ``_install_soma_merge_hook``
+    for k8s mode. Returns the merger (for the death-forensic capture) or
+    ``None`` when no soma root is configured — the genome then keeps the
+    Phase-0 simulation. Best-effort: a wiring failure must not stop boot."""
+    if soma_root is None:
+        return None
+    try:
+        from ..evolution.soma_merge import SomaMerger
+
+        merger = SomaMerger(Path(soma_root) / darwin_id, clock=clock)
+        runtime._ctx.soma_merge = merger  # noqa: SLF001 — single owner
+        return merger
+    except Exception:
+        return None
+
+
 def _invoke_pod_llm_factory(factory, wallet, clock, darwin_id: str):
     """Call the LLM transport factory passing only the kwargs it accepts.
 
@@ -207,12 +226,17 @@ class OrchestratorState:
         runtime,
         clock: Callable[[], float],
         heartbeat_seconds: float = 0.005,
+        soma_merger=None,
     ) -> None:
         self.darwin_id = darwin_id
         self.stack = stack
         self.runtime = runtime
         self._clock = clock
         self._heartbeat = float(heartbeat_seconds)
+        # Per-Darwin SomaMerger when real soma-merge is wired (k8s pod soma
+        # root configured). When present, the death forensic carries the real
+        # soma file contents; otherwise it's the signed layer fingerprint only.
+        self._soma_merger = soma_merger
         self._task: asyncio.Task | None = None
         self._kill_requested = False
         self._reproduce_requested = False
@@ -367,17 +391,17 @@ class OrchestratorState:
             balance = float(self.stack.wallet.balance_usdc())
         except Exception:
             balance = None
-        return {
+        layer_digest = fingerprint.hexdigest()
+        out: dict[str, Any] = {
             "schema": "darwin-platform.soma-forensic-k8s/1",
             "snapshot_id": f"death-{int(ts * 1000)}",
             "darwin_id": self.darwin_id,
             "reason": reason,
             "captured_at": ts,
-            "soma_digest": fingerprint.hexdigest(),
-            # The signed layers ARE the soma in k8s mode — count them as the
-            # 'files' so the supervisor's uniform index shows a non-zero size.
-            "file_count": len(layers),
+            # The signed genome layers — always present (the code fingerprint).
             "layers": layers,
+            "layer_count": len(layers),
+            "layer_digest": layer_digest,
             "identity": identity,
             "metadata": {
                 "death_reason": st.death_reason,
@@ -387,6 +411,29 @@ class OrchestratorState:
                 "manifest_signature": getattr(manifest, "signature", None),
             },
         }
+        # When real soma-merge is wired (a pod soma root is configured), overlay
+        # the actual soma tree — the files apply_mutation landed — so the k8s
+        # forensic carries real contents, not just the layer fingerprint.
+        tree = None
+        if self._soma_merger is not None:
+            try:
+                tree = self._soma_merger.soma_tree_contents()
+            except Exception:
+                tree = None
+        if tree is not None:
+            out["contents"] = tree["contents"]
+            out["files"] = tree["files"]
+            out["total_bytes"] = tree["total_bytes"]
+            out["soma_digest"] = tree["soma_digest"]
+            out["file_count"] = tree["file_count"]
+            out["metadata"]["soma_present"] = True
+        else:
+            # No soma tree: the layer fingerprint stands in (back-compat).
+            out["soma_digest"] = layer_digest
+            out["file_count"] = len(layers)
+            out["total_bytes"] = 0
+            out["metadata"]["soma_present"] = False
+        return out
 
     def events_records(self) -> list[dict[str, Any]]:
         """Raw audit-log records held in this pod.
@@ -557,6 +604,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Path to the bearer token file mounted from the Secret.",
     )
+    p.add_argument(
+        "--soma-root", default=None, type=Path,
+        help=(
+            "Root for this pod's mutable soma tree (docs 03/21/05). When set, "
+            "apply_mutation writes promoted patches to <soma-root>/<darwin-id> "
+            "on disk (real self-modification, not the Phase-0 simulation) and "
+            "the death-time forensic captures the real soma file contents — "
+            "not just the signed layer fingerprint. Omitted = simulated."
+        ),
+    )
     p.add_argument("--heartbeat-seconds", default=0.005, type=float)
     p.add_argument("--host", default="0.0.0.0",
                    help="Bind address for the control API.")
@@ -636,12 +693,21 @@ def main(argv: list[str] | None = None) -> int:
     from darwin_dna.evolution import boot
     runtime = boot(stack.platform(), sleep=lambda _: None)
 
+    # Real soma merge (docs 03/21): when a soma root is configured, install a
+    # per-Darwin SomaMerger on the genome's ctx so apply_mutation writes
+    # promoted patches to disk (the in-process supervisor does the same via
+    # _install_soma_merge_hook). Without it the genome keeps the Phase-0
+    # simulation. The merger also feeds the death-time forensic so the k8s
+    # capture carries real soma contents, not just the layer fingerprint.
+    soma_merger = _install_pod_soma_merge(runtime, args.soma_root, args.darwin_id, clock)
+
     state = OrchestratorState(
         darwin_id=args.darwin_id,
         stack=stack,
         runtime=runtime,
         clock=clock,
         heartbeat_seconds=args.heartbeat_seconds,
+        soma_merger=soma_merger,
     )
     app = _build_control_app(state, token)
 

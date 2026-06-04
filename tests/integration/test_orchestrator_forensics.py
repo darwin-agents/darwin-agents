@@ -39,6 +39,52 @@ def test_forensics_captures_signed_layer_fingerprint(vclock):
     assert f["soma_digest"]
 
 
+def test_install_pod_soma_merge_pins_hook(vclock, tmp_path):
+    from darwin_platform.evolution.soma_merge import SomaMerger
+    from darwin_platform.runtime.orchestrator import _install_pod_soma_merge
+
+    platform, stack = make_platform(opening_usdc=80.0, clock=vclock)
+    rt = boot(platform, clock=vclock, sleep=vclock.sleep)
+    merger = _install_pod_soma_merge(rt, tmp_path, "pod-x", vclock)
+    assert isinstance(merger, SomaMerger)
+    # apply_mutation reaches it through ctx.soma_merge (real self-mod, not sim).
+    assert rt._ctx.soma_merge is merger  # noqa: SLF001
+    # No soma root → no hook (genome keeps the Phase-0 simulation).
+    assert _install_pod_soma_merge(rt, None, "pod-x", vclock) is None
+
+
+def test_forensics_includes_real_soma_when_merger_wired(vclock, tmp_path):
+    from darwin_platform.evolution.soma_merge import SomaMerger
+
+    merger = SomaMerger(tmp_path / "pod-x", clock=vclock)
+    (merger.root / "soma" / "strategies").mkdir(parents=True)
+    (merger.root / "soma" / "strategies" / "x.py").write_text("GAIN = 2\n")
+    platform, stack = make_platform(opening_usdc=80.0, clock=vclock)
+    rt = boot(platform, clock=vclock, sleep=vclock.sleep)
+    state = OrchestratorState(
+        darwin_id="pod-x", stack=stack, runtime=rt, clock=vclock,
+        soma_merger=merger,
+    )
+    f = state.forensics()
+    # Real soma file contents captured — not just the layer fingerprint.
+    assert f["metadata"]["soma_present"] is True
+    assert f["contents"]["soma/strategies/x.py"] == "GAIN = 2\n"
+    assert f["file_count"] == 1
+    assert f["files"]["soma/strategies/x.py"]["bytes"] == len(b"GAIN = 2\n")
+    # The signed layer fingerprint is still carried alongside.
+    assert f["layers"] and f["layer_digest"]
+
+
+def test_forensics_marks_soma_absent_without_merger(vclock):
+    # Back-compat: no merger → layer-fingerprint forensic, soma_present False.
+    state = _state(vclock)
+    f = state.forensics()
+    assert f["metadata"]["soma_present"] is False
+    assert "contents" not in f
+    assert f["file_count"] == len(f["layers"]) > 0
+    assert f["soma_digest"] == f["layer_digest"]
+
+
 def test_forensics_freezes_reason_at_death(vclock):
     state = _state(vclock)
     state.runtime.state.alive = False

@@ -57,6 +57,11 @@ class DarwinSpec:
     # via secretKeyRef so the pod authenticates as its own key — never the
     # shared fleet master key. The in-process driver ignores this.
     secret_extras: dict[str, str] = field(default_factory=dict)
+    # Enable real on-disk soma merge + death-time soma forensics in the pod
+    # (docs 03/21/05). The supervisor sets this when it's configured with a
+    # soma root; the driver mounts a writable soma volume + launches the
+    # orchestrator with --soma-root. The in-process driver ignores it.
+    soma_enabled: bool = False
 
 
 @dataclass(frozen=True)

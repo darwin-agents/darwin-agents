@@ -244,6 +244,24 @@ class _DeadPodK8sDriver(_FakeK8sDriver):
 
 
 @pytest.mark.asyncio
+async def test_spawn_sets_soma_enabled_when_soma_root_configured(tmp_path):
+    """A supervisor configured with a soma root tells the pod to run real
+    soma-merge (so its forensics capture file contents, not just layers)."""
+    driver = _FakeK8sDriver()
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0, soma_root=tmp_path,
+    )
+    await sup.spawn(opening_usdc=100.0)
+    assert driver.started[0].soma_enabled is True
+
+    # No soma root → simulated (today's behavior).
+    driver2 = _FakeK8sDriver()
+    sup2 = Supervisor(k8s_driver=driver2, heartbeat_seconds=0.0)
+    await sup2.spawn(opening_usdc=100.0)
+    assert driver2.started[0].soma_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_k8s_natural_death_captured_by_maintenance(tmp_path):
     """A k8s Darwin that dies of bankruptcy (not an operator kill) is captured
     by the fleet-maintenance loop, which observes the not-alive snapshot and
