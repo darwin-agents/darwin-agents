@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(devx): add kill9 mid-soak recovery drill
+- feat(platform): operator soma forensics API and k8s death capture
+- feat(payments): MoonPay hosted-widget flow with signed webhook settlement
+- feat(payments): add jurisdiction-neutral ledger annual summary export
 - test(platform): cover death forensic soma snapshots and supervisor wiring
 - feat(platform): capture death-time soma forensic snapshots
 - feat(infra): expose PITR, Vault auto-unseal, and Kata on Hetzner env
@@ -84,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: note exchange-custody holdings in threat model
+- docs: add pre-mainnet operator gates and real-cloud IaC verify script
 - docs: align tech stack and deployment docs with as-built choices
 - docs(changelog): reorganize unreleased section newest-first
 - docs: document schema v12 RLS and sync unreleased changelog
