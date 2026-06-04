@@ -354,3 +354,17 @@ def test_record_external_forensic_stamps_missing_id(tmp_path):
     # A missing/odd id is stamped to the death-<ms> shape so reads find it.
     assert snap.snapshot_id == "death-9000"
     assert m.read_forensic_snapshot("death-9000") is not None
+
+
+def test_record_external_forensic_rejects_oversized(tmp_path):
+    # A pod is not fully trusted — a runaway/compromised manifest must not
+    # fill the supervisor's disk. Refused before any write.
+    m = SomaMerger(tmp_path / "darwin-big", clock=lambda: 1.0)
+    huge = {
+        "snapshot_id": "death-1000", "darwin_id": "d",
+        "blob": "x" * (5 * 1024 * 1024),
+    }
+    snap = m.record_external_forensic(huge)
+    assert snap.captured is False
+    assert "exceeds" in snap.failure
+    assert m.read_forensic_snapshot("death-1000") is None

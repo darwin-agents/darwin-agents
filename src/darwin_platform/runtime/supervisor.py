@@ -986,6 +986,10 @@ class Supervisor:
                 self._llm_spend_reconciler is not None
                 or self._merkle_anchor is not None
                 or self._omnibus_wallet is not None
+                # Death forensics alone can drive the loop: it's the only place
+                # a k8s Darwin's NATURAL death (bankruptcy) is observed and its
+                # pod-side code fingerprint pulled before reap (doc 05).
+                or self._soma_root is not None
             )
         ):
             self._k8s_maintenance_task = loop.create_task(
@@ -2055,6 +2059,13 @@ class Supervisor:
         root or a driver that exposes ``forensics``; never raises."""
         if self._soma_root is None or self._k8s_driver is None:
             return
+        # Idempotent: a double-kill must not write duplicate snapshots (the
+        # in-process path has the same guard via _Handle.forensics_captured).
+        bookkeeping = self._k8s_handles.get(darwin_id)
+        if bookkeeping is not None:
+            if bookkeeping.get("forensics_captured"):
+                return
+            bookkeeping["forensics_captured"] = True
         fetch = getattr(self._k8s_driver, "forensics", None)
         if not callable(fetch):
             return
@@ -4570,6 +4581,17 @@ class Supervisor:
         if self._k8s_driver is None:
             return
         snaps = await self._gather_k8s_snapshots()
+        # Death forensics (doc 05): a pod that died of bankruptcy keeps serving
+        # its control API but has frozen its death-time code fingerprint. Pull
+        # + persist it once (idempotent) so a k8s NATURAL death is captured the
+        # same as an operator kill — this is the only place it's observed.
+        for did, snap in snaps.items():
+            if snap is not None and not getattr(snap, "alive", True):
+                await self._capture_k8s_death_forensics(
+                    did,
+                    reason=getattr(snap, "death_reason", None) or "death",
+                    actor="platform.maintenance",
+                )
         # LLM per-key spend (doc 13).
         self._reconcile_llm_from_snapshots(snaps)
         # Daily Merkle anchor (doc 29): collect each pod's audit root.

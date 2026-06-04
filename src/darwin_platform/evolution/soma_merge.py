@@ -68,6 +68,11 @@ _HUNK_RE = re.compile(
 # the forensics root.
 _FORENSIC_ID_RE = re.compile(r"^death-\d+$")
 
+# Upper bound on a pod-supplied (k8s) forensic manifest the supervisor will
+# persist. The genome's signed layer manifest is a few KB; 4 MiB is generous
+# headroom while still refusing a runaway/compromised pod from filling disk.
+_EXTERNAL_FORENSIC_MAX_BYTES = 4 * 1024 * 1024
+
 
 @dataclass
 class _Hunk:
@@ -457,18 +462,31 @@ class SomaMerger:
         so it computes its own code-fingerprint manifest and ships it via the
         control API; the supervisor writes it here. A missing/odd
         ``snapshot_id`` is stamped to the ``death-<ms>`` shape so reads find
-        it. Never raises."""
+        it. Never raises.
+
+        The manifest is caller-supplied (a pod the supervisor doesn't fully
+        trust), so it is size-capped before it touches disk — a compromised or
+        buggy pod can't fill the supervisor's filesystem with one forensic
+        write."""
         ts = float(self._clock() if captured_at is None else captured_at)
         sid = str(manifest.get("snapshot_id") or "")
         if not _FORENSIC_ID_RE.match(sid):
             sid = f"death-{int(ts * 1000)}"
         try:
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest must be a dict")
             m = dict(manifest)
             m["snapshot_id"] = sid
             m.setdefault("captured_at", ts)
+            payload = json.dumps(m, indent=2, sort_keys=True)
+            if len(payload.encode("utf-8")) > _EXTERNAL_FORENSIC_MAX_BYTES:
+                raise ValueError(
+                    f"external forensic manifest exceeds "
+                    f"{_EXTERNAL_FORENSIC_MAX_BYTES} bytes"
+                )
             self._forensics_root.mkdir(parents=True, exist_ok=True)
             out = self._forensics_root / f"{sid}.json"
-            self._atomic_write(out, json.dumps(m, indent=2, sort_keys=True))
+            self._atomic_write(out, payload)
             return SomaForensicSnapshot(
                 captured=True, reason=str(m.get("reason", "")),
                 snapshot_id=sid, path=str(out),

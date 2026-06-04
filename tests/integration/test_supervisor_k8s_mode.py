@@ -219,6 +219,49 @@ async def test_kill_persists_pod_forensics_for_retrieval(tmp_path):
     assert audit and audit[-1].metadata["driver"] == "k8s"
     assert audit[-1].metadata["captured"] is True
 
+    # Idempotent: a double-kill must not write a duplicate snapshot.
+    await sup.kill(did, reason="owner kill again", actor="alice")
+    assert len(sup.list_soma_forensics(did)) == 1
+
+
+class _DeadPodK8sDriver(_FakeK8sDriver):
+    """A pod that reports it has died of bankruptcy + serves its fingerprint."""
+
+    async def snapshot(self, darwin_id: str) -> DarwinSnapshot:
+        return DarwinSnapshot(
+            darwin_id=darwin_id, alive=False, paused=False, killed=False,
+            tick=9, days_elapsed=2.0, balance_usdc=0.0,
+            death_reason="bankruptcy: broke",
+        )
+
+    async def forensics(self, darwin_id: str) -> dict:
+        return {
+            "schema": "darwin-platform.soma-forensic-k8s/1",
+            "snapshot_id": "death-7777", "darwin_id": darwin_id,
+            "reason": "bankruptcy: broke", "soma_digest": "cafe",
+            "file_count": 2,
+        }
+
+
+@pytest.mark.asyncio
+async def test_k8s_natural_death_captured_by_maintenance(tmp_path):
+    """A k8s Darwin that dies of bankruptcy (not an operator kill) is captured
+    by the fleet-maintenance loop, which observes the not-alive snapshot and
+    pulls + persists the pod's fingerprint before reap (doc 05)."""
+    driver = _DeadPodK8sDriver()
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0, soma_root=tmp_path,
+    )
+    status = await sup.spawn(opening_usdc=100.0)
+    did = status.darwin_id
+    await sup._run_k8s_fleet_maintenance(sup._clock())  # noqa: SLF001
+    rows = sup.list_soma_forensics(did)
+    assert len(rows) == 1
+    assert rows[0]["snapshot_id"] == "death-7777"
+    # Idempotent across maintenance cycles.
+    await sup._run_k8s_fleet_maintenance(sup._clock())  # noqa: SLF001
+    assert len(sup.list_soma_forensics(did)) == 1
+
 
 @pytest.mark.asyncio
 async def test_kill_without_forensics_verb_is_noop(tmp_path):
