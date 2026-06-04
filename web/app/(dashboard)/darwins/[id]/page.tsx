@@ -8,12 +8,14 @@ import {
   Clock,
   CreditCard,
   Database,
+  FileText,
   GitBranch,
   Lock,
   Receipt,
   Server,
   Settings,
   ShieldCheck,
+  Skull,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
@@ -35,6 +37,14 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
     queryFn: () => api.billing(id),
     refetchInterval: 30_000,
   });
+  // Capabilities gate the deployment-mode-only tabs (forensics here, organism
+  // inside the Data page). On error they stay hidden — fail safe.
+  const { data: caps } = useQuery({
+    queryKey: queryKeys.capabilities(),
+    queryFn: () => api.capabilities(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -47,11 +57,15 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
         <SubNav href={`/darwins/${id}/timeline`} icon={Clock} label="Timeline" />
         <SubNav href={`/darwins/${id}/lineage`} icon={GitBranch} label="Lineage" />
         <SubNav href={`/darwins/${id}/billing`} icon={Receipt} label="Billing & ledger" />
+        <SubNav href={`/darwins/${id}/summary`} icon={FileText} label="Tax summary" />
         <SubNav href={`/darwins/${id}/preapprovals`} icon={ShieldCheck} label="Pre-approvals" />
         <SubNav href={`/darwins/${id}/payments`} icon={CreditCard} label="Payments" />
         <SubNav href={`/darwins/${id}/vault`} icon={Lock} label="Vault" />
         <SubNav href={`/darwins/${id}/resources`} icon={Server} label="Resources" />
         <SubNav href={`/darwins/${id}/data`} icon={Database} label="Data" />
+        {caps?.forensics_viewer && (
+          <SubNav href={`/darwins/${id}/forensics`} icon={Skull} label="Forensics" />
+        )}
         <SubNav href={`/darwins/${id}/settings`} icon={Settings} label="Settings & controls" />
       </div>
 

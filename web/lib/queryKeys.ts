@@ -6,12 +6,21 @@
 
 export const queryKeys = {
   health: () => ["health"] as const,
+  capabilities: () => ["platform", "capabilities"] as const,
   darwins: () => ["darwins"] as const,
   darwin: (id: string) => ["darwin", id] as const,
   events: (id: string, page = 0, filters?: Record<string, unknown>) =>
     ["darwin", id, "events", page, filters ?? {}] as const,
   ledger: (id: string, offset = 0) => ["darwin", id, "ledger", offset] as const,
   billing: (id: string) => ["darwin", id, "billing"] as const,
+  ledgerSummary: (id: string, year?: number) =>
+    ["darwin", id, "ledger-summary", year ?? "lifetime"] as const,
+  organismTables: (id: string) => ["darwin", id, "organism", "tables"] as const,
+  organismRows: (id: string, table: string, offset = 0) =>
+    ["darwin", id, "organism", "rows", table, offset] as const,
+  forensics: (id: string) => ["darwin", id, "forensics"] as const,
+  forensicSnapshot: (id: string, snapshotId: string) =>
+    ["darwin", id, "forensics", snapshotId] as const,
   controls: (id: string) => ["darwin", id, "controls"] as const,
   alerts: (id: string) => ["darwin", id, "alerts"] as const,
   escalations: (id: string) => ["darwin", id, "escalations"] as const,

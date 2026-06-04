@@ -101,6 +101,112 @@ export interface LedgerResponse {
   entries: LedgerEntry[];
 }
 
+/**
+ * Jurisdiction-neutral accounting summary (docs 05, 17) from
+ * `payments.ledger_export.movements_to_summary`. NOT a statutory tax form —
+ * the owner hands this to their accountant. Amounts are USDC.
+ */
+export interface LedgerSummaryCategory {
+  direction: string;
+  count: number;
+  amount_usdc: number;
+}
+
+export interface LedgerSummary {
+  currency: string;
+  period: {
+    year: number | null;
+    start_utc: string | null;
+    end_utc: string | null;
+  };
+  movement_count: number;
+  total_in_usdc: number;
+  total_out_usdc: number;
+  net_usdc: number;
+  by_category: Record<string, LedgerSummaryCategory>;
+  /** Present only for a dated period: movements with no timestamp excluded. */
+  undated_excluded?: number;
+  [k: string]: unknown;
+}
+
+/**
+ * Post-mortem soma forensics (doc 05). The index is metadata-only
+ * (`list_soma_forensics`); file contents arrive via the per-snapshot read.
+ */
+export interface ForensicSnapshotSummary {
+  snapshot_id: string;
+  darwin_id?: string | null;
+  reason?: string | null;
+  captured_at?: number | null;
+  file_count?: number | null;
+  total_bytes?: number | null;
+  soma_digest?: string | null;
+  metadata?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+export interface ForensicSnapshotListResponse {
+  snapshots: ForensicSnapshotSummary[];
+}
+
+/**
+ * Full death-time soma manifest. `contents` maps soma-relative path -> file
+ * text (null for a non-UTF-8/binary file); k8s deaths instead carry a signed
+ * `layers` fingerprint (no file bodies). Both surface through the same route.
+ */
+export interface ForensicManifest {
+  schema?: string;
+  snapshot_id?: string;
+  darwin_id?: string;
+  reason?: string;
+  captured_at?: number;
+  soma_root?: string;
+  file_count?: number;
+  total_bytes?: number;
+  soma_digest?: string;
+  mutation_snapshot_ids?: string[];
+  metadata?: Record<string, unknown>;
+  files?: Record<string, { sha256: string; bytes: number; binary: boolean }>;
+  contents?: Record<string, string | null>;
+  layers?: Array<Record<string, unknown>>;
+  identity?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+/**
+ * Deployment capability flags (`GET /platform/capabilities`) the dashboard
+ * gates its UI on. The `*_browser` / `*_viewer` flags fold in BOTH the
+ * deployment config and the caller's operator scope, so a tab is shown only
+ * when the current user can actually use it here. The raw `tenant_namespaces`
+ * / `soma_forensics` / `k8s` booleans are informational (deployment facts).
+ */
+export interface PlatformCapabilities {
+  tenant_namespaces: boolean;
+  soma_forensics: boolean;
+  k8s: boolean;
+  organism_browser: boolean;
+  forensics_viewer: boolean;
+  [k: string]: unknown;
+}
+
+/**
+ * Operator data browser onto a Darwin's organism (business) database, read
+ * through the SELECT-only dashboard role (`adapters.organism_reader`).
+ */
+export interface OrganismTablesResponse {
+  darwin_id: string;
+  tables: string[];
+}
+
+export interface OrganismRowsResponse {
+  darwin_id: string;
+  table: string;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  limit: number;
+  offset: number;
+}
+
 export interface BillingResponse {
   darwin_id: string;
   balance_usdc?: number;

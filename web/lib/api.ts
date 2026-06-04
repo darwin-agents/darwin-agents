@@ -23,9 +23,15 @@ import type {
   FiatConfirmDepositRequest,
   FiatDepositQuoteRequest,
   FiatWithdrawRequest,
+  ForensicManifest,
+  ForensicSnapshotListResponse,
   FreelancerDestination,
   HarvestRequest,
   HarvestRuleRequest,
+  LedgerSummary,
+  OrganismRowsResponse,
+  OrganismTablesResponse,
+  PlatformCapabilities,
   PushSubscriptionRequest,
   PushSubscriptionRow,
   RevokePushSubscriptionRequest,
@@ -265,6 +271,12 @@ export const api = {
     }),
   ledgerCsvUrl: (id: string) => buildUrl(`/darwins/${id}/ledger.csv`),
   billing: (id: string) => apiFetch<BillingResponse>(`/darwins/${id}/billing`),
+  // Jurisdiction-neutral accounting summary (docs 05, 17). `year` (UTC) scopes
+  // to a tax year; omit for lifetime. Owner-scoped — not a statutory form.
+  ledgerSummary: (id: string, year?: number) =>
+    apiFetch<LedgerSummary>(`/darwins/${id}/ledger/summary`, {
+      query: { year },
+    }),
 
   // Controls
   controls: (id: string) => apiFetch<OwnerControls>(`/darwins/${id}/controls`),
@@ -469,6 +481,40 @@ export const api = {
       body: req,
       mutating: true,
     }),
+
+  /* -------------------------------------------------------------------------
+   * Operator data browser & post-mortem forensics (docs 05, 08, 22)
+   * --------------------------------------------------------------------- */
+
+  // Deployment capabilities — the dashboard gates organism/forensics tabs on
+  // this so they're hidden when the deployment (or token) can't serve them.
+  capabilities: () =>
+    apiFetch<PlatformCapabilities>("/platform/capabilities"),
+
+  // Organism (business) DB — read through the SELECT-only dashboard role.
+  organismTables: (id: string) =>
+    apiFetch<OrganismTablesResponse>(
+      `/platform/darwins/${id}/organism/tables`,
+    ),
+  organismRows: (
+    id: string,
+    table: string,
+    params: { limit?: number; offset?: number } = {},
+  ) =>
+    apiFetch<OrganismRowsResponse>(
+      `/platform/darwins/${id}/organism/tables/${encodeURIComponent(table)}/rows`,
+      { query: { limit: params.limit ?? 50, offset: params.offset ?? 0 } },
+    ),
+
+  // Death-time soma forensics — index (metadata) + per-snapshot manifest.
+  forensics: (id: string) =>
+    apiFetch<ForensicSnapshotListResponse>(
+      `/platform/darwins/${id}/forensics`,
+    ),
+  forensicSnapshot: (id: string, snapshotId: string) =>
+    apiFetch<ForensicManifest>(
+      `/platform/darwins/${id}/forensics/${encodeURIComponent(snapshotId)}`,
+    ),
 
   // Health
   healthz: () => apiFetch<unknown>("/healthz"),

@@ -1,16 +1,23 @@
 "use client";
 
 /**
- * Data browser (M3-E) — low-level read-only inspector. Four tabs over the
+ * Data browser (M3-E) — low-level read-only inspector. Tabs over the
  * existing platform read-endpoints:
  *   Lifecycle   ← GET /darwins/{id}
  *   Lineage     ← GET /darwins/{id}/lineage/tree
  *   Ledger      ← GET /darwins/{id}/ledger
  *   Audit chain ← GET /darwins/{id}/events
+ *   Organism    ← GET /platform/darwins/{id}/organism/tables[/{t}/rows]
  *
  * Goal: surface the raw shape, not a polished view. The Darwin shell, Billing,
  * Lineage, and Timeline pages already do the polished story; this page is for
  * "what's actually in the row".
+ *
+ * The Organism tab reads the Darwin's *business* database through the
+ * read-only dashboard role — the data the audit flagged this browser as
+ * NOT showing before. It's operator-scoped (PLATFORM_OPERATOR); for an
+ * owner-only token or an unprovisioned Darwin the backend returns 403/409
+ * and the tab renders an explanatory empty state.
  *
  * Active tab persists in `?tab=…` so a link is shareable.
  */
@@ -19,7 +26,7 @@ import { use, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,7 +36,8 @@ import type {
   LineageNode,
 } from "@/lib/types";
 
-const TABS = ["lifecycle", "lineage", "ledger", "audit"] as const;
+const BASE_TABS = ["lifecycle", "lineage", "ledger", "audit"] as const;
+const TABS = [...BASE_TABS, "organism"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function DataPage({
@@ -41,7 +49,23 @@ export default function DataPage({
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
-  const tab: Tab = (TABS.find((t) => t === sp.get("tab")) ?? "lifecycle") as Tab;
+
+  // The Organism tab reads a per-Darwin business DB that only exists in a
+  // tenant-namespaced deployment, and only an operator may read it. Gate it
+  // on the capability so it isn't shown where it would only ever 403/409.
+  const { data: caps } = useQuery({
+    queryKey: queryKeys.capabilities(),
+    queryFn: () => api.capabilities(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const visibleTabs: readonly Tab[] = caps?.organism_browser
+    ? TABS
+    : BASE_TABS;
+
+  const requested = sp.get("tab");
+  const tab: Tab =
+    (visibleTabs.find((t) => t === requested) ?? "lifecycle") as Tab;
 
   const setTab = (next: Tab) => {
     const qs = new URLSearchParams(sp.toString());
@@ -67,7 +91,7 @@ export default function DataPage({
         </CardHeader>
         <CardContent className="p-0">
           <div className="flex border-b border-[var(--color-border)]">
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <button
                 key={t}
                 type="button"
@@ -87,6 +111,7 @@ export default function DataPage({
             {tab === "lineage" && <LineageTab id={id} />}
             {tab === "ledger" && <LedgerTab id={id} />}
             {tab === "audit" && <AuditTab id={id} />}
+            {tab === "organism" && <OrganismTab id={id} />}
           </div>
         </CardContent>
       </Card>
@@ -245,6 +270,165 @@ function AuditTab({ id }: { id: string }) {
       />
     </div>
   );
+}
+
+/* ---------------------------------------------------------------- organism */
+
+function OrganismTab({ id }: { id: string }) {
+  const sp = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const table = sp.get("organism_table") ?? "";
+  const offset = Number(sp.get("organism_offset") ?? 0);
+
+  const tablesQ = useQuery({
+    queryKey: queryKeys.organismTables(id),
+    queryFn: () => api.organismTables(id),
+    retry: false,
+  });
+
+  const setParam = (key: string, value: string | null) => {
+    const qs = new URLSearchParams(sp.toString());
+    if (value) qs.set(key, value);
+    else qs.delete(key);
+    router.replace(`${pathname}?${qs.toString()}` as never);
+  };
+
+  const selectTable = (next: string) => {
+    const qs = new URLSearchParams(sp.toString());
+    qs.set("organism_table", next);
+    qs.delete("organism_offset");
+    router.replace(`${pathname}?${qs.toString()}` as never);
+  };
+
+  if (tablesQ.isLoading) return <Skeleton className="h-48 w-full" />;
+  if (tablesQ.isError) return <OrganismError error={tablesQ.error} />;
+
+  const tables = tablesQ.data?.tables ?? [];
+  if (tables.length === 0) {
+    return (
+      <Empty>
+        No tables in this Darwin&apos;s organism database — it may not have
+        written any business data yet.
+      </Empty>
+    );
+  }
+
+  const active = tables.includes(table) ? table : "";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-[var(--color-muted-foreground)]">
+          Table:
+        </span>
+        {tables.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => selectTable(t)}
+            className={
+              t === active
+                ? "mono rounded-md border border-[var(--color-accent)] bg-[var(--color-muted)] px-2 py-1 text-xs text-[var(--color-foreground)]"
+                : "mono rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+            }
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      {active ? (
+        <OrganismRows
+          id={id}
+          table={active}
+          offset={offset}
+          onOffset={(next) =>
+            setParam("organism_offset", next > 0 ? String(next) : null)
+          }
+        />
+      ) : (
+        <Empty>Pick a table to read a page of rows.</Empty>
+      )}
+    </div>
+  );
+}
+
+function OrganismRows({
+  id,
+  table,
+  offset,
+  onOffset,
+}: {
+  id: string;
+  table: string;
+  offset: number;
+  onOffset: (next: number) => void;
+}) {
+  const pageSize = 50;
+  const q = useQuery({
+    queryKey: queryKeys.organismRows(id, table, offset),
+    queryFn: () => api.organismRows(id, table, { limit: pageSize, offset }),
+    retry: false,
+  });
+
+  if (q.isLoading) return <Skeleton className="h-48 w-full" />;
+  if (q.isError) return <OrganismError error={q.error} />;
+
+  const columns = q.data?.columns ?? [];
+  const rows = q.data?.rows ?? [];
+
+  return (
+    <div className="space-y-2">
+      <Table
+        cols={columns}
+        rows={rows.map((r) =>
+          columns.map((c) => {
+            const v = r[c];
+            return v === null || v === undefined
+              ? "—"
+              : typeof v === "object"
+                ? JSON.stringify(v)
+                : String(v);
+          }),
+        )}
+        rawRows={rows}
+      />
+      <Pager
+        offset={offset}
+        pageSize={pageSize}
+        // No total from the read-only reader; allow Next while a full page came back.
+        total={offset + rows.length + (rows.length === pageSize ? pageSize : 0)}
+        onChange={onOffset}
+        label={`rows ${offset + 1}–${offset + rows.length}`}
+      />
+    </div>
+  );
+}
+
+function OrganismError({ error }: { error: unknown }) {
+  if (error instanceof ApiError && error.isForbidden) {
+    return (
+      <Empty>
+        The organism data browser is operator-scoped. Your token lacks the
+        platform-operator role.
+      </Empty>
+    );
+  }
+  if (error instanceof ApiError && error.status === 409) {
+    return (
+      <Empty>
+        This Darwin has no organism database — tenant namespaces aren&apos;t
+        provisioned for it (single-tenant / in-process deployment).
+      </Empty>
+    );
+  }
+  const msg =
+    error instanceof ApiError
+      ? `Platform error ${error.status}: ${error.code}`
+      : error instanceof Error
+        ? error.message
+        : "Unknown error";
+  return <Empty>Couldn&apos;t read organism data. {msg}</Empty>;
 }
 
 /* ------------------------------------------------------------------ helpers */
