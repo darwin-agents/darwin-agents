@@ -1519,6 +1519,11 @@ def _serve(args: argparse.Namespace) -> int:
     supervisor_kwargs: dict[str, Any] = {}
     if args.heartbeat_seconds is not None:
         supervisor_kwargs["heartbeat_seconds"] = float(args.heartbeat_seconds)
+    # Opt-in real soma self-modification + death-time forensics (docs 03/21/05).
+    # Default unset → apply_mutation stays simulated and no soma snapshots are
+    # captured (today's behavior); operators turn it on per deployment.
+    if getattr(args, "soma_root", None):
+        supervisor_kwargs["soma_root"] = args.soma_root
     # Phase 1/2 supervisor-level services (signer, drift, merkle, omnibus,
     # KYC, maintenance cadence). Supervisor-side — applied in both
     # in-process and k8s mode; only the per-Darwin substrate factories
@@ -1644,6 +1649,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--db", default=None,
         help="SQLite file for restart-survivable state. Omitted = in-memory.",
+    )
+    serve.add_argument(
+        "--soma-root", default=None,
+        help=(
+            "Directory root for per-Darwin soma trees (docs 03/21/05). When "
+            "set, apply_mutation writes promoted patches to the live soma on "
+            "disk (real self-modification, not the Phase-0 simulation) AND a "
+            "death-time forensic snapshot is captured per Darwin under "
+            "<soma-root>/_forensics/<id>. Omitted = self-modification stays "
+            "simulated and no soma forensics are captured."
+        ),
     )
     serve.add_argument(
         "--auth-tokens", default=None,

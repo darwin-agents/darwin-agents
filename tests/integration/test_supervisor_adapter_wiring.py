@@ -485,6 +485,16 @@ def test_cli_default_wallet_provider_is_cdp():
     assert args.wallet_provider == "cdp"
 
 
+def test_cli_soma_root_flag_opt_in():
+    """--soma-root activates real self-modification + death forensics; default
+    unset keeps today's simulated behavior (docs 03/21/05)."""
+    from darwin_platform.__main__ import build_parser
+    parser = build_parser()
+    assert parser.parse_args(["serve"]).soma_root is None
+    args = parser.parse_args(["serve", "--soma-root", "/var/lib/darwin/soma"])
+    assert args.soma_root == "/var/lib/darwin/soma"
+
+
 def test_web3_refuses_base_mainnet():
     """A single shared key on mainnet would let any spawned Darwin spend the
     fleet treasury — refuse outright. The refusal keys off the authoritative
