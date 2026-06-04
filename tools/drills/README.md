@@ -12,6 +12,7 @@ unless production drilling is the explicit exercise.
 | Drill | Module | Prereqs | Verifies |
 | --- | --- | --- | --- |
 | Kill-switch | `tools.drills.kill_switch` | A running `darwin-platform serve` | Spawned Darwin halts within 5 s of `POST /darwins/{id}/kill`. Reuses the soak gate's `criterion_5_kill_latency`. |
+| kill -9 recovery | `tools.drills.kill9_recovery` | None — manages its own supervisor subprocess; use a persistent `--db` | SIGKILLs the supervisor mid-run and restarts it on the same DB; asserts the Darwin resumes from checkpoint (tick advances), **zero** pre-kill audit entries are lost, and the hash chain still verifies across the restart boundary (doc-20 DoD). |
 | DR failover | `tools.drills.dr_failover` | Two supervisor replicas sharing one Postgres | Killing the leader causes a follower to acquire the advisory lock and `/readyz` → 200 within 30 s. |
 | Vault seal/unseal | `tools.drills.vault_seal` | Reachable Vault + admin token + unseal key(s) + `[hvac]` extra | `sys/seal` → confirms sealed → `sys/unseal` with key share(s) → confirms unsealed. Optional platform `/readyz` probe at each phase. |
 
@@ -21,6 +22,12 @@ unless production drilling is the explicit exercise.
 # Kill-switch (against a local platform)
 uv run python -m darwin_platform serve --heartbeat-seconds 0.05 &
 uv run python -m tools.drills.kill_switch
+
+# kill -9 recovery (self-contained — manages its own supervisor)
+uv run python -m tools.drills.kill9_recovery --heartbeat-seconds 0.1
+# Real-adapter pace (pass serve flags after --):
+#   uv run python -m tools.drills.kill9_recovery --heartbeat-seconds 5 \
+#       --warmup-seconds 60 -- --wallet-provider cdp --litellm-url http://localhost:4000
 
 # DR failover (against two supervisors sharing Postgres)
 uv run python -m tools.drills.dr_failover \
@@ -42,6 +49,10 @@ piped into a runbook ledger or a Slack notifier.
 
 - **Kill-switch:** locally verified 2026-05-25 against an in-process
   supervisor; PASS, 0.07 s latency.
+- **kill -9 recovery:** locally verified 2026-06-03 (FakeWallet,
+  `--heartbeat-seconds 0.1`, `--warmup-seconds 6`); PASS — resumed
+  tick 50→51, 358 pre-kill audit events intact, hash chain valid across
+  the restart boundary. Re-run with real adapters before mainnet.
 - **DR failover:** code reviewed; not locally drilled (requires
   Postgres + two supervisor replicas). First operator run *is* the
   test — record the result in `docs/postmortems/` if anything surprises.
