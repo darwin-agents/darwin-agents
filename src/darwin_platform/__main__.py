@@ -946,8 +946,21 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
             ) from exc
         from .adapters.fiat import MoonPayFiatRamp
 
+        secret_key = getattr(args, "moonpay_secret_key", None) or os.environ.get(
+            "MOONPAY_SECRET_KEY"
+        )
+        webhook_key = getattr(
+            args, "moonpay_webhook_key", None
+        ) or os.environ.get("MOONPAY_WEBHOOK_KEY")
+        omnibus_addr = getattr(
+            args, "moonpay_omnibus_address", None
+        ) or os.environ.get("MOONPAY_OMNIBUS_ADDRESS")
         kwargs["fiat_ramp"] = MoonPayFiatRamp(
-            http_client=httpx.Client(timeout=10.0), api_key=api_key,
+            http_client=httpx.Client(timeout=10.0),
+            api_key=api_key,
+            secret_key=secret_key,
+            webhook_key=webhook_key,
+            omnibus_wallet_address=omnibus_addr,
         )
 
     # -- SMS 2FA inbox (doc 15) ------------------------------------------
@@ -2220,8 +2233,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phase2_group.add_argument(
         "--moonpay-api-key", default=None, metavar="KEY",
-        help="MoonPay API key (when --fiat-provider moonpay). "
+        help="MoonPay publishable API key (pk_) for the buy/sell widget + "
+             "quote endpoint (when --fiat-provider moonpay). "
              "Env: MOONPAY_API_KEY",
+    )
+    phase2_group.add_argument(
+        "--moonpay-secret-key", default=None, metavar="KEY",
+        help="MoonPay secret key (sk_) used to sign widget URLs + "
+             "authenticate transaction lookups. Env: MOONPAY_SECRET_KEY",
+    )
+    phase2_group.add_argument(
+        "--moonpay-webhook-key", default=None, metavar="KEY",
+        help="MoonPay webhook key used to verify the Moonpay-Signature-V2 "
+             "header on POST /webhooks/moonpay. Env: MOONPAY_WEBHOOK_KEY",
+    )
+    phase2_group.add_argument(
+        "--moonpay-omnibus-address", default=None, metavar="ADDR",
+        help="On-chain address where MoonPay-bought USDC lands (the "
+             "platform omnibus deposit address). Env: MOONPAY_OMNIBUS_ADDRESS",
     )
     phase2_group.add_argument(
         "--episodic-memory", default="deterministic",

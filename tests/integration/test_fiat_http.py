@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from darwin_platform.adapters.fiat import StubFiatRamp
@@ -301,3 +303,116 @@ async def test_stripe_webhook_durable_idempotency_across_restart(tmp_path):
     sup2 = Supervisor(fiat_ramp=StubFiatRamp(), persistence_path=db)
     assert sup2.handle_stripe_webhook(ev("evt_1", q.quote_id))["status"] == "duplicate"
     await sup2.shutdown(kill_running=True)
+
+
+def _moonpay_event(*, tx_id, status, darwin_id, etype="transaction_updated",
+                   base=50.0, quote=49.0):
+    return json.dumps({
+        "type": etype,
+        "data": {
+            "id": tx_id, "status": status,
+            "externalTransactionId": f"q-{tx_id}",
+            "externalCustomerId": darwin_id,
+            "baseCurrencyAmount": base, "quoteCurrencyAmount": quote,
+            "feeAmount": 1.0,
+        },
+    })
+
+
+def _moonpay_header(webhook_key, body, ts="1000"):
+    import hashlib
+    import hmac
+    s = hmac.new(webhook_key.encode(), f"{ts}.{body}".encode(),
+                 hashlib.sha256).hexdigest()
+    return {"Moonpay-Signature-V2": f"t={ts},s={s}"}
+
+
+@pytest.mark.asyncio
+async def test_moonpay_webhook_credits_then_idempotent(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from darwin_platform.adapters.fiat import MoonPayFiatRamp
+    from darwin_platform.api import build_app
+    from darwin_platform.runtime.supervisor import Supervisor
+
+    wk = "wk_test_secret"
+    ramp = MoonPayFiatRamp(api_key="pk", webhook_key=wk, clock=lambda: 1000.0)
+    sup = Supervisor(fiat_ramp=ramp, persistence_path=str(tmp_path / "mp.db"),
+                     clock=lambda: 1000.0)
+    st = await sup.spawn(opening_usdc=10.0, actor="alice@x")
+    did = st.darwin_id
+    body = _moonpay_event(tx_id="tx-1", status="completed", darwin_id=did)
+    app = build_app(sup)
+    with TestClient(app) as client:
+        pre = sup._darwins[did].stack.wallet.balance_usdc()
+        r1 = client.post("/webhooks/moonpay", content=body,
+                         headers=_moonpay_header(wk, body))
+        assert r1.status_code == 200, r1.text
+        assert r1.json()["status"] == "confirmed"
+        post = sup._darwins[did].stack.wallet.balance_usdc()
+        assert post == pytest.approx(pre + 49.0)  # quoteCurrencyAmount USDC
+
+        # Replay of the same transaction id → duplicate, no double credit.
+        r2 = client.post("/webhooks/moonpay", content=body,
+                         headers=_moonpay_header(wk, body))
+        assert r2.json()["status"] == "duplicate"
+        assert sup._darwins[did].stack.wallet.balance_usdc() == post
+
+        # Forged signature → 400.
+        bad = client.post("/webhooks/moonpay", content=body,
+                          headers={"Moonpay-Signature-V2": "t=1000,s=bad"})
+        assert bad.status_code == 400
+
+        # Pending status → ignored, no credit.
+        pend = _moonpay_event(tx_id="tx-2", status="pending", darwin_id=did)
+        r3 = client.post("/webhooks/moonpay", content=pend,
+                         headers=_moonpay_header(wk, pend))
+        assert r3.json()["status"] == "ignored"
+        assert sup._darwins[did].stack.wallet.balance_usdc() == post
+    await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_moonpay_webhook_unknown_darwin_skipped(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from darwin_platform.adapters.fiat import MoonPayFiatRamp
+    from darwin_platform.api import build_app
+    from darwin_platform.runtime.supervisor import Supervisor
+
+    wk = "wk_secret"
+    ramp = MoonPayFiatRamp(api_key="pk", webhook_key=wk, clock=lambda: 1000.0)
+    sup = Supervisor(fiat_ramp=ramp, persistence_path=str(tmp_path / "mp.db"),
+                     clock=lambda: 1000.0)
+    body = _moonpay_event(tx_id="tx-9", status="completed", darwin_id="ghost")
+    with TestClient(build_app(sup)) as client:
+        r = client.post("/webhooks/moonpay", content=body,
+                        headers=_moonpay_header(wk, body))
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"
+    await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_moonpay_sell_webhook_recorded(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from darwin_platform.adapters.fiat import MoonPayFiatRamp
+    from darwin_platform.api import build_app
+    from darwin_platform.runtime.supervisor import Supervisor
+
+    wk = "wk_secret"
+    ramp = MoonPayFiatRamp(api_key="pk", webhook_key=wk, clock=lambda: 1000.0)
+    sup = Supervisor(fiat_ramp=ramp, persistence_path=str(tmp_path / "mp.db"),
+                     clock=lambda: 1000.0)
+    body = _moonpay_event(tx_id="s-1", status="completed", darwin_id="bank-x",
+                          etype="sell_transaction_updated")
+    with TestClient(build_app(sup)) as client:
+        r = client.post("/webhooks/moonpay", content=body,
+                        headers=_moonpay_header(wk, body))
+        assert r.json()["status"] == "settled"
+    assert len(sup.audit_log.entries(action="fiat_withdraw_settled")) == 1
+    await sup.shutdown(kill_running=True)

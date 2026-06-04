@@ -5491,7 +5491,106 @@ class Supervisor:
                 "fee_usd": receipt.fee_usd,
             },
         )
-        return receipt
+
+    def handle_moonpay_webhook(
+        self,
+        payload: bytes | str,
+        signature_header: str,
+        *,
+        actor: str = "platform.moonpay_webhook",
+    ) -> dict:
+        """Drive deposit confirmation from a MoonPay webhook. The adapter
+        verifies the ``Moonpay-Signature-V2`` header against the configured
+        webhook key (authenticity), then normalises the event.
+
+        Only a ``completed`` **buy** credits a wallet; the destination Darwin
+        rides in the transaction's ``externalCustomerId`` (stamped at quote
+        time) so this is stateless across restarts. A ``completed`` **sell**
+        is recorded for the off-ramp forensic trail (the USDC already left
+        via the platform leg). Idempotent: a durable webhook-event ledger
+        short-circuits a re-delivered completed transaction before any money
+        effect. Raises :class:`FiatRampError` on a bad signature so the route
+        returns 400; every verified event returns a status dict (200)."""
+        ramp = self._fiat_ramp
+        verify = getattr(ramp, "verify_webhook", None)
+        if ramp is None or verify is None:
+            raise SupervisorError("moonpay webhook: ramp not configured")
+        event = verify(payload, signature_header)  # raises FiatRampError
+        parsed = ramp.parse_transaction_event(event)
+        if parsed is None:
+            return {"status": "ignored", "event_type": event.get("type")}
+        if parsed["status"] != "completed":
+            return {"status": "ignored", "tx_status": parsed["status"]}
+
+        tx_id = parsed["provider_tx_id"]
+        # Layer 1: durable dedup on the MoonPay transaction id.
+        if self._webhook_events is not None and self._webhook_events.seen(tx_id):
+            return {"status": "duplicate", "provider_tx_id": tx_id}
+
+        if parsed["kind"] == "sell":
+            self._audit.record(
+                actor=actor,
+                action="fiat_withdraw_settled",
+                darwin_id=None,
+                metadata={
+                    "provider": "moonpay",
+                    "provider_tx_id": tx_id,
+                    "amount_usdc": parsed["amount_usdc"],
+                    "amount_usd": parsed["amount_usd"],
+                    "destination": parsed["destination_darwin_id"],
+                },
+            )
+            self._mark_moonpay_event(tx_id, "settled")
+            return {"status": "settled", "provider_tx_id": tx_id}
+
+        # A completed buy → credit the destination Darwin.
+        dst = parsed["destination_darwin_id"]
+        if dst is not None and dst not in self._darwins:
+            self._audit.record(
+                actor=actor,
+                action="moonpay_webhook_skipped",
+                darwin_id=None,
+                metadata={"provider_tx_id": tx_id, "reason": f"unknown darwin {dst}"},
+            )
+            self._mark_moonpay_event(tx_id, "skipped")
+            return {"status": "skipped", "reason": f"unknown darwin {dst}"}
+        receipt = FiatDepositReceipt(
+            quote_id=parsed["external_transaction_id"] or tx_id,
+            provider_tx_id=tx_id,
+            amount_usd=parsed["amount_usd"],
+            amount_usdc=parsed["amount_usdc"],
+            fee_usd=parsed["fee_usd"],
+            provider="moonpay",
+            destination_darwin_id=dst,
+            confirmed_at=float(self._clock()),
+        )
+        try:
+            self._apply_fiat_deposit(
+                receipt, destination_darwin_id=dst, actor=actor,
+            )
+        except SupervisorError as exc:
+            self._audit.record(
+                actor=actor,
+                action="moonpay_webhook_skipped",
+                darwin_id=dst,
+                metadata={"provider_tx_id": tx_id, "reason": str(exc)},
+            )
+            self._mark_moonpay_event(tx_id, "skipped")
+            return {"status": "skipped", "reason": str(exc)}
+        self._mark_moonpay_event(tx_id, "confirmed")
+        return {
+            "status": "confirmed",
+            "provider_tx_id": tx_id,
+            "amount_usdc": receipt.amount_usdc,
+            "destination_darwin_id": dst,
+        }
+
+    def _mark_moonpay_event(self, event_id: str, status: str) -> None:
+        if self._webhook_events is not None and event_id:
+            self._webhook_events.mark(
+                event_id=event_id, provider="moonpay",
+                status=status, ts=float(self._clock()),
+            )
 
     async def darwin_fiat_payout(
         self,
