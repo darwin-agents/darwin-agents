@@ -122,3 +122,61 @@ async def test_operator_force_teardown():
         assert sup.audit_log.entries(action="teardown_dead_darwin")
     finally:
         await sup.shutdown(kill_running=True)
+
+
+# ---------------------------------------------------------------------------
+# soma + forensics are purged with the rest of the dead Darwin's data
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_force_teardown_purges_soma_and_forensics(tmp_path):
+    prov = _provisioner()
+    sup = Supervisor(
+        heartbeat_seconds=0.001, namespace_provisioner=prov,
+        dead_darwin_retention_seconds=10_000.0, soma_root=tmp_path,
+    )
+    status = await sup.spawn(opening_usdc=100.0, actor="owner")
+    did = status.darwin_id
+    soma_dir = tmp_path / did
+    forensics_dir = tmp_path / "_forensics" / did
+    try:
+        await sup.kill(did)  # captures a death forensic snapshot
+        assert soma_dir.is_dir()
+        assert forensics_dir.is_dir()  # snapshot persisted under retention
+        # Owner data-delete request before the window elapses removes the
+        # source AND its post-mortem snapshots — honouring the delete intent.
+        result = sup.teardown_dead_darwin(did, actor="owner")
+        assert result["soma_purged"] is True
+        assert not soma_dir.exists()
+        assert not forensics_dir.exists()
+        assert sup.soma_merger_for(did) is None  # in-memory merger dropped
+        entry = sup.audit_log.entries(action="teardown_dead_darwin")[-1]
+        assert entry.metadata["soma_purged"] is True
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+@pytest.mark.asyncio
+async def test_reaper_purges_soma_after_window(tmp_path):
+    prov = _provisioner()
+    sup = Supervisor(
+        heartbeat_seconds=0.001, maintenance_interval_seconds=0.05,
+        namespace_provisioner=prov,
+        dead_darwin_retention_seconds=0.0,  # due immediately
+        soma_root=tmp_path,
+    )
+    keeper = await sup.spawn(opening_usdc=100.0, actor="owner")
+    victim = await sup.spawn(opening_usdc=100.0, actor="owner")
+    did = victim.darwin_id
+    forensics_dir = tmp_path / "_forensics" / did
+    try:
+        await sup.kill(did, reason="owner kill")
+        assert forensics_dir.is_dir()
+        await asyncio.sleep(0.3)  # keeper drives the reaper
+        assert prov.get(did) is None
+        assert not (tmp_path / did).exists()
+        assert not forensics_dir.exists()
+        # The keeper's soma is untouched.
+        assert (tmp_path / keeper.darwin_id).exists()
+    finally:
+        await sup.shutdown(kill_running=True)

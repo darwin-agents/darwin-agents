@@ -291,6 +291,22 @@ class K8sDarwinDriver:
         records = data.get("records") if isinstance(data, dict) else None
         return list(records or [])
 
+    async def forensics(self, darwin_id: str) -> dict:
+        """The pod's death-time code-fingerprint forensic (doc 05) — the k8s
+        analog of the in-process soma snapshot. The supervisor pulls this
+        before the pod is reaped and persists it to its own forensics store,
+        so a killed Darwin's running code stays inspectable after teardown."""
+        handle = self._require(darwin_id)
+        try:
+            data = await self._control.get(
+                self._base_url(handle), handle.control_token, "/forensics",
+            )
+        except Exception as exc:
+            raise DriverError(
+                f"failed to read forensics for {darwin_id!r}: {exc}"
+            ) from exc
+        return data if isinstance(data, dict) else {}
+
     async def list_ids(self) -> list[str]:
         return list(self._handles)
 

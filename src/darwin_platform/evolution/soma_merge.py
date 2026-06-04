@@ -63,6 +63,11 @@ _HUNK_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
 )
 
+# A forensic snapshot id is ``death-<ms>`` (see ``forensic_snapshot``). Reads
+# validate against this so a caller-supplied id can never path-traverse out of
+# the forensics root.
+_FORENSIC_ID_RE = re.compile(r"^death-\d+$")
+
 
 @dataclass
 class _Hunk:
@@ -442,6 +447,87 @@ class SomaMerger:
                 total_bytes=0, captured_at=ts, digest="",
                 failure=f"{type(exc).__name__}: {exc}",
             )
+
+    def record_external_forensic(
+        self, manifest: dict[str, Any], *, captured_at: float | None = None,
+    ) -> SomaForensicSnapshot:
+        """Persist a forensic manifest captured ELSEWHERE so it surfaces
+        through :meth:`list_forensic_snapshots` / :meth:`read_forensic_snapshot`
+        exactly like an in-process capture. A k8s pod has no mutable soma tree,
+        so it computes its own code-fingerprint manifest and ships it via the
+        control API; the supervisor writes it here. A missing/odd
+        ``snapshot_id`` is stamped to the ``death-<ms>`` shape so reads find
+        it. Never raises."""
+        ts = float(self._clock() if captured_at is None else captured_at)
+        sid = str(manifest.get("snapshot_id") or "")
+        if not _FORENSIC_ID_RE.match(sid):
+            sid = f"death-{int(ts * 1000)}"
+        try:
+            m = dict(manifest)
+            m["snapshot_id"] = sid
+            m.setdefault("captured_at", ts)
+            self._forensics_root.mkdir(parents=True, exist_ok=True)
+            out = self._forensics_root / f"{sid}.json"
+            self._atomic_write(out, json.dumps(m, indent=2, sort_keys=True))
+            return SomaForensicSnapshot(
+                captured=True, reason=str(m.get("reason", "")),
+                snapshot_id=sid, path=str(out),
+                darwin_id=str(m.get("darwin_id", "")),
+                file_count=int(m.get("file_count") or 0),
+                total_bytes=int(m.get("total_bytes") or 0),
+                captured_at=float(m.get("captured_at") or ts),
+                digest=str(m.get("soma_digest", "")),
+            )
+        except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            return SomaForensicSnapshot(
+                captured=False, reason=str(manifest.get("reason", "")),
+                snapshot_id=sid, path=None,
+                darwin_id=str(manifest.get("darwin_id", "")),
+                file_count=0, total_bytes=0, captured_at=ts, digest="",
+                failure=f"{type(exc).__name__}: {exc}",
+            )
+
+    def list_forensic_snapshots(self) -> list[dict[str, Any]]:
+        """Summaries (metadata only, NO file contents) of every persisted
+        death-time snapshot, newest first. Empty when none were captured.
+        Cheap for an operator index view — the heavy ``contents`` map is read
+        only via :meth:`read_forensic_snapshot`."""
+        out: list[dict[str, Any]] = []
+        if not self._forensics_root.is_dir():
+            return out
+        for path in self._forensics_root.glob("death-*.json"):
+            try:
+                m = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            out.append({
+                "snapshot_id": m.get("snapshot_id"),
+                "darwin_id": m.get("darwin_id"),
+                "reason": m.get("reason"),
+                "captured_at": m.get("captured_at"),
+                "file_count": m.get("file_count"),
+                "total_bytes": m.get("total_bytes"),
+                "soma_digest": m.get("soma_digest"),
+                "metadata": m.get("metadata", {}),
+                "path": str(path),
+            })
+        out.sort(key=lambda r: r.get("captured_at") or 0.0, reverse=True)
+        return out
+
+    def read_forensic_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        """The full persisted manifest (including the ``contents`` file map)
+        for one snapshot, or ``None`` when unknown / unreadable. The id is
+        validated to the ``death-<ms>`` shape, so it can never traverse
+        outside the forensics root."""
+        if not _FORENSIC_ID_RE.match(snapshot_id):
+            return None
+        path = self._forensics_root / f"{snapshot_id}.json"
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
 
     # -- helpers -----------------------------------------------------------
     def _within_root(self, abspath: Path) -> bool:

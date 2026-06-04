@@ -224,6 +224,33 @@ async def test_snapshot_uses_control_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_forensics_reads_pod_control_endpoint():
+    api = _RecordingApi()
+
+    class _ForensicsControl(_RecordingControl):
+        async def get(self, base_url, token, path):
+            self.calls.append((path, base_url))
+            if path == "/forensics":
+                return {
+                    "schema": "darwin-platform.soma-forensic-k8s/1",
+                    "snapshot_id": "death-1000", "darwin_id": "d-f",
+                    "soma_digest": "abc", "file_count": 2,
+                }
+            return {}
+
+    control = _ForensicsControl(become_ready_after=1)
+    driver = K8sDarwinDriver(
+        api=api, control_client=control,
+        ready_poll_interval_seconds=0.0, ready_timeout_seconds=2.0,
+    )
+    await driver.start(DarwinSpec(darwin_id="d-f", opening_usdc=50.0))
+    data = await driver.forensics("d-f")
+    assert data["snapshot_id"] == "death-1000"
+    assert data["soma_digest"] == "abc"
+    assert "/forensics" in [p for (p, _) in control.calls]
+
+
+@pytest.mark.asyncio
 async def test_stop_deletes_namespace_and_clears_handle():
     api = _RecordingApi()
     control = _RecordingControl()

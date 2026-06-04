@@ -20,7 +20,7 @@ from darwin_platform.evolution.eval_runner import EvalRunner
 from darwin_platform.evolution.patch_staging import (
     PatchStagingService,
 )
-from darwin_platform.runtime.supervisor import Supervisor
+from darwin_platform.runtime.supervisor import Supervisor, SupervisorError
 
 
 @pytest.mark.asyncio
@@ -142,6 +142,72 @@ async def test_natural_death_drive_loop_captures_forensic_snapshot(tmp_path):
         assert rows[0].metadata["reason"] == "bankruptcy: test"
         manifest = json.loads(Path(rows[0].metadata["path"]).read_text())
         assert manifest["contents"]["soma/s.py"] == "X = 1\n"
+    finally:
+        await sup.shutdown(kill_running=False)
+
+
+async def test_supervisor_lists_and_reads_death_forensics(tmp_path):
+    """The supervisor surfaces a dead Darwin's death snapshots for operators
+    (the retrieval seam behind the HTTP forensics routes)."""
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    merger = sup.soma_merger_for(did)
+    (merger.root / "soma").mkdir(parents=True, exist_ok=True)
+    (merger.root / "soma" / "live.py").write_text("ALPHA = 1\n")
+    try:
+        # Unknown / never-captured Darwin is queryable, not an error.
+        assert sup.list_soma_forensics("darwin-nope") == []
+
+        await sup.kill(did, reason="owner kill", actor="alice")
+
+        rows = sup.list_soma_forensics(did)
+        assert len(rows) == 1
+        sid = rows[0]["snapshot_id"]
+        assert rows[0]["reason"] == "owner kill"
+        assert "contents" not in rows[0]  # index is metadata-only
+
+        full = sup.read_soma_forensic(did, sid)
+        assert full["contents"]["soma/live.py"] == "ALPHA = 1\n"
+
+        with pytest.raises(SupervisorError):
+            sup.read_soma_forensic(did, "death-1")
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+async def test_forensics_http_routes(tmp_path):
+    """GET /platform/darwins/{id}/forensics[/{snapshot_id}] expose the death
+    snapshots over HTTP for the operator post-mortem surface."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from darwin_platform.api import build_app
+
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    merger = sup.soma_merger_for(did)
+    (merger.root / "soma").mkdir(parents=True, exist_ok=True)
+    (merger.root / "soma" / "live.py").write_text("BETA = 2\n")
+    await sup.kill(did, reason="owner kill", actor="alice")
+
+    app = build_app(sup)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/platform/darwins/{did}/forensics")
+            assert r.status_code == 200
+            snaps = r.json()["snapshots"]
+            assert len(snaps) == 1
+            sid = snaps[0]["snapshot_id"]
+
+            r2 = client.get(f"/platform/darwins/{did}/forensics/{sid}")
+            assert r2.status_code == 200
+            assert r2.json()["contents"]["soma/live.py"] == "BETA = 2\n"
+
+            r3 = client.get(f"/platform/darwins/{did}/forensics/death-1")
+            assert r3.status_code == 404
     finally:
         await sup.shutdown(kill_running=False)
 

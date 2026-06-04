@@ -283,3 +283,74 @@ def test_forensic_snapshot_skips_forensics_dir_under_root(tmp_path):
     second = m2.forensic_snapshot(reason="d2")
     # The second capture sees the same soma files, not the first manifest.
     assert second.file_count == files_after_first
+
+
+# -- forensic snapshot retrieval ------------------------------------------
+def test_list_and_read_forensic_snapshots(tmp_path):
+    soma = tmp_path / "darwin-z"
+    _seed(soma)
+    ticks = iter([10.0, 20.0])
+    m = SomaMerger(soma, clock=lambda: next(ticks))
+    first = m.forensic_snapshot(reason="early", darwin_id="darwin-z")
+    second = m.forensic_snapshot(reason="late", darwin_id="darwin-z")
+
+    rows = m.list_forensic_snapshots()
+    # Newest first, metadata only (no inlined contents in the index).
+    assert [r["snapshot_id"] for r in rows] == [
+        second.snapshot_id, first.snapshot_id,
+    ]
+    assert [r["reason"] for r in rows] == ["late", "early"]
+    assert all("contents" not in r for r in rows)
+    assert rows[0]["soma_digest"] == second.digest
+
+    # The full manifest reads back the inlined contents.
+    full = m.read_forensic_snapshot(second.snapshot_id)
+    assert full["reason"] == "late"
+    assert full["contents"]["soma/strategies/x.py"] == (
+        "def f():\n    return 1\n"
+    )
+
+
+def test_list_forensic_snapshots_empty_when_none(tmp_path):
+    m = SomaMerger(tmp_path / "darwin-none")
+    assert m.list_forensic_snapshots() == []
+
+
+def test_read_forensic_snapshot_unknown_or_malformed_id(tmp_path):
+    m = SomaMerger(tmp_path / "darwin-q", clock=lambda: 1.0)
+    m.forensic_snapshot(reason="d")
+    assert m.read_forensic_snapshot("death-999999") is None
+    # A traversal / wrong-shape id is refused before touching disk.
+    assert m.read_forensic_snapshot("../etc/passwd") is None
+    assert m.read_forensic_snapshot("soma-1") is None
+
+
+def test_record_external_forensic_persists_and_is_retrievable(tmp_path):
+    # The k8s path: a pod computes its own code-fingerprint manifest; the
+    # supervisor persists it here so the same list/read surface works.
+    m = SomaMerger(tmp_path / "darwin-k8s", clock=lambda: 7.0)
+    manifest = {
+        "schema": "darwin-platform.soma-forensic-k8s/1",
+        "snapshot_id": "death-5000",
+        "darwin_id": "darwin-k8s",
+        "reason": "owner kill",
+        "soma_digest": "abc123",
+        "file_count": 3,
+        "layers": [{"index": 0, "name": "l0", "sha256": "aa"}],
+    }
+    snap = m.record_external_forensic(manifest)
+    assert snap.captured is True
+    assert snap.snapshot_id == "death-5000"
+    assert snap.file_count == 3
+    rows = m.list_forensic_snapshots()
+    assert rows[0]["snapshot_id"] == "death-5000"
+    full = m.read_forensic_snapshot("death-5000")
+    assert full["layers"][0]["name"] == "l0"
+
+
+def test_record_external_forensic_stamps_missing_id(tmp_path):
+    m = SomaMerger(tmp_path / "darwin-k", clock=lambda: 9.0)
+    snap = m.record_external_forensic({"darwin_id": "darwin-k"})
+    # A missing/odd id is stamped to the death-<ms> shape so reads find it.
+    assert snap.snapshot_id == "death-9000"
+    assert m.read_forensic_snapshot("death-9000") is not None

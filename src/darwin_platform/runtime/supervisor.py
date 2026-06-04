@@ -32,6 +32,7 @@ import asyncio
 import inspect
 import json
 import secrets
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2016,6 +2017,95 @@ class Supervisor:
             )
         return reader.read_rows(table, limit=limit, offset=offset)
 
+    # -- post-mortem soma forensics (doc 05) -------------------------------
+    def _forensics_merger_for(self, darwin_id: str) -> SomaMerger | None:
+        """The :class:`SomaMerger` whose forensics root holds ``darwin_id``'s
+        death snapshots. Returns the live per-Darwin merger when present;
+        otherwise (e.g. a Darwin reaped from the live map, or after a
+        supervisor restart) builds a transient read-only merger — but only
+        when forensics actually exist on disk, so a stray id never
+        materializes an empty soma dir."""
+        merger = self._soma_mergers.get(darwin_id)
+        if merger is not None:
+            return merger
+        if self._soma_root is None:
+            return None
+        forensics_dir = self._soma_root / "_forensics" / darwin_id
+        if not forensics_dir.is_dir():
+            return None
+        return SomaMerger(self._soma_root / darwin_id, clock=self._clock)
+
+    def list_soma_forensics(self, darwin_id: str) -> list[dict[str, Any]]:
+        """Metadata for every death-time soma forensic snapshot captured for
+        ``darwin_id``, newest first. Empty (not an error) when none exist or
+        no soma root is configured — a dead Darwin stays queryable."""
+        merger = self._forensics_merger_for(darwin_id)
+        if merger is None:
+            return []
+        return merger.list_forensic_snapshots()
+
+    async def _capture_k8s_death_forensics(
+        self, darwin_id: str, *, reason: str, actor: str,
+    ) -> None:
+        """k8s analog of :meth:`_capture_death_forensics`: a pod owns its own
+        soma, so the supervisor PULLS the pod's death-time code fingerprint via
+        the control API and persists it to the same forensics store the
+        in-process path uses — so ``list_soma_forensics`` / the HTTP routes
+        surface k8s and in-process deaths identically. No-op without a soma
+        root or a driver that exposes ``forensics``; never raises."""
+        if self._soma_root is None or self._k8s_driver is None:
+            return
+        fetch = getattr(self._k8s_driver, "forensics", None)
+        if not callable(fetch):
+            return
+        try:
+            manifest = await fetch(darwin_id)
+        except Exception:
+            return
+        if not manifest:
+            return
+        try:
+            merger = SomaMerger(self._soma_root / darwin_id, clock=self._clock)
+            snap = merger.record_external_forensic(
+                manifest, captured_at=float(self._clock()),
+            )
+        except Exception:
+            return
+        try:
+            self._audit.record(
+                actor=actor, action="soma_forensic_snapshot",
+                darwin_id=darwin_id,
+                metadata={
+                    "reason": reason,
+                    "captured": snap.captured,
+                    "snapshot_id": snap.snapshot_id,
+                    "path": snap.path,
+                    "file_count": snap.file_count,
+                    "soma_digest": snap.digest,
+                    "driver": "k8s",
+                    "failure": snap.failure,
+                },
+            )
+        except Exception:
+            pass
+
+    def read_soma_forensic(
+        self, darwin_id: str, snapshot_id: str,
+    ) -> dict[str, Any]:
+        """The full manifest (including soma file contents) for one death
+        snapshot. Raises :class:`SupervisorError` when the snapshot is
+        unknown for this Darwin."""
+        merger = self._forensics_merger_for(darwin_id)
+        snap = (
+            merger.read_forensic_snapshot(snapshot_id)
+            if merger is not None else None
+        )
+        if snap is None:
+            raise SupervisorError(
+                f"no soma forensic snapshot {snapshot_id!r} for {darwin_id!r}"
+            )
+        return snap
+
     @property
     def drift_detector(self) -> DriftDetector | None:
         return self._drift_detector
@@ -3060,6 +3150,13 @@ class Supervisor:
             self._audit.record(
                 actor=actor, action="kill", darwin_id=darwin_id,
                 metadata={"reason": reason, "driver": "k8s"},
+            )
+            # Pull the pod's death-time code fingerprint and persist it to our
+            # own forensics store BEFORE the pod is reaped — the pod's
+            # filesystem is the only place it lives, so this is the durable
+            # post-mortem record (doc 05). Best-effort.
+            await self._capture_k8s_death_forensics(
+                darwin_id, reason=reason, actor=actor,
             )
             return
         with span("supervisor.kill", darwin_id=darwin_id,
@@ -4793,14 +4890,44 @@ class Supervisor:
                         self._namespace_provisioner.teardown(
                             darwin_id=did, actor="platform.reaper",
                         )
+                        soma_purged = self._purge_soma_tree(did)
                         self._audit.record(
                             actor="platform.reaper",
                             action="dead_darwin_reaped",
                             darwin_id=did,
-                            metadata={"reason": "retention window elapsed"},
+                            metadata={
+                                "reason": "retention window elapsed",
+                                "soma_purged": soma_purged,
+                            },
                         )
                 except Exception:  # noqa: BLE001 — reaping is best-effort
                     pass
+
+    def _purge_soma_tree(self, darwin_id: str) -> bool:
+        """Remove a torn-down Darwin's soma tree AND its death-time forensic
+        snapshots from disk, and drop the in-memory merger. The forensics are
+        retained exactly as long as the rest of the dead Darwin's data (doc 09
+        #3) — so when the namespace/vault/DB are destroyed (retention elapsed
+        or an owner data-delete request), the soma + forensics go with them,
+        honouring the delete intent rather than leaking source indefinitely.
+
+        Best-effort: returns True if anything was removed; never raises (a
+        teardown must complete regardless of a stray filesystem error)."""
+        self._soma_mergers.pop(darwin_id, None)
+        if self._soma_root is None:
+            return False
+        removed = False
+        for path in (
+            self._soma_root / darwin_id,
+            self._soma_root / "_forensics" / darwin_id,
+        ):
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                    removed = True
+            except OSError:
+                pass
+        return removed
 
     def teardown_dead_darwin(
         self, darwin_id: str, *, actor: str = "anonymous",
@@ -4811,11 +4938,12 @@ class Supervisor:
         if self._namespace_provisioner is None:
             raise SupervisorError("no namespace provisioner configured")
         self._namespace_provisioner.teardown(darwin_id=darwin_id, actor=actor)
+        soma_purged = self._purge_soma_tree(darwin_id)
         self._audit.record(
             actor=actor, action="teardown_dead_darwin", darwin_id=darwin_id,
-            metadata={"forced": True},
+            metadata={"forced": True, "soma_purged": soma_purged},
         )
-        return {"torn_down": darwin_id}
+        return {"torn_down": darwin_id, "soma_purged": soma_purged}
 
     def _fleet_alert(self, kind: str, detail: dict) -> None:
         """Emit a CRITICAL fleet-level alert through the configured sink
@@ -5464,9 +5592,22 @@ class Supervisor:
             )
         except FiatRampError as exc:
             raise SupervisorError(str(exc)) from exc
-        # Credit the Darwin's wallet with the deposited USDC (the ramp
-        # has already moved the user's USD; the platform now reflects
-        # that USDC inside the Darwin's accounting).
+        self._apply_fiat_deposit(
+            receipt, destination_darwin_id=destination_darwin_id, actor=actor,
+        )
+        return receipt
+
+    def _apply_fiat_deposit(
+        self,
+        receipt: FiatDepositReceipt,
+        *,
+        destination_darwin_id: str | None,
+        actor: str,
+    ) -> None:
+        """Credit the Darwin's wallet with the deposited USDC (the ramp has
+        already moved the user's USD; the platform now reflects that USDC
+        inside the Darwin's accounting) and audit it. Shared by the
+        synchronous confirm path and the webhook-driven confirm path."""
         if destination_darwin_id is not None:
             h = self._darwins[destination_darwin_id]
             try:

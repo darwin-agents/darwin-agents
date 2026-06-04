@@ -177,3 +177,57 @@ async def test_alerts_do_not_404_in_k8s_mode():
     status = await sup.spawn(opening_usdc=100.0)
     rows = await sup.alerts(status.darwin_id)
     assert rows == []
+
+
+class _ForensicsK8sDriver(_FakeK8sDriver):
+    """Adds the pod-side forensics control verb the kill path pulls."""
+
+    async def forensics(self, darwin_id: str) -> dict:
+        return {
+            "schema": "darwin-platform.soma-forensic-k8s/1",
+            "snapshot_id": "death-4242",
+            "darwin_id": darwin_id,
+            "reason": "owner kill",
+            "soma_digest": "feedface",
+            "file_count": 4,
+            "layers": [{"index": 0, "name": "l0_genome", "sha256": "ab"}],
+        }
+
+
+@pytest.mark.asyncio
+async def test_kill_persists_pod_forensics_for_retrieval(tmp_path):
+    """On kill, the supervisor pulls the pod's death-time code fingerprint and
+    persists it so list/read_soma_forensic surface k8s deaths like in-process
+    ones."""
+    driver = _ForensicsK8sDriver()
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0, soma_root=tmp_path,
+    )
+    status = await sup.spawn(opening_usdc=100.0)
+    did = status.darwin_id
+    await sup.kill(did, reason="owner kill", actor="alice")
+
+    rows = sup.list_soma_forensics(did)
+    assert len(rows) == 1
+    assert rows[0]["snapshot_id"] == "death-4242"
+    assert rows[0]["soma_digest"] == "feedface"
+
+    full = sup.read_soma_forensic(did, "death-4242")
+    assert full["layers"][0]["name"] == "l0_genome"
+
+    audit = sup.audit_log.entries(action="soma_forensic_snapshot")
+    assert audit and audit[-1].metadata["driver"] == "k8s"
+    assert audit[-1].metadata["captured"] is True
+
+
+@pytest.mark.asyncio
+async def test_kill_without_forensics_verb_is_noop(tmp_path):
+    """A driver without a forensics verb (older driver) must not break kill."""
+    driver = _FakeK8sDriver()  # no .forensics
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0, soma_root=tmp_path,
+    )
+    status = await sup.spawn(opening_usdc=100.0)
+    did = status.darwin_id
+    await sup.kill(did, reason="op")  # must not raise
+    assert sup.list_soma_forensics(did) == []

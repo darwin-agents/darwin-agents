@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import json
 import sys
 import time
@@ -217,6 +218,10 @@ class OrchestratorState:
         self._reproduce_requested = False
         self._reproduce_amendment: tuple[bytes, str, str | None] | None = None
         self._closed = False
+        # Death-time code fingerprint (doc 05), captured once when the genome
+        # dies. The supervisor pulls it via GET /forensics before reaping the
+        # pod and persists it to its own forensics store.
+        self._death_forensics: dict[str, Any] | None = None
 
     def start(self) -> None:
         if self._task is not None:
@@ -258,6 +263,10 @@ class OrchestratorState:
                 if not self.runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)
+            # The organism stopped being alive — capture the pod's death-time
+            # code fingerprint for post-mortem forensics (doc 05) so it's ready
+            # when the supervisor pulls GET /forensics before reaping the pod.
+            self._capture_death_forensics()
         except asyncio.CancelledError:
             if not self._kill_requested:
                 self._kill_requested = True
@@ -300,6 +309,83 @@ class OrchestratorState:
             "death_reason": st.death_reason,
             "llm_spend_usdc": float(llm_spend),
             "merkle_root": merkle_root,
+        }
+
+    def forensics(self) -> dict[str, Any]:
+        """The pod's death-time code fingerprint — the k8s analog of the
+        in-process soma forensic snapshot (doc 05). A k8s pod has no mutable
+        soma tree on disk (soma-merge is in-process only), so 'what code was
+        running' is the SIGNED layer manifest: each layer's SHA-256 plus the
+        genome identity. That's stable across the pod's life, so this is
+        well-defined whether or not the organism has died yet — but it's
+        *captured* (frozen) at the moment of death so the reason + final
+        state reflect the post-mortem."""
+        if self._death_forensics is not None:
+            return self._death_forensics
+        return self._build_forensics(
+            reason=self.runtime.state.death_reason or ""
+        )
+
+    def _capture_death_forensics(self) -> None:
+        """Freeze the code fingerprint at death. Idempotent + best-effort —
+        a capture failure must never keep the drive loop from unwinding."""
+        if self._death_forensics is not None:
+            return
+        try:
+            self._death_forensics = self._build_forensics(
+                reason=self.runtime.state.death_reason or "death"
+            )
+        except Exception:
+            pass
+
+    def _build_forensics(self, *, reason: str) -> dict[str, Any]:
+        st = self.runtime.state
+        ts = float(self._clock())
+        manifest = getattr(self.runtime, "_p", None)
+        manifest = getattr(manifest, "manifest", None)
+        layers: list[dict[str, Any]] = []
+        identity: dict[str, Any] = {}
+        fingerprint = hashlib.sha256()
+        if manifest is not None:
+            for entry in manifest.layers:
+                layers.append({
+                    "index": entry.index,
+                    "name": entry.name,
+                    "sha256": entry.sha256,
+                })
+                fingerprint.update(entry.name.encode("utf-8"))
+                fingerprint.update(entry.sha256.encode("ascii"))
+            ident = manifest.identity
+            identity = {
+                "darwin_id": ident.darwin_id,
+                "generation": ident.generation,
+                "parent_id": ident.parent_id,
+                "l0_version": ident.l0_version,
+                "lineage": list(ident.lineage),
+            }
+        try:
+            balance = float(self.stack.wallet.balance_usdc())
+        except Exception:
+            balance = None
+        return {
+            "schema": "darwin-platform.soma-forensic-k8s/1",
+            "snapshot_id": f"death-{int(ts * 1000)}",
+            "darwin_id": self.darwin_id,
+            "reason": reason,
+            "captured_at": ts,
+            "soma_digest": fingerprint.hexdigest(),
+            # The signed layers ARE the soma in k8s mode — count them as the
+            # 'files' so the supervisor's uniform index shows a non-zero size.
+            "file_count": len(layers),
+            "layers": layers,
+            "identity": identity,
+            "metadata": {
+                "death_reason": st.death_reason,
+                "tick": int(st.tick),
+                "alive": bool(st.alive),
+                "balance_usdc": balance,
+                "manifest_signature": getattr(manifest, "signature", None),
+            },
         }
 
     def events_records(self) -> list[dict[str, Any]]:
@@ -376,6 +462,12 @@ def _build_control_app(state: OrchestratorState, token: str):
     async def events(_: None = Depends(_require_token)) -> dict:
         # Raw records; the supervisor filters + pages (see Supervisor.events).
         return {"records": state.events_records()}
+
+    @app.get("/forensics")
+    async def forensics(_: None = Depends(_require_token)) -> dict:
+        # The pod's death-time code fingerprint (doc 05). The supervisor pulls
+        # this before reaping the pod and persists it to its forensics store.
+        return state.forensics()
 
     @app.post("/pause")
     async def pause(

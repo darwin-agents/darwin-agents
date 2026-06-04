@@ -1181,6 +1181,34 @@ def build_app(
             raise HTTPException(404, str(exc))
         return {"throttles": [r.to_json() for r in rows]}
 
+    # -- post-mortem soma forensics (doc 05) -------------------------------
+    @app.get("/platform/darwins/{darwin_id}/forensics")
+    async def list_soma_forensics(
+        darwin_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        # Operator post-mortem surface: the death-time soma snapshots for a
+        # (usually dead) Darwin. Metadata only — contents are fetched per
+        # snapshot. A Darwin with no captures returns an empty list, not 404,
+        # so the index is queryable for any id.
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        return {"snapshots": _sup(request).list_soma_forensics(darwin_id)}
+
+    @app.get("/platform/darwins/{darwin_id}/forensics/{snapshot_id}")
+    async def read_soma_forensic(
+        darwin_id: str,
+        snapshot_id: str,
+        request: Request,
+        ctx: AuthContext = Depends(get_auth),
+    ) -> dict[str, Any]:
+        # The full manifest including the captured soma file contents.
+        _require_scope(ctx, PLATFORM_OPERATOR)
+        try:
+            return _sup(request).read_soma_forensic(darwin_id, snapshot_id)
+        except SupervisorError as exc:
+            raise HTTPException(404, str(exc))
+
     # -- fiat ramp (doc 17) -------------------------------------------------
     @app.post("/platform/fiat/deposit_quote")
     async def fiat_deposit_quote(
@@ -1283,6 +1311,26 @@ def build_app(
         if not isinstance(event, dict):
             event = json.loads(payload.decode("utf-8") or "{}")
         return _sup(request).handle_stripe_webhook(event)
+
+    @app.post("/webhooks/moonpay")
+    async def moonpay_webhook(request: Request) -> dict[str, Any]:
+        """MoonPay deposit/withdraw webhook. UNAUTHENTICATED at the bearer
+        layer — authenticity is established by the adapter verifying the
+        ``Moonpay-Signature-V2`` header against the configured webhook key.
+        A ``completed`` buy credits the destination Darwin's wallet (routed
+        by the transaction's ``externalCustomerId``). A verified event always
+        returns 200 (even when skipped/ignored) so MoonPay stops retrying; a
+        bad/missing signature is a 400; an unconfigured ramp is a 503."""
+        from .adapters.fiat import FiatRampError
+
+        payload = await request.body()
+        sig = request.headers.get("Moonpay-Signature-V2", "")
+        try:
+            return _sup(request).handle_moonpay_webhook(payload, sig)
+        except FiatRampError as exc:
+            raise HTTPException(400, f"invalid moonpay signature: {exc}")
+        except SupervisorError as exc:
+            raise HTTPException(503, str(exc))
 
     @app.post("/platform/fiat/confirm_deposit")
     async def fiat_confirm_deposit(
