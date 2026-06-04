@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(web): add organism tab, tax summary, and forensics viewer pages
+- feat(platform): add capabilities endpoint and organism data browser API
+- feat(platform): wire k8s soma PVC and live soma in pod forensics
 - feat(platform): k8s natural-death forensics and external manifest cap
 - feat(devx): add --soma-root flag for real soma merge and forensics
 - feat(devx): add kill9 mid-soak recovery drill
