@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): k8s natural-death forensics and external manifest cap
+- feat(devx): add --soma-root flag for real soma merge and forensics
 - feat(devx): add kill9 mid-soak recovery drill
 - feat(platform): operator soma forensics API and k8s death capture
 - feat(payments): MoonPay hosted-widget flow with signed webhook settlement
