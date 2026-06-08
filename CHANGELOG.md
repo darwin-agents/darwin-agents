@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(security): cover signed POST /webhooks/kyc integration path
 - feat(platform): disable OpenAPI docs by default
 - feat(security): verify Persona and Onfido KYC provider webhooks
 - feat(platform): activate evolved soma strategies at boot via SomaLoader
