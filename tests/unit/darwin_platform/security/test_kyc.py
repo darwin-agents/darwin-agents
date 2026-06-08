@@ -9,6 +9,9 @@ Coverage:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import types
 
 import pytest
@@ -20,6 +23,7 @@ from darwin_platform.security.kyc import (
     KYCStatus,
     KYCTier,
     KYCVerdict,
+    KYCWebhookEvent,
     OnfidoKYCProvider,
     PersonaKYCProvider,
     StubKYCProvider,
@@ -364,3 +368,224 @@ def test_service_audit_recorder_captures_lifecycle():
     actions = [r[1] for r in recorded]
     assert "kyc_started" in actions
     assert "kyc_status_changed" in actions
+
+
+# ---------------------------------------------------------------------------
+# Signed webhook ingestion (Persona / Onfido / Stub)
+# ---------------------------------------------------------------------------
+
+_FIXED_CLOCK = 1_700_000_000.0
+
+
+def _persona_event(*, inquiry_id="inq-1", subject="alice", status="approved"):
+    return json.dumps({
+        "data": {
+            "type": "event",
+            "id": "evt-1",
+            "attributes": {
+                "name": f"inquiry.{status}",
+                "payload": {
+                    "data": {
+                        "type": "inquiry",
+                        "id": inquiry_id,
+                        "attributes": {
+                            "status": status,
+                            "reference-id": subject,
+                        },
+                    }
+                },
+            },
+        }
+    }).encode("utf-8")
+
+
+def _persona_sig(secret: str, body: bytes, ts: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"), f"{ts}.".encode("utf-8") + body,
+        hashlib.sha256,
+    ).hexdigest()
+    return digest
+
+
+def test_persona_verify_webhook_accepts_valid_signature():
+    body = _persona_event(inquiry_id="inq-9", subject="alice", status="approved")
+    ts = str(int(_FIXED_CLOCK))
+    sig = _persona_sig("whsec", body, ts)
+    p = PersonaKYCProvider(
+        api_key="k", template_id="t", webhook_secret="whsec",
+        client=_StubHTTP(), clock=lambda: _FIXED_CLOCK,
+    )
+    event = p.verify_webhook(
+        raw_body=body, headers={"Persona-Signature": f"t={ts},v1={sig}"},
+    )
+    assert isinstance(event, KYCWebhookEvent)
+    assert event.provider == "persona"
+    assert event.inquiry_id == "inq-9"
+    assert event.subject == "alice"
+    assert event.status == KYCStatus.APPROVED
+    assert event.event == "inquiry.approved"
+
+
+def test_persona_verify_webhook_rejects_bad_signature():
+    body = _persona_event()
+    ts = str(int(_FIXED_CLOCK))
+    p = PersonaKYCProvider(
+        api_key="k", template_id="t", webhook_secret="whsec",
+        client=_StubHTTP(), clock=lambda: _FIXED_CLOCK,
+    )
+    with pytest.raises(KYCError, match="signature mismatch"):
+        p.verify_webhook(
+            raw_body=body,
+            headers={"Persona-Signature": f"t={ts},v1=deadbeef"},
+        )
+
+
+def test_persona_verify_webhook_rejects_stale_timestamp():
+    body = _persona_event()
+    stale_ts = str(int(_FIXED_CLOCK - 10_000))
+    sig = _persona_sig("whsec", body, stale_ts)
+    p = PersonaKYCProvider(
+        api_key="k", template_id="t", webhook_secret="whsec",
+        webhook_tolerance_seconds=300.0,
+        client=_StubHTTP(), clock=lambda: _FIXED_CLOCK,
+    )
+    with pytest.raises(KYCError, match="tolerance"):
+        p.verify_webhook(
+            raw_body=body,
+            headers={"Persona-Signature": f"t={stale_ts},v1={sig}"},
+        )
+
+
+def test_persona_verify_webhook_accepts_during_secret_rotation():
+    # Persona sends space-separated sets while a secret is rotating; a match
+    # against ANY v1 is sufficient.
+    body = _persona_event(subject="rotato")
+    ts = str(int(_FIXED_CLOCK))
+    new_sig = _persona_sig("new-secret", body, ts)
+    p = PersonaKYCProvider(
+        api_key="k", template_id="t", webhook_secret="new-secret",
+        client=_StubHTTP(), clock=lambda: _FIXED_CLOCK,
+    )
+    header = f"t={ts},v1=oldoldold t={ts},v1={new_sig}"
+    event = p.verify_webhook(raw_body=body, headers={"Persona-Signature": header})
+    assert event.subject == "rotato"
+
+
+def test_persona_verify_webhook_requires_secret():
+    p = PersonaKYCProvider(api_key="k", template_id="t", client=_StubHTTP())
+    with pytest.raises(KYCError, match="secret not configured"):
+        p.verify_webhook(raw_body=b"{}", headers={"Persona-Signature": "t=1,v1=x"})
+
+
+def _onfido_event(*, run_id="wfr-1", action="workflow_run.completed",
+                  status="approved"):
+    return json.dumps({
+        "payload": {
+            "resource_type": "workflow_run",
+            "action": action,
+            "object": {
+                "id": run_id,
+                "status": status,
+                "href": f"https://api.onfido.com/v3.6/workflow_runs/{run_id}",
+            },
+        }
+    }).encode("utf-8")
+
+
+def test_onfido_verify_webhook_accepts_and_resolves_subject():
+    http = _OnfidoStubHTTP()
+    p = OnfidoKYCProvider(
+        api_token="t", workflow_id="wf", webhook_token="wht", client=http,
+    )
+    p.start_inquiry(subject="alice")  # populates run→subject map (wfr-1)
+    body = _onfido_event(run_id="wfr-1", status="clear")
+    sig = hmac.new(b"wht", body, hashlib.sha256).hexdigest()
+    event = p.verify_webhook(
+        raw_body=body, headers={"X-SHA2-Signature": sig},
+    )
+    assert event.provider == "onfido"
+    assert event.inquiry_id == "wfr-1"
+    assert event.subject == "alice"
+    assert event.status == KYCStatus.APPROVED
+
+
+def test_onfido_verify_webhook_rejects_bad_signature():
+    p = OnfidoKYCProvider(
+        api_token="t", workflow_id="wf", webhook_token="wht",
+        client=_OnfidoStubHTTP(),
+    )
+    body = _onfido_event()
+    with pytest.raises(KYCError, match="signature mismatch"):
+        p.verify_webhook(raw_body=body, headers={"X-SHA2-Signature": "00"})
+
+
+def test_stub_verify_webhook_roundtrip():
+    # No secret -> accept and parse.
+    p = StubKYCProvider()
+    body = json.dumps(
+        {"inquiry_id": "inq-1", "subject": "alice", "status": "approved"}
+    ).encode("utf-8")
+    event = p.verify_webhook(raw_body=body, headers={})
+    assert event.inquiry_id == "inq-1"
+    assert event.subject == "alice"
+    assert event.status == KYCStatus.APPROVED
+    # With a secret -> require the X-Kyc-Signature HMAC.
+    ps = StubKYCProvider(webhook_secret="s")
+    sig = hmac.new(b"s", body, hashlib.sha256).hexdigest()
+    assert ps.verify_webhook(
+        raw_body=body, headers={"X-Kyc-Signature": sig}
+    ).subject == "alice"
+    with pytest.raises(KYCError, match="signature mismatch"):
+        ps.verify_webhook(raw_body=body, headers={"X-Kyc-Signature": "bad"})
+
+
+def test_service_handle_webhook_caches_verdict():
+    # End-to-end: the verified webhook refreshes + caches the verdict so the
+    # gate sees APPROVED without a manual poll.
+    provider = StubKYCProvider(webhook_secret="s")
+    svc = KYCService(provider=provider)
+    out = svc.start_inquiry(subject="alice")
+    body = json.dumps(
+        {"inquiry_id": out["inquiry_id"], "subject": "alice"}
+    ).encode("utf-8")
+    sig = hmac.new(b"s", body, hashlib.sha256).hexdigest()
+    verdict = svc.handle_webhook(
+        raw_body=body, headers={"X-Kyc-Signature": sig},
+    )
+    assert verdict.status == KYCStatus.APPROVED
+    assert svc.status_for("alice").status == KYCStatus.APPROVED
+    svc.require_allowed("alice", action="fund")  # no raise
+
+
+def test_service_ingest_webhook_resolves_subject_via_poll():
+    # An event with no subject (Onfido-shaped) is resolved by polling.
+    provider = StubKYCProvider()
+    svc = KYCService(provider=provider)
+    out = svc.start_inquiry(subject="bob")
+    event = KYCWebhookEvent(
+        provider="stub", event="inquiry.updated",
+        inquiry_id=out["inquiry_id"], subject="",
+    )
+    verdict = svc.ingest_webhook(event)
+    assert verdict.subject == "bob"
+    assert verdict.status == KYCStatus.APPROVED
+
+
+def test_ingest_webhook_without_inquiry_id_raises():
+    svc = KYCService(provider=StubKYCProvider())
+    with pytest.raises(KYCError, match="no inquiry id"):
+        svc.ingest_webhook(
+            KYCWebhookEvent(provider="stub", event="x", inquiry_id="")
+        )
+
+
+def test_cli_parses_kyc_webhook_secret_flags():
+    from darwin_platform.__main__ import build_parser
+    args = build_parser().parse_args([
+        "serve",
+        "--kyc-provider", "persona",
+        "--kyc-persona-webhook-secret", "whsec",
+        "--kyc-onfido-webhook-token", "wht",
+    ])
+    assert args.kyc_persona_webhook_secret == "whsec"
+    assert args.kyc_onfido_webhook_token == "wht"

@@ -26,10 +26,24 @@ holds personally-identifying media.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+
+
+def _header(headers: Mapping[str, str], name: str) -> str:
+    """Case-insensitive header lookup. Starlette lower-cases header keys
+    when a request's headers are converted to a plain dict, but a caller
+    might pass the canonical casing — tolerate both."""
+    target = name.lower()
+    for key, value in headers.items():
+        if key.lower() == target:
+            return value
+    return ""
 
 
 class KYCError(Exception):
@@ -48,6 +62,9 @@ class KYCStatus(str, Enum):
     REJECTED = "rejected"      # failed identity check or risk score
     EXPIRED = "expired"        # passed previously; KYC retention TTL ran out
     REQUIRES_REVIEW = "requires_review"  # provider needs a human reviewer
+
+
+_KYC_STATUS_VALUES = frozenset(s.value for s in KYCStatus)
 
 
 class KYCTier(str, Enum):
@@ -96,12 +113,32 @@ class KYCVerdict:
         }
 
 
+@dataclass(frozen=True)
+class KYCWebhookEvent:
+    """A provider webhook callback, after its signature has been verified.
+
+    The platform re-polls the provider for the authoritative verdict rather
+    than trusting the webhook body's status outright; ``status`` here is the
+    parsed hint (used only when a re-poll isn't possible). ``subject`` may be
+    empty — Onfido carries no caller reference on the run, so the service
+    resolves the subject by polling. ``inquiry_id`` is the
+    inquiry/workflow-run id the event is about."""
+
+    provider: str
+    event: str
+    inquiry_id: str
+    subject: str = ""
+    status: KYCStatus | None = None
+
+
 @runtime_checkable
 class KYCProvider(Protocol):
     """Adapter surface the platform talks to. Real impls hit Persona /
     Onfido / Sumsub. ``start_inquiry`` returns an inquiry id +
     redirect URL the dashboard uses; ``poll_inquiry`` is the
-    webhook-or-poll consumption side; ``revoke`` lets the platform
+    webhook-or-poll consumption side; ``verify_webhook`` authenticates a
+    provider callback (raising :class:`KYCError` on a bad signature) and
+    parses it into a :class:`KYCWebhookEvent`; ``revoke`` lets the platform
     short-circuit an approved subject (e.g. on suspected fraud)."""
 
     def start_inquiry(self, *, subject: str, tier: KYCTier = KYCTier.STANDARD) -> dict[str, Any]:
@@ -109,6 +146,10 @@ class KYCProvider(Protocol):
         ...
 
     def poll_inquiry(self, inquiry_id: str) -> KYCVerdict: ...
+
+    def verify_webhook(
+        self, *, raw_body: bytes, headers: Mapping[str, str]
+    ) -> KYCWebhookEvent: ...
 
     def revoke(self, *, subject: str, reason: str) -> None: ...
 
@@ -127,10 +168,12 @@ class StubKYCProvider:
         *,
         default_status: KYCStatus = KYCStatus.APPROVED,
         default_tier: KYCTier = KYCTier.STANDARD,
+        webhook_secret: str = "",
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._default_status = default_status
         self._default_tier = default_tier
+        self._webhook_secret = webhook_secret
         self._overrides: dict[str, KYCVerdict] = {}
         self._inquiries: dict[str, KYCVerdict] = {}
         self._clock = clock
@@ -173,6 +216,33 @@ class StubKYCProvider:
             raise KYCError(f"unknown inquiry: {inquiry_id}")
         return v
 
+    def verify_webhook(
+        self, *, raw_body: bytes, headers: Mapping[str, str]
+    ) -> KYCWebhookEvent:
+        """Lenient test/sim webhook: when a ``webhook_secret`` is configured,
+        verify a hex HMAC-SHA256 of the raw body in the ``X-Kyc-Signature``
+        header (constant-time); otherwise accept. The body is a flat
+        ``{"inquiry_id", "subject", "status"}`` JSON object."""
+        if self._webhook_secret:
+            want = hmac.new(
+                self._webhook_secret.encode("utf-8"), raw_body, hashlib.sha256,
+            ).hexdigest()
+            got = _header(headers, "X-Kyc-Signature")
+            if not (got and hmac.compare_digest(got, want)):
+                raise KYCError("stub webhook signature mismatch")
+        try:
+            body = json.loads(raw_body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise KYCError(f"stub webhook body not JSON: {exc}") from exc
+        status_raw = str(body.get("status") or "")
+        return KYCWebhookEvent(
+            provider="stub",
+            event=str(body.get("event") or "inquiry.updated"),
+            inquiry_id=str(body.get("inquiry_id") or ""),
+            subject=str(body.get("subject") or ""),
+            status=KYCStatus(status_raw) if status_raw in _KYC_STATUS_VALUES else None,
+        )
+
     def revoke(self, *, subject: str, reason: str) -> None:
         """Mark every existing inquiry for ``subject`` as REJECTED."""
         for inq_id, v in list(self._inquiries.items()):
@@ -209,6 +279,8 @@ class PersonaKYCProvider:
         *,
         api_key: str,
         template_id: str,
+        webhook_secret: str = "",
+        webhook_tolerance_seconds: float = 300.0,
         client: Any | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -216,6 +288,8 @@ class PersonaKYCProvider:
             raise KYCError("PersonaKYCProvider requires api_key")
         if not template_id:
             raise KYCError("PersonaKYCProvider requires template_id")
+        self._webhook_secret = webhook_secret
+        self._webhook_tolerance = float(webhook_tolerance_seconds)
         if client is None:
             try:
                 import httpx  # type: ignore[import]
@@ -292,6 +366,65 @@ class PersonaKYCProvider:
             verified_at=self._clock(),
         )
 
+    def verify_webhook(
+        self, *, raw_body: bytes, headers: Mapping[str, str]
+    ) -> KYCWebhookEvent:
+        """Verify Persona's ``Persona-Signature`` header and parse the event.
+
+        The header is comma-separated ``t=<unix>,v1=<hex>``; the signed string
+        is ``f"{t}.{raw_body}"`` HMAC-SHA256'd with the webhook secret, hex
+        digest. During secret rotation Persona sends multiple space-separated
+        sets, so we accept a match against ANY ``v1`` present. The timestamp is
+        checked for freshness to blunt replay. Raises :class:`KYCError` on a
+        missing secret, missing/garbled header, stale timestamp, or no match.
+
+        The inquiry lives at ``data.attributes.payload.data``; its
+        ``reference-id`` is our subject and ``status`` the provider verdict."""
+        if not self._webhook_secret:
+            raise KYCError("Persona webhook secret not configured")
+        header = _header(headers, "Persona-Signature")
+        if not header:
+            raise KYCError("missing Persona-Signature header")
+        # Rotation: space-separated sets, each "t=..,v1=..".
+        timestamp = ""
+        signatures: list[str] = []
+        for chunk in header.split():
+            for pair in chunk.split(","):
+                key, _, value = pair.partition("=")
+                key = key.strip()
+                if key == "t" and not timestamp:
+                    timestamp = value.strip()
+                elif key == "v1":
+                    signatures.append(value.strip())
+        if not timestamp or not signatures:
+            raise KYCError("malformed Persona-Signature header")
+        try:
+            ts = float(timestamp)
+        except ValueError as exc:
+            raise KYCError("Persona-Signature timestamp not numeric") from exc
+        if self._webhook_tolerance > 0 and abs(self._clock() - ts) > self._webhook_tolerance:
+            raise KYCError("Persona webhook timestamp outside tolerance")
+        signed = f"{timestamp}.".encode("utf-8") + raw_body
+        want = hmac.new(
+            self._webhook_secret.encode("utf-8"), signed, hashlib.sha256,
+        ).hexdigest()
+        if not any(hmac.compare_digest(sig, want) for sig in signatures):
+            raise KYCError("Persona webhook signature mismatch")
+        try:
+            body = json.loads(raw_body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise KYCError(f"Persona webhook body not JSON: {exc}") from exc
+        ev_attrs = (body.get("data", {}) or {}).get("attributes", {}) or {}
+        inquiry = ((ev_attrs.get("payload", {}) or {}).get("data", {})) or {}
+        inq_attrs = inquiry.get("attributes", {}) or {}
+        return KYCWebhookEvent(
+            provider="persona",
+            event=str(ev_attrs.get("name") or ""),
+            inquiry_id=str(inquiry.get("id") or ""),
+            subject=str(inq_attrs.get("reference-id") or ""),
+            status=_map_persona_status(str(inq_attrs.get("status") or "")),
+        )
+
     def revoke(self, *, subject: str, reason: str) -> None:
         # Persona doesn't expose a "revoke" API; revocation is a
         # platform-side state, not a provider-side one. This is a no-op
@@ -344,6 +477,7 @@ class OnfidoKYCProvider:
         api_token: str,
         workflow_id: str,
         region: str = "eu",
+        webhook_token: str = "",
         client: Any | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -351,6 +485,7 @@ class OnfidoKYCProvider:
             raise KYCError("OnfidoKYCProvider requires api_token")
         if not workflow_id:
             raise KYCError("OnfidoKYCProvider requires workflow_id")
+        self._webhook_token = webhook_token
         base_url = _ONFIDO_REGIONS.get(region.lower())
         if base_url is None:
             raise KYCError(
@@ -451,6 +586,44 @@ class OnfidoKYCProvider:
             verified_at=self._clock(),
         )
 
+    def verify_webhook(
+        self, *, raw_body: bytes, headers: Mapping[str, str]
+    ) -> KYCWebhookEvent:
+        """Verify Onfido's ``X-SHA2-Signature`` and parse the event.
+
+        The signature is HMAC-SHA256 of the RAW request body keyed by the
+        webhook's token (hex), constant-time compared. The event lives at
+        ``payload``: ``action`` (e.g. ``workflow_run.completed``),
+        ``object.id`` (the workflow-run id), and ``object.status``. Onfido
+        carries no caller reference on the run, so ``subject`` is resolved
+        from the adapter's in-memory ``run id → subject`` map (and, failing
+        that, by the service re-polling). Raises :class:`KYCError` on a
+        missing token, missing header, or signature mismatch."""
+        if not self._webhook_token:
+            raise KYCError("Onfido webhook token not configured")
+        got = _header(headers, "X-SHA2-Signature")
+        if not got:
+            raise KYCError("missing X-SHA2-Signature header")
+        want = hmac.new(
+            self._webhook_token.encode("utf-8"), raw_body, hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(got, want):
+            raise KYCError("Onfido webhook signature mismatch")
+        try:
+            body = json.loads(raw_body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise KYCError(f"Onfido webhook body not JSON: {exc}") from exc
+        payload = body.get("payload", {}) or {}
+        obj = payload.get("object", {}) or {}
+        run_id = str(obj.get("id") or "")
+        return KYCWebhookEvent(
+            provider="onfido",
+            event=str(payload.get("action") or ""),
+            inquiry_id=run_id,
+            subject=self._subjects.get(run_id, ""),
+            status=_map_onfido_status(str(obj.get("status") or "")),
+        )
+
     def revoke(self, *, subject: str, reason: str) -> None:
         # Onfido has no revoke API — revocation is platform-side state, the
         # same as the Persona adapter. KYCService.revoke is authoritative.
@@ -539,6 +712,45 @@ class KYCService:
                 "inquiry_id": inquiry_id,
             })
         return verdict
+
+    def handle_webhook(
+        self, *, raw_body: bytes, headers: Mapping[str, str],
+        actor: str = "platform.kyc_webhook",
+    ) -> KYCVerdict:
+        """Authenticate a provider callback and cache the resulting verdict.
+
+        Delegates signature verification + parsing to the configured
+        provider (:meth:`KYCProvider.verify_webhook`, which raises
+        :class:`KYCError` on a bad signature), then re-polls for the
+        authoritative verdict via :meth:`ingest_webhook`. This is the
+        provider-driven counterpart to the operator/poll path
+        :meth:`refresh_status`."""
+        event = self.provider.verify_webhook(raw_body=raw_body, headers=headers)
+        return self.ingest_webhook(event, actor=actor)
+
+    def ingest_webhook(
+        self, event: KYCWebhookEvent, *, actor: str = "platform.kyc_webhook",
+    ) -> KYCVerdict:
+        """Cache the verdict for a verified webhook event. Re-polls the
+        provider for the authoritative status (the webhook only authenticates
+        and identifies *which* inquiry changed). The subject comes from the
+        event when present (Persona's reference-id) or from the poll
+        (Onfido attributes the run server-side)."""
+        if not event.inquiry_id:
+            raise KYCError("KYC webhook event has no inquiry id")
+        subject = event.subject
+        if not subject:
+            # Onfido: discover the subject by polling, then cache under it.
+            polled = self.provider.poll_inquiry(event.inquiry_id)
+            subject = polled.subject
+        if not subject:
+            raise KYCError(
+                f"KYC webhook for inquiry {event.inquiry_id!r} has no "
+                "resolvable subject"
+            )
+        return self.refresh_status(
+            subject=subject, inquiry_id=event.inquiry_id, actor=actor,
+        )
 
     def status_for(self, subject: str) -> KYCVerdict:
         """Cache-only read. Returns UNKNOWN when never inquired."""

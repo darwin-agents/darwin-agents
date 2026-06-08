@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -1399,6 +1400,27 @@ def build_app(
             return _sup(request).handle_moonpay_webhook(payload, sig)
         except FiatRampError as exc:
             raise HTTPException(400, f"invalid moonpay signature: {exc}")
+        except SupervisorError as exc:
+            raise HTTPException(503, str(exc))
+
+    @app.post("/webhooks/kyc")
+    async def kyc_provider_webhook(request: Request) -> dict[str, Any]:
+        """KYC provider callback (Persona / Onfido). UNAUTHENTICATED at the
+        bearer layer — authenticity is the provider's signature over the raw
+        body (``Persona-Signature`` / ``X-SHA2-Signature``), verified by the
+        configured KYC adapter. A verified event refreshes + caches the
+        subject's verdict and returns 200; a bad/missing signature is a 400;
+        an unconfigured KYC service is a 503.
+
+        This is the provider-driven path; the operator/manual poll trigger
+        lives at ``POST /platform/kyc/webhook`` (bearer-authenticated)."""
+        from .security.kyc import KYCError
+
+        payload = await request.body()
+        try:
+            return _sup(request).handle_kyc_webhook(payload, dict(request.headers))
+        except KYCError as exc:
+            raise HTTPException(400, f"invalid kyc webhook: {exc}")
         except SupervisorError as exc:
             raise HTTPException(503, str(exc))
 

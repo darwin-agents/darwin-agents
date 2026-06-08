@@ -871,6 +871,11 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
         kwargs["kyc_service"] = KYCService(
             provider=PersonaKYCProvider(
                 api_key=api_key, template_id=template_id,
+                webhook_secret=(
+                    getattr(args, "kyc_persona_webhook_secret", None)
+                    or os.environ.get("DARWIN_KYC_PERSONA_WEBHOOK_SECRET")
+                    or ""
+                ),
             ),
         )
     elif kyc_provider == "onfido":
@@ -895,6 +900,11 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
                 api_token=api_token,
                 workflow_id=workflow_id,
                 region=getattr(args, "kyc_onfido_region", None) or "eu",
+                webhook_token=(
+                    getattr(args, "kyc_onfido_webhook_token", None)
+                    or os.environ.get("ONFIDO_WEBHOOK_TOKEN")
+                    or ""
+                ),
             ),
         )
 
@@ -2179,6 +2189,12 @@ def build_parser() -> argparse.ArgumentParser:
              "Env: DARWIN_KYC_PERSONA_TEMPLATE_ID",
     )
     phase2_group.add_argument(
+        "--kyc-persona-webhook-secret", default=None, metavar="SECRET",
+        help="Persona webhook signing secret — verifies POST /webhooks/kyc "
+             "callbacks (Persona-Signature). Env: "
+             "DARWIN_KYC_PERSONA_WEBHOOK_SECRET",
+    )
+    phase2_group.add_argument(
         "--kyc-onfido-api-token", default=None, metavar="TOKEN",
         help="Onfido API token (when --kyc-provider onfido). "
              "Env: ONFIDO_API_TOKEN",
@@ -2187,6 +2203,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--kyc-onfido-workflow-id", default=None, metavar="ID",
         help="Onfido Studio workflow id (when --kyc-provider onfido). "
              "Env: ONFIDO_WORKFLOW_ID",
+    )
+    phase2_group.add_argument(
+        "--kyc-onfido-webhook-token", default=None, metavar="TOKEN",
+        help="Onfido webhook token — verifies POST /webhooks/kyc callbacks "
+             "(X-SHA2-Signature). Env: ONFIDO_WEBHOOK_TOKEN",
     )
     phase2_group.add_argument(
         "--kyc-onfido-region", default="eu", choices=["eu", "us", "ca"],

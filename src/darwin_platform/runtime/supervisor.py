@@ -2004,6 +2004,27 @@ class Supervisor:
     def kyc_service(self) -> KYCService | None:
         return self._kyc_service
 
+    def handle_kyc_webhook(
+        self,
+        raw_body: bytes,
+        headers: "Mapping[str, str]",
+        *,
+        actor: str = "platform.kyc_webhook",
+    ) -> dict[str, Any]:
+        """Ingest a verified KYC provider callback (Persona / Onfido).
+
+        Authenticity is the provider's signature over ``raw_body`` (verified
+        in :meth:`KYCService.handle_webhook`); a bad signature raises
+        ``KYCError`` which the HTTP layer maps to 400. Returns the refreshed
+        verdict so the caller can 200 the provider. Raises
+        :class:`SupervisorError` when no KYC service is configured."""
+        if self._kyc_service is None:
+            raise SupervisorError("KYC service not configured")
+        verdict = self._kyc_service.handle_webhook(
+            raw_body=raw_body, headers=headers, actor=actor,
+        )
+        return verdict.to_json()
+
     @property
     def omnibus_wallet(self) -> OmnibusWallet | None:
         return self._omnibus_wallet
