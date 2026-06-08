@@ -20,6 +20,8 @@ asserted.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from ..hyperparameters import DEFAULT_HYPERPARAMETERS, Hyperparameters
@@ -138,6 +140,130 @@ def _run_trajectory(
     ).score
     return TrajectoryResult(
         profit_usdc=round(profit, 9), failures_incurred=failures, score=score
+    )
+
+
+def _run_strategy_trajectory(
+    strategy: Any,
+    scenario: FrozenScenario,
+    hp: Hyperparameters,
+) -> tuple[TrajectoryResult, int]:
+    """Forward-simulate a REAL strategy over the frozen tape: at each step
+    build an observation from the evolving sim state, call ``.propose()``, and
+    apply the proposed action's economic effect. A ``dispatch`` metabolises —
+    it earns on an earning step (``ok``) and pays the targeted cost on a wall
+    step (``fail``); ``wait`` / ``capability_request`` neither earns nor costs
+    but lets revenue age. Returns the trajectory + the count of non-wait
+    (productive) actions (a degenerate all-wait candidate is inert — "an idle
+    organism is just a slow death", doc 18). Raises if ``.propose()`` raises —
+    the caller treats that as a rejected candidate."""
+    from ..strategies import StrategyObservation
+
+    balance = scenario.starting_capital_usdc
+    content = 0
+    published = 0
+    secs_since_rev = 0.0
+    days = 0.0
+    failures = 0
+    productive = 0
+    avail = frozenset({"content.writer", "browser.operator"})
+    for step in scenario.tape:
+        obs = StrategyObservation(
+            balance_usdc=balance, days_elapsed=days,
+            content_pieces=content, published_pieces=published,
+            seconds_since_revenue=secs_since_rev, available_neurons=avail,
+        )
+        action = strategy.propose(obs)
+        days += 1.0
+        if getattr(action, "kind", "wait") == "dispatch":
+            productive += 1
+            content += 1
+            if step == "ok":
+                balance += scenario.ok_revenue_usdc
+                published += 1
+                secs_since_rev = 0.0
+            else:
+                balance -= scenario.fail_cost_usdc
+                failures += 1
+                secs_since_rev += 1.0
+        else:
+            secs_since_rev += 1.0
+    profit = balance - scenario.starting_capital_usdc
+    score = compute_fitness(
+        FitnessWindow(
+            profit_usdc=profit,
+            starting_capital_usdc=scenario.starting_capital_usdc,
+            distinct_strategies=1,
+            escalations_approved=0,
+            escalations_rejected=0,
+            policy_violations=0,
+        ),
+        hp,
+    ).score
+    return TrajectoryResult(
+        profit_usdc=round(profit, 9), failures_incurred=failures, score=score,
+    ), productive
+
+
+def evaluate_strategy_candidate(
+    baseline: Any,
+    candidate: Any,
+    scenario: FrozenScenario,
+    *,
+    hp: Hyperparameters = DEFAULT_HYPERPARAMETERS,
+    validator_clean: bool,
+) -> EvalResult:
+    """Empirically compare a REAL candidate strategy against the baseline by
+    actually RUNNING both over the frozen tape (doc 33) — the soma-activated
+    successor to :func:`evaluate_mutation_candidate`'s ``BehaviorDelta``
+    simulation. Promotion requires measured improvement, a clean validator, and
+    a non-degenerate candidate (it must take at least one productive action — an
+    all-wait strategy is inert and never promoted). A candidate whose
+    ``.propose()`` raises is rejected. Pure + in-DNA (P5: a Darwin cannot grade
+    its rewrite by softer rules)."""
+    try:
+        base_traj, _ = _run_strategy_trajectory(baseline, scenario, hp)
+    except Exception as exc:  # noqa: BLE001 — a broken baseline can't anchor
+        zero = TrajectoryResult(profit_usdc=0.0, failures_incurred=0, score=0.0)
+        return EvalResult(
+            promote=False, reason=f"baseline strategy raised: {exc}",
+            baseline=zero, candidate=zero,
+        )
+    if not validator_clean:
+        return EvalResult(promote=False, reason="patch rejected by validator",
+                          baseline=base_traj, candidate=base_traj)
+    try:
+        cand_traj, productive = _run_strategy_trajectory(
+            candidate, scenario, hp,
+        )
+    except Exception as exc:  # noqa: BLE001 — a candidate that crashes is unfit
+        return EvalResult(
+            promote=False,
+            reason=f"candidate strategy raised: {exc}",
+            baseline=base_traj, candidate=base_traj,
+        )
+    if productive == 0:
+        return EvalResult(
+            promote=False,
+            reason="candidate is inert (all-wait) — archived",
+            baseline=base_traj, candidate=cand_traj,
+        )
+    if cand_traj.score > base_traj.score + EVAL_MARGIN:
+        return EvalResult(
+            promote=True,
+            reason=(
+                f"empirical improvement: fitness {cand_traj.score:.6f} > "
+                f"{base_traj.score:.6f} (real candidate strategy)"
+            ),
+            baseline=base_traj, candidate=cand_traj,
+        )
+    return EvalResult(
+        promote=False,
+        reason=(
+            f"no empirical improvement (candidate {cand_traj.score:.6f} ≤ "
+            f"baseline {base_traj.score:.6f}) — archived"
+        ),
+        baseline=base_traj, candidate=cand_traj,
     )
 
 

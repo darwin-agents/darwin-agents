@@ -14,11 +14,97 @@ from darwin_dna.machinery.eval_harness import (
     BehaviorDelta,
     FrozenScenario,
     evaluate_mutation_candidate,
+    evaluate_strategy_candidate,
 )
+from darwin_dna.strategies import StrategyAction, StrategySpec
 
 
 def _delta(fc="flaky_io", after=2):
     return BehaviorDelta(kind="backoff", failure_class=fc, after_failures=after)
+
+
+def _strategy(kind, sid):
+    """A minimal real Strategy whose every proposal is ``kind``."""
+
+    class _S:
+        @property
+        def spec(self):
+            return StrategySpec(
+                id=sid, archetype="content.affiliate",
+                neurons_used=frozenset({"content.writer"}),
+                required_capabilities=frozenset(),
+                fitness_signals=["x"], est_daily_cost_usdc=0.1,
+                revenue_cadence_days=7.0,
+            )
+
+        def propose(self, obs):
+            return StrategyAction(
+                kind=kind, reason="r",
+                neuron="content.writer" if kind == "dispatch" else None,
+            )
+
+    return _S()
+
+
+# -- real candidate-strategy evaluation (doc 33) --------------------------
+def test_real_strategy_active_beats_idle_baseline():
+    sc = FrozenScenario.from_trigger("flaky", recurrence=3)
+    r = evaluate_strategy_candidate(
+        _strategy("wait", "idle"), _strategy("dispatch", "active"), sc,
+        validator_clean=True,
+    )
+    assert r.promote
+    assert r.candidate.score > r.baseline.score
+
+
+def test_real_strategy_inert_candidate_rejected():
+    sc = FrozenScenario.from_trigger("flaky", recurrence=3)
+    r = evaluate_strategy_candidate(
+        _strategy("dispatch", "active"), _strategy("wait", "idle"), sc,
+        validator_clean=True,
+    )
+    assert not r.promote
+    assert "inert" in r.reason
+
+
+def test_real_strategy_validator_dirty_rejected():
+    sc = FrozenScenario.from_trigger("flaky", recurrence=3)
+    r = evaluate_strategy_candidate(
+        _strategy("wait", "idle"), _strategy("dispatch", "active"), sc,
+        validator_clean=False,
+    )
+    assert not r.promote
+
+
+def test_real_strategy_crashing_candidate_rejected():
+    sc = FrozenScenario.from_trigger("flaky", recurrence=3)
+
+    class _Boom:
+        @property
+        def spec(self):
+            return _strategy("wait", "boom").spec
+
+        def propose(self, obs):
+            raise ValueError("boom")
+
+    r = evaluate_strategy_candidate(
+        _strategy("dispatch", "base"), _Boom(), sc, validator_clean=True,
+    )
+    assert not r.promote
+    assert "raised" in r.reason
+
+
+def test_real_strategy_eval_is_pure():
+    sc = FrozenScenario.from_trigger("flaky", recurrence=5)
+    a = evaluate_strategy_candidate(
+        _strategy("wait", "i"), _strategy("dispatch", "a"), sc,
+        validator_clean=True,
+    )
+    b = evaluate_strategy_candidate(
+        _strategy("wait", "i"), _strategy("dispatch", "a"), sc,
+        validator_clean=True,
+    )
+    assert a.model_dump() == b.model_dump()
 
 
 def test_real_improvement_promotes():
