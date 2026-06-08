@@ -315,6 +315,11 @@ class AmendmentRequest(BaseModel):
 
 
 # -- app factory ------------------------------------------------------------
+def _env_flag(name: str) -> bool:
+    """True when env var ``name`` is set to a truthy string (1/true/yes/on)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_app(
     supervisor: Supervisor | None = None,
     *,
@@ -323,6 +328,7 @@ def build_app(
     stripe_webhook_secret: str | None = None,
     allow_manual_credit: bool = False,
     require_spawn_consent: bool = False,
+    enable_docs: bool | None = None,
 ) -> FastAPI:
     """Build a FastAPI app bound to ``supervisor`` (or a fresh one).
 
@@ -357,11 +363,19 @@ def build_app(
         finally:
             await app_.state.supervisor.shutdown()
 
+    # Interactive API docs (Swagger UI / ReDoc / OpenAPI JSON) are off by
+    # default — this surface is meant to sit behind the platform edge/auth
+    # and should not be publicly reachable as-is. Opt in for local dev with
+    # ``DARWIN_ENABLE_DOCS=1``. ``enable_docs`` lets tests/callers force it.
+    docs_on = enable_docs if enable_docs is not None else _env_flag("DARWIN_ENABLE_DOCS")
     app = FastAPI(
         title="Darwin Supervisor",
         version="0.1.0",
         description="Platform control plane (docs/engineering/08), first pass.",
         lifespan=lifespan,
+        docs_url="/docs" if docs_on else None,
+        redoc_url="/redoc" if docs_on else None,
+        openapi_url="/openapi.json" if docs_on else None,
     )
     app.state.supervisor = sup
     app.state.token_store = token_store
