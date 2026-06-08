@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(devx): add --enable-docs flag and enable in local stacks
+- feat(platform): soma hot-swap, neuron overlay, and real-candidate staging
+- feat(dna): evaluate strategy candidates over frozen scenario tape
 - test(security): cover signed POST /webhooks/kyc integration path
 - feat(platform): disable OpenAPI docs by default
 - feat(security): verify Persona and Onfido KYC provider webhooks
@@ -97,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: update soma activation status and KYC webhook ingestion
 - docs: note exchange-custody holdings in threat model
 - docs: add pre-mainnet operator gates and real-cloud IaC verify script
 - docs: align tech stack and deployment docs with as-built choices
@@ -123,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): meter LanceDB embedding spend via per-Darwin virtual key
 - fix(terraform): use nonsensitive toset for sensitive for_each
 - fix(dna): thread owner data and grant_token on escalation approve
 - fix(platform): wire real LiteLLM transport in k8s orchestrator pods
