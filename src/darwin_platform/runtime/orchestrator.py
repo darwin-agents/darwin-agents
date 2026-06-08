@@ -174,6 +174,23 @@ def _apply_real_adapters(
         stack.sandbox = factories["sandbox_factory"](stack.wallet)
 
 
+def _load_pod_soma_strategy(platform, soma_root, darwin_id: str) -> None:
+    """Inject this Darwin's evolved soma strategy overlay (doc 33) onto the
+    platform so ``boot`` binds it instead of ``founding_strategy()``. No-op
+    without a soma root; the loader fails closed, so a bad/tampered soma simply
+    leaves the platform default."""
+    if soma_root is None:
+        return
+    try:
+        from ..evolution.soma_loader import SomaLoader
+
+        result = SomaLoader(Path(soma_root) / darwin_id).load_strategy()
+        if result.loaded and result.strategy is not None:
+            platform.strategy = result.strategy
+    except Exception:
+        return
+
+
 def _install_pod_soma_merge(runtime, soma_root, darwin_id: str, clock):
     """Pin a per-Darwin :class:`SomaMerger` on the genome's ctx so
     apply_mutation writes promoted patches to ``<soma_root>/<darwin_id>`` on
@@ -691,7 +708,13 @@ def main(argv: list[str] | None = None) -> int:
     _apply_real_adapters(stack, args, clock, darwin_id=args.darwin_id)
 
     from darwin_dna.evolution import boot
-    runtime = boot(stack.platform(), sleep=lambda _: None)
+    pod_platform = stack.platform()
+    # Soma activation (doc 33): inject this Darwin's evolved soma strategy on
+    # the platform BEFORE boot binds it, so a restarted/respawned pod RUNS its
+    # promoted self-modifications (the soma tree is PVC-persisted). No-op +
+    # fail-closed without a soma root.
+    _load_pod_soma_strategy(pod_platform, args.soma_root, args.darwin_id)
+    runtime = boot(pod_platform, sleep=lambda _: None)
 
     # Real soma merge (docs 03/21): when a soma root is configured, install a
     # per-Darwin SomaMerger on the genome's ctx so apply_mutation writes

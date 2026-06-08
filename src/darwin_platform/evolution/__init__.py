@@ -20,6 +20,11 @@ from .patch_staging import (
     StagingSandbox,
     StagingVerdict,
 )
+from .soma_loader import (
+    SomaLoader,
+    SomaLoadResult,
+    SomaValidationError,
+)
 from .soma_merge import (
     DiffApplyError,
     SomaForensicSnapshot,
@@ -34,8 +39,11 @@ __all__ = [
     "EvalRunner",
     "PatchStagingService",
     "SomaForensicSnapshot",
+    "SomaLoadResult",
+    "SomaLoader",
     "SomaMergeResult",
     "SomaMerger",
+    "SomaValidationError",
     "StagingQuota",
     "StagingSandbox",
     "StagingVerdict",

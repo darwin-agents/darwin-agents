@@ -58,6 +58,7 @@ from ..evolution.patch_staging import (
     StagingSandbox,
     StagingVerdict,
 )
+from ..evolution.soma_loader import SomaLoader
 from ..evolution.soma_merge import SomaMerger
 from ..infra.browser_cache import BrowserCacheService, CachedBrowserSubstrate
 from ..infra.throttle import (
@@ -1366,6 +1367,13 @@ class Supervisor:
             # trading neuron's recorded fills are then valued at live prices.
             if self._price_oracle is not None:
                 _platform.price_oracle = self._price_oracle
+            # Soma activation (doc 33): run this Darwin's evolved soma strategy
+            # if one has been promoted to disk, so self-modification actually
+            # changes behaviour. No-op without a soma root; fail-closed to the
+            # founding strategy.
+            _overlay_strategy = self._load_soma_strategy(darwin_id_now)
+            if _overlay_strategy is not None:
+                _platform.strategy = _overlay_strategy
             runtime = boot(
                 _platform, sleep=lambda _: None, hp=self._darwin_hp,
             )
@@ -1901,6 +1909,29 @@ class Supervisor:
         tests). None when no soma root is configured or the Darwin has not
         been spawned."""
         return self._soma_mergers.get(darwin_id)
+
+    def _load_soma_strategy(self, darwin_id: str):
+        """Load this Darwin's evolved soma strategy overlay (doc 33) so the
+        runtime RUNS its promoted self-modifications instead of only storing
+        them. Returns the overlay :class:`Strategy` or None (→ the runtime
+        keeps ``founding_strategy()``). No-op without a soma root; the loader
+        fails closed, so a bad/tampered soma yields None. Auditing only the
+        actual-load event keeps a fresh Darwin's boots quiet."""
+        if self._soma_root is None:
+            return None
+        try:
+            result = SomaLoader(self._soma_root / darwin_id).load_strategy()
+        except Exception:
+            return None
+        if result.loaded:
+            try:
+                self._audit.record(
+                    actor="supervisor", action="soma_loaded",
+                    darwin_id=darwin_id, metadata=result.to_json(),
+                )
+            except Exception:
+                pass
+        return result.strategy
 
     def _capture_death_forensics(self, handle: _Handle, *, reason: str) -> None:
         """Snapshot the dead Darwin's soma for post-mortem forensics (doc 05
@@ -6842,6 +6873,14 @@ class Supervisor:
                     child_platform.content_classifier = self._content_classifier
                 if self._price_oracle is not None:
                     child_platform.price_oracle = self._price_oracle
+                # Soma activation (doc 33), keyed on the CHILD's own id — a
+                # fresh child's soma tree is empty (doc 06: offspring do NOT
+                # inherit the parent's mutable soma), so this is a no-op at
+                # birth and only loads the child's OWN later self-mods after a
+                # restart.
+                _child_overlay = self._load_soma_strategy(child_id)
+                if _child_overlay is not None:
+                    child_platform.strategy = _child_overlay
                 child_runtime = boot(
                     child_platform, sleep=lambda _: None, hp=self._darwin_hp,
                 )

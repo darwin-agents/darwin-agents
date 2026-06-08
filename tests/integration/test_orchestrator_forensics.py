@@ -75,6 +75,53 @@ def test_forensics_includes_real_soma_when_merger_wired(vclock, tmp_path):
     assert f["layers"] and f["layer_digest"]
 
 
+_POD_STRATEGY = '''
+from ._base import StrategyAction, StrategySpec
+
+
+class EvolvedStrategy:
+    _spec = StrategySpec(
+        id="evolved_pod", archetype="content.affiliate",
+        neurons_used=frozenset(), required_capabilities=frozenset(),
+        fitness_signals=["x"], est_daily_cost_usdc=0.1,
+        revenue_cadence_days=7.0,
+    )
+
+    @property
+    def spec(self):
+        return self._spec
+
+    def propose(self, obs):
+        return StrategyAction(kind="wait", reason="evolved")
+
+
+def founding_strategy():
+    return EvolvedStrategy()
+'''
+
+
+def test_pod_loads_soma_strategy_before_boot(vclock, tmp_path):
+    """The pod activates its evolved soma (doc 33): _load_pod_soma_strategy
+    injects the overlay on the platform so boot binds it. No-op + fail-closed
+    without a soma root."""
+    from darwin_platform.runtime.orchestrator import _load_pod_soma_strategy
+
+    sdir = tmp_path / "pod-x" / "soma" / "strategies"
+    sdir.mkdir(parents=True)
+    (sdir / "content_affiliate.py").write_text(_POD_STRATEGY)
+
+    platform, _ = make_platform(opening_usdc=80.0, clock=vclock)
+    _load_pod_soma_strategy(platform, tmp_path, "pod-x")
+    assert getattr(platform, "strategy", None) is not None
+    rt = boot(platform, clock=vclock, sleep=vclock.sleep)
+    assert rt.strategy.spec.id == "evolved_pod"
+
+    # No soma root → no injection (founding stays).
+    p2, _ = make_platform(opening_usdc=80.0, clock=vclock)
+    _load_pod_soma_strategy(p2, None, "pod-x")
+    assert getattr(p2, "strategy", None) is None
+
+
 def test_forensics_marks_soma_absent_without_merger(vclock):
     # Back-compat: no merger → layer-fingerprint forensic, soma_present False.
     state = _state(vclock)

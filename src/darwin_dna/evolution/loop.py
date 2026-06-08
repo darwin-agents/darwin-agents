@@ -222,7 +222,18 @@ class DarwinRuntime:
             self.neuron_admission = NeuronAdmissionGate()
         else:
             self.neuron_admission = None
-        self.strategy = founding_strategy()
+        # The running strategy. Layer 0 ships exactly one prior
+        # (``founding_strategy``); a platform that has loaded this Darwin's
+        # evolved soma (doc 33) injects the validated overlay strategy via
+        # ``platform.strategy`` so self-modification actually changes
+        # behaviour. ``is None`` not ``or`` — same optional-substrate seam as
+        # holdings/price_oracle ([[optional-substrate-injection-is-not-or]]).
+        _injected_strategy = getattr(platform, "strategy", None)
+        self.strategy = (
+            _injected_strategy
+            if _injected_strategy is not None
+            else founding_strategy()
+        )
         self._anchored_day: str | None = None
 
         # Survive sandbox replacement (docs/engineering/03, 12): working

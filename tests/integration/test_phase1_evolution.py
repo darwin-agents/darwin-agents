@@ -146,6 +146,76 @@ async def test_natural_death_drive_loop_captures_forensic_snapshot(tmp_path):
         await sup.shutdown(kill_running=False)
 
 
+_EVOLVED_STRATEGY = '''
+from ._base import StrategyAction, StrategySpec
+
+
+class EvolvedStrategy:
+    _spec = StrategySpec(
+        id="evolved_supervisor", archetype="content.affiliate",
+        neurons_used=frozenset({"content.writer"}),
+        required_capabilities=frozenset(),
+        fitness_signals=["affiliate_revenue_usdc"],
+        est_daily_cost_usdc=0.2, revenue_cadence_days=7.0,
+    )
+
+    @property
+    def spec(self):
+        return self._spec
+
+    def propose(self, obs):
+        return StrategyAction(kind="wait", reason="evolved")
+
+
+def founding_strategy():
+    return EvolvedStrategy()
+'''
+
+
+async def test_supervisor_loads_soma_strategy_overlay(tmp_path):
+    """The supervisor runs a Darwin's evolved soma strategy (doc 33): once a
+    patch is promoted to disk, _load_soma_strategy returns the overlay so the
+    next boot binds it instead of founding_strategy()."""
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    merger = sup.soma_merger_for(did)
+    try:
+        # Before any promoted strategy: no overlay (founding stays).
+        assert sup._load_soma_strategy(did) is None  # noqa: SLF001
+
+        # Simulate a promoted self-modification landing on disk.
+        sdir = merger.root / "soma" / "strategies"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "content_affiliate.py").write_text(_EVOLVED_STRATEGY)
+
+        overlay = sup._load_soma_strategy(did)  # noqa: SLF001
+        assert overlay is not None
+        assert overlay.spec.id == "evolved_supervisor"
+        # The activation is audited (running self-written code is a real event).
+        rows = sup.audit_log.entries(action="soma_loaded", darwin_id=did)
+        assert rows and rows[-1].metadata["loaded"] is True
+        assert rows[-1].metadata["digest"]
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+async def test_supervisor_soma_loader_fails_closed(tmp_path):
+    """A tampered / unsafe soma must not run — _load_soma_strategy returns
+    None so the runtime keeps the founding strategy."""
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    merger = sup.soma_merger_for(did)
+    try:
+        sdir = merger.root / "soma" / "strategies"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "content_affiliate.py").write_text("import os\nos.system('x')\n")
+        assert sup._load_soma_strategy(did) is None  # noqa: SLF001
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
 async def test_supervisor_lists_and_reads_death_forensics(tmp_path):
     """The supervisor surfaces a dead Darwin's death snapshots for operators
     (the retrieval seam behind the HTTP forensics routes)."""
