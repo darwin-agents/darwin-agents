@@ -205,6 +205,137 @@ def test_virtual_keys_factory_accepts_darwin_id_and_key():
 
 
 # ---------------------------------------------------------------------------
+# Episodic-memory factory — metered embeddings (closes the bypass gap)
+# ---------------------------------------------------------------------------
+
+def test_episodic_factory_absent_without_flag():
+    factories = _build_real_factories(_serve_args())
+    assert "episodic_memory_factory" not in factories
+
+
+def test_episodic_factory_signature_accepts_wallet_and_key(tmp_path):
+    import inspect
+
+    factories = _build_real_factories(
+        _serve_args(
+            "--episodic-memory", "lancedb",
+            "--lancedb-path", str(tmp_path),
+            "--litellm-url", "http://litellm:4000",
+        )
+    )
+    assert "episodic_memory_factory" in factories
+    params = inspect.signature(factories["episodic_memory_factory"]).parameters
+    # The supervisor threads these in so embedding spend is metered + attributed.
+    assert "wallet" in params
+    assert "virtual_key" in params
+
+
+def test_episodic_embed_meters_wallet(tmp_path, monkeypatch):
+    """An embedding call debits the Darwin's wallet under `llm:embedding`
+    (at the marked-up rate), so episodic-memory spend is billed + reconciled
+    instead of silently incurred at the proxy."""
+    pytest.importorskip("lancedb")
+    import litellm
+
+    # Stub the proxy round-trip: a fixed vector + a known provider cost.
+    monkeypatch.setattr(
+        litellm, "embedding",
+        lambda **kw: {"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+    )
+    monkeypatch.setattr(
+        litellm, "completion_cost", lambda completion_response=None: 0.001,
+    )
+
+    debits: list[tuple[float, str]] = []
+
+    class _Wallet:
+        def debit(self, amount_usdc, memo):
+            debits.append((amount_usdc, memo))
+
+    factories = _build_real_factories(
+        _serve_args(
+            "--episodic-memory", "lancedb",
+            "--lancedb-path", str(tmp_path),
+            "--litellm-url", "http://litellm:4000",
+        )
+    )
+    mem = factories["episodic_memory_factory"](
+        "darwin-1", wallet=_Wallet(), virtual_key="sk-darwin-1",
+    )
+    mem.record(tick=1, signature="sig", neuron="n", outcome="ok")
+
+    assert len(debits) == 1
+    amount, memo = debits[0]
+    assert memo == "llm:embedding"
+    assert amount == pytest.approx(0.001 * 1.10)  # provider cost + 10% markup
+
+
+def test_episodic_embed_metering_is_best_effort(tmp_path, monkeypatch):
+    """A wallet refusal (out of funds / cap) must NOT break a memory write —
+    episodic record/recall are not wrapped by the genome."""
+    pytest.importorskip("lancedb")
+    import litellm
+
+    monkeypatch.setattr(
+        litellm, "embedding",
+        lambda **kw: {"data": [{"embedding": [0.4, 0.5, 0.6]}]},
+    )
+    monkeypatch.setattr(
+        litellm, "completion_cost", lambda completion_response=None: 0.001,
+    )
+
+    class _BrokeWallet:
+        def debit(self, amount_usdc, memo):
+            raise RuntimeError("insufficient funds")
+
+    factories = _build_real_factories(
+        _serve_args(
+            "--episodic-memory", "lancedb",
+            "--lancedb-path", str(tmp_path),
+            "--litellm-url", "http://litellm:4000",
+        )
+    )
+    mem = factories["episodic_memory_factory"](
+        "darwin-2", wallet=_BrokeWallet(), virtual_key="sk-darwin-2",
+    )
+    # Must not raise despite the wallet refusing the debit.
+    mem.record(tick=1, signature="sig", neuron="n", outcome="ok")
+    assert len(mem) == 1
+
+
+def test_invoke_episodic_memory_factory_is_signature_aware():
+    """The supervisor passes wallet/virtual_key only to factories that accept
+    them; a legacy darwin_id-only factory still works."""
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        seen: dict = {}
+
+        def metered(darwin_id, *, wallet=None, virtual_key=None):
+            seen.update(darwin_id=darwin_id, wallet=wallet, virtual_key=virtual_key)
+            return "metered-mem"
+
+        sup._episodic_memory_factory = metered  # noqa: SLF001
+        out = sup._invoke_episodic_memory_factory(  # noqa: SLF001
+            "d-1", "the-wallet", "vk-1",
+        )
+        assert out == "metered-mem"
+        assert seen == {
+            "darwin_id": "d-1", "wallet": "the-wallet", "virtual_key": "vk-1",
+        }
+
+        # Legacy factory: only darwin_id — no crash, no extra kwargs.
+        sup._episodic_memory_factory = lambda darwin_id: f"legacy:{darwin_id}"  # noqa: SLF001,E731
+        assert (
+            sup._invoke_episodic_memory_factory("d-2", "w", "vk")  # noqa: SLF001
+            == "legacy:d-2"
+        )
+    finally:
+        import asyncio
+
+        asyncio.run(sup.shutdown())
+
+
+# ---------------------------------------------------------------------------
 # Drive-loop maintenance cadence
 # ---------------------------------------------------------------------------
 

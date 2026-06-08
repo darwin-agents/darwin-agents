@@ -680,7 +680,10 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # factory is installed. Each Darwin gets its own LanceDB table at
     # <base>/<darwin_id> so lifetimes stay isolated on disk; embeddings
     # are produced via litellm.embedding (routed through the proxy when
-    # --litellm-url is set, direct otherwise).
+    # --litellm-url is set, direct otherwise), with the per-Darwin virtual
+    # key for proxy attribution and a best-effort wallet debit under
+    # `llm:embedding` so embedding spend is metered + reconciled like
+    # completions (not silently incurred at the proxy).
     episodic_choice = getattr(args, "episodic_memory", "deterministic")
     lancedb_path = getattr(args, "lancedb_path", None) or os.environ.get(
         "DARWIN_LANCEDB_PATH"
@@ -705,29 +708,68 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 "pip install 'darwin-dna[llm,lancedb]'"
             ) from exc
 
-        def _embed(
-            text: str,
+        embed_markup = float(
+            getattr(args, "litellm_markup_rate", None)
+            if getattr(args, "litellm_markup_rate", None) is not None
+            else 0.10
+        )
+
+        def _make_embed(
+            wallet=None,
+            virtual_key=None,
             *,
             _model=embed_model,
             _url=litellm_base,
             _key=litellm_key,
-        ) -> list[float]:
-            import litellm as _litellm
-            kwargs: dict[str, Any] = {"model": _model, "input": text}
-            if _url:
-                kwargs["api_base"] = _url.rstrip("/")
-            if _key:
-                kwargs["api_key"] = _key
-            resp = _litellm.embedding(**kwargs)
-            return list(resp["data"][0]["embedding"])
+            _markup=embed_markup,
+        ):
+            # Per-Darwin embedder. Routes through the proxy with the Darwin's
+            # virtual key (so the proxy attributes spend to it) and meters the
+            # cost onto the Darwin's wallet under the `llm:embedding` memo —
+            # closing the gap where embedding spend was incurred but never
+            # billed or reconciled. Metering is BEST-EFFORT: episodic
+            # record/recall are not wrapped by the genome, so a wallet refusal
+            # must never crash a memory write (embeddings are a sub-cent
+            # metered utility, not a gated payment).
+            api_key = virtual_key or _key
+
+            def _embed(text: str) -> list[float]:
+                import litellm as _litellm
+                kwargs: dict[str, Any] = {"model": _model, "input": text}
+                if _url:
+                    kwargs["api_base"] = _url.rstrip("/")
+                if api_key:
+                    kwargs["api_key"] = api_key
+                resp = _litellm.embedding(**kwargs)
+                if wallet is not None:
+                    try:
+                        cost = float(
+                            _litellm.completion_cost(completion_response=resp)
+                            or 0.0
+                        )
+                    except Exception:
+                        cost = 0.0
+                    if cost > 0.0:
+                        try:
+                            wallet.debit(cost * (1.0 + _markup), "llm:embedding")
+                        except Exception:
+                            # Out of funds / day cap: meter what we can, never
+                            # break the memory write.
+                            pass
+                return list(resp["data"][0]["embedding"])
+
+            return _embed
 
         def _lancedb_factory(
-            darwin_id: str, *, _base=lancedb_path, _embed=_embed,
+            darwin_id: str, *, wallet=None, virtual_key=None,
+            _base=lancedb_path,
         ):
             from .adapters.lancedb_memory import LanceDbEpisodicMemory
             db_path = os.path.join(_base, darwin_id)
             os.makedirs(db_path, exist_ok=True)
-            return LanceDbEpisodicMemory(embed=_embed, db_path=db_path)
+            return LanceDbEpisodicMemory(
+                embed=_make_embed(wallet, virtual_key), db_path=db_path,
+            )
 
         factories["episodic_memory_factory"] = _lancedb_factory
 

@@ -1274,6 +1274,10 @@ class Supervisor:
             # its own LiteLLM virtual key (scoped to its id + budget) instead
             # of sharing the platform master key — the docs-vs-impl audit's
             # CRITICAL shared-master-key finding.
+            # Defined here so the episodic-memory factory below can attribute
+            # embedding spend to the same per-Darwin virtual key even when no
+            # LLM factory is configured.
+            virtual_key: str | None = None
             if self._llm_factory is not None:
                 virtual_key = self._mint_llm_virtual_key(
                     darwin_id_now, stack.vault, actor,
@@ -1341,7 +1345,9 @@ class Supervisor:
             # deterministic in-process default. Per-Darwin so each life owns
             # its own table; the factory carries the per-Darwin key out.
             if self._episodic_memory_factory is not None:
-                stack.episodic_memory = self._episodic_memory_factory(darwin_id_now)
+                stack.episodic_memory = self._invoke_episodic_memory_factory(
+                    darwin_id_now, stack.wallet, virtual_key,
+                )
             # Sanctions screener (doc 17). Installed on every wallet so
             # outbound payments are OFAC-checked at the wallet layer
             # before any chain submit. The wallet's `set_sanctions_screener`
