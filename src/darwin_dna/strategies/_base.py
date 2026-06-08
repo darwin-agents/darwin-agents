@@ -37,6 +37,12 @@ class StrategyObservation(BaseModel):
     published_pieces: int = 0
     seconds_since_revenue: float = 0.0
     available_neurons: frozenset[str] = frozenset()
+    # Recurring-failure signal (doc 33): ``{failure_class: count}`` of the
+    # error classes that keep recurring. A strategy can read this to back off a
+    # path that keeps hitting a wall (propose ``capability_request`` / ``wait``
+    # instead of ``dispatch``) — and the eval harness exposes the SAME signal,
+    # so the real candidate's failure-avoidance is what gets measured.
+    recurring_failures: dict[str, int] = Field(default_factory=dict)
 
 
 ActionKind = Literal["dispatch", "capability_request", "wait"]

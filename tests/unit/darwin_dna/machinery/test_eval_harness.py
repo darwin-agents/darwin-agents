@@ -94,6 +94,48 @@ def test_real_strategy_crashing_candidate_rejected():
     assert "raised" in r.reason
 
 
+def test_real_strategy_eval_rewards_failure_avoidance():
+    """A candidate that reads ``recurring_failures`` and backs off a failing
+    path is measured as fitter than one that keeps hitting the wall (doc 33) —
+    the real-soma eval now captures failure-avoidance, not only metabolism."""
+
+    class _NeverBackoff:
+        @property
+        def spec(self):
+            return _strategy("dispatch", "never").spec
+
+        def propose(self, obs):
+            return StrategyAction(
+                kind="dispatch", reason="go", neuron="content.writer",
+            )
+
+    class _Backoff:
+        @property
+        def spec(self):
+            return _strategy("dispatch", "backoff").spec
+
+        def propose(self, obs):
+            if obs.recurring_failures.get("flaky", 0) >= 2:
+                return StrategyAction(
+                    kind="capability_request", reason="need a better tool",
+                    requested_capability="resilient.fetch",
+                )
+            return StrategyAction(
+                kind="dispatch", reason="go", neuron="content.writer",
+            )
+
+    sc = FrozenScenario(failure_class="flaky", tape=("fail",) * 10)
+    r = evaluate_strategy_candidate(
+        _NeverBackoff(), _Backoff(), sc, validator_clean=True,
+    )
+    assert r.promote
+    assert r.candidate.failures_incurred < r.baseline.failures_incurred
+    # The reverse — a never-backoff candidate vs a backoff baseline — loses.
+    assert not evaluate_strategy_candidate(
+        _Backoff(), _NeverBackoff(), sc, validator_clean=True,
+    ).promote
+
+
 def test_real_strategy_eval_is_pure():
     sc = FrozenScenario.from_trigger("flaky", recurrence=5)
     a = evaluate_strategy_candidate(

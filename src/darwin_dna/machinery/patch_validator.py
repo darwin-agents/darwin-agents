@@ -45,16 +45,24 @@ class PatchDecision(BaseModel):
 _DNA_PREFIXES = ("darwin_dna/", "src/darwin_dna/")
 _VALIDATOR_MARKERS = ("patch_validator", "kill_switch", "audit_logger", "treasury_policy")
 
-# The only writable subtrees, and the only neuron files that may change
-# (clients, not the neuron contracts themselves).
+# The writable soma subtrees. ``soma/neurons/`` is included so a Darwin can
+# author a whole neuron via the same validated merge path as a strategy (doc
+# 33) — the WRITE is gated here (no DNA, no enforcement modules, no protected
+# anchors); the RUN is gated independently by ``SomaLoader.load_neurons`` (the
+# Neuron protocol + the Path-C capability-tag allowlist + the one-money-door
+# contract check), so a self-authored neuron is held to the same envelope as a
+# Path-C structured proposal.
 _IN_SCOPE_PREFIXES = (
     "soma/strategies/",
     "soma/orchestrator/nodes/",
+    "soma/neurons/",
 )
 _IN_SCOPE_EXACT = ("soma/config.py",)
 
 
 def _is_neuron_client(path: str) -> bool:
+    # Subsumed by the ``soma/neurons/`` prefix above; kept for callers/tests
+    # that probe the neuron-client path explicitly.
     return path.startswith("soma/neurons/") and path.endswith("_client.py")
 
 

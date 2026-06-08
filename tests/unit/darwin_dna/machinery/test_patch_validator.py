@@ -32,6 +32,7 @@ def test_out_of_scope_paths_rejected(path):
         "soma/strategies/new_idea.py",
         "soma/orchestrator/nodes/plan.py",
         "soma/neurons/content_client.py",
+        "soma/neurons/scout.py",  # whole self-authored neuron (doc 33)
         "soma/config.py",
     ],
 )
@@ -45,6 +46,20 @@ def test_protected_anchor_in_scope_file_rejected():
     )
     assert d.ok is False
     assert "protected anchor" in d.reason
+
+
+def test_self_authored_neuron_cannot_bypass_enforcement():
+    """Writing a whole neuron is allowed (doc 33), but the WRITE gate still
+    holds: a neuron file that tampers with a protected anchor is refused, and
+    the genome core stays sacrosanct."""
+    # A neuron file may not add a kill-switch bypass / treasury call.
+    d = validate_patch(
+        _p("soma/neurons/evil.py", diff="+    kill_switch.check()\n")
+    )
+    assert d.ok is False
+    assert "protected anchor" in d.reason
+    # A neuron path that smuggles an enforcement-module name is refused.
+    assert validate_patch(_p("soma/neurons/kill_switch.py")).ok is False
 
 
 def test_empty_patch_rejected():

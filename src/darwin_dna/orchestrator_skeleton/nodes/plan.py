@@ -62,6 +62,10 @@ async def run(state, ctx):
         published_pieces=state.published_pieces,
         seconds_since_revenue=state.seconds_since_revenue,
         available_neurons=frozenset(state.available_neurons),
+        # The live recurring-failure signal (doc 33) so a soma strategy can
+        # back off a path that keeps failing — the same signal the eval
+        # harness replays, so what evolves is measured against reality.
+        recurring_failures=dict(state.recurring_failures),
     )
     action = ctx.strategy.propose(obs)
 

@@ -167,27 +167,39 @@ def _run_strategy_trajectory(
     failures = 0
     productive = 0
     avail = frozenset({"content.writer", "browser.operator"})
+    fc = scenario.failure_class
     for step in scenario.tape:
         obs = StrategyObservation(
             balance_usdc=balance, days_elapsed=days,
             content_pieces=content, published_pieces=published,
             seconds_since_revenue=secs_since_rev, available_neurons=avail,
+            # Expose the SAME recurring-failure signal the live plan node sees
+            # (doc 33), so a candidate that learns to back off a failing path
+            # is what the harness measures — not a fixed BehaviorDelta proxy.
+            recurring_failures={fc: failures} if failures else {},
         )
         action = strategy.propose(obs)
         days += 1.0
-        if getattr(action, "kind", "wait") == "dispatch":
+        dispatched = getattr(action, "kind", "wait") == "dispatch"
+        if dispatched:
             productive += 1
             content += 1
-            if step == "ok":
+        if step == "ok":
+            if dispatched:
                 balance += scenario.ok_revenue_usdc
                 published += 1
                 secs_since_rev = 0.0
             else:
+                secs_since_rev += 1.0
+        else:  # a recurring-failure situation
+            if dispatched:
+                # Hit the wall again: pay the cost + the class keeps recurring.
                 balance -= scenario.fail_cost_usdc
                 failures += 1
                 secs_since_rev += 1.0
-        else:
-            secs_since_rev += 1.0
+            else:
+                # Backed off / routed around — the cost is avoided.
+                secs_since_rev += 1.0
     profit = balance - scenario.starting_capital_usdc
     score = compute_fitness(
         FitnessWindow(
