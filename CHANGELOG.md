@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): disable OpenAPI docs by default
+- feat(security): verify Persona and Onfido KYC provider webhooks
+- feat(platform): activate evolved soma strategies at boot via SomaLoader
 - feat(web): add organism tab, tax summary, and forensics viewer pages
 - feat(platform): add capabilities endpoint and organism data browser API
 - feat(platform): wire k8s soma PVC and live soma in pod forensics
