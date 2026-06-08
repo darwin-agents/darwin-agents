@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(dna): measure strategy failure-avoidance and allow soma neuron patches
 - feat(devx): add --enable-docs flag and enable in local stacks
 - feat(platform): soma hot-swap, neuron overlay, and real-candidate staging
 - feat(dna): evaluate strategy candidates over frozen scenario tape
@@ -100,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: mark soma activation open questions as done in design doc
 - docs: update soma activation status and KYC webhook ingestion
 - docs: note exchange-custody holdings in threat model
 - docs: add pre-mainnet operator gates and real-cloud IaC verify script
