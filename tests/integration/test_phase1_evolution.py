@@ -200,6 +200,90 @@ async def test_supervisor_loads_soma_strategy_overlay(tmp_path):
         await sup.shutdown(kill_running=True)
 
 
+async def test_supervisor_hot_reloads_soma_on_landed_patch(tmp_path):
+    """When a soma patch lands mid-life, the drive loop hot-swaps the running
+    strategy at the quiescent boundary (doc 33) — the rewrite takes effect this
+    life, not only at next boot."""
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    handle = sup._darwins[did]  # noqa: SLF001
+    runtime = handle.runtime
+    try:
+        # Booted on the founding strategy.
+        assert runtime.strategy.spec.id != "evolved_supervisor"
+
+        # A patch lands on disk + the genome raises the reload signal.
+        sdir = sup.soma_merger_for(did).root / "soma" / "strategies"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "content_affiliate.py").write_text(_EVOLVED_STRATEGY)
+        runtime.state.soma_reload_pending = True
+
+        sup._maybe_hot_reload_soma(handle)  # noqa: SLF001
+
+        # The running strategy is swapped — in the runtime AND the live graph
+        # context the nodes read each tick.
+        assert runtime.strategy.spec.id == "evolved_supervisor"
+        assert runtime._ctx.strategy.spec.id == "evolved_supervisor"  # noqa: SLF001
+        assert sup.audit_log.entries(action="soma_loaded", darwin_id=did)
+        # Idempotent: the one-shot signal is consumed; no re-swap without a
+        # new landed patch.
+        sup._maybe_hot_reload_soma(handle)  # noqa: SLF001 — flag cleared, no-op
+        assert runtime.strategy.spec.id == "evolved_supervisor"
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
+_SOMA_NEURON = '''
+from ._base import BaseNeuron, CostEstimate, FailureMode, NeuronResult, Plan
+
+
+class LearnedSummarizer(BaseNeuron):
+    name = "learned.summarizer"
+    version = "1.0.0"
+    capability_tags = frozenset({"content.summarize"})
+    cost_estimate = CostEstimate(
+        usd_p50=0.01, usd_p95=0.05, latency_p50_ms=10, latency_p95_ms=50,
+        escalation_probability=0.0,
+    )
+    failure_modes = [
+        FailureMode(code="e", description="d", escalation_hint="h"),
+    ]
+
+    async def plan(self, task, context):
+        return Plan(steps=["s"], est_cost=self.cost_estimate)
+
+    async def execute(self, plan, context):
+        return NeuronResult(ok=True)
+'''
+
+
+async def test_supervisor_hot_merges_soma_neuron(tmp_path):
+    """A soma-authored neuron lands → the drive loop merges it into the LIVE
+    catalog (self + ctx) so dispatch can route to it this life (doc 33)."""
+    sup = Supervisor(heartbeat_seconds=0.001, soma_root=tmp_path)
+    status = await sup.spawn(opening_usdc=1000.0, actor="test")
+    did = status.darwin_id
+    handle = sup._darwins[did]  # noqa: SLF001
+    runtime = handle.runtime
+    try:
+        assert "learned.summarizer" not in runtime.catalog
+        ndir = sup.soma_merger_for(did).root / "soma" / "neurons"
+        ndir.mkdir(parents=True, exist_ok=True)
+        (ndir / "summarizer.py").write_text(_SOMA_NEURON)
+        runtime.state.soma_reload_pending = True
+
+        sup._maybe_hot_reload_soma(handle)  # noqa: SLF001
+
+        assert "learned.summarizer" in runtime.catalog
+        assert "learned.summarizer" in runtime._ctx.catalog  # noqa: SLF001
+        assert sup.audit_log.entries(
+            action="soma_neurons_loaded", darwin_id=did,
+        )
+    finally:
+        await sup.shutdown(kill_running=True)
+
+
 async def test_supervisor_soma_loader_fails_closed(tmp_path):
     """A tampered / unsafe soma must not run — _load_soma_strategy returns
     None so the runtime keeps the founding strategy."""

@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from darwin_dna.machinery.neuron_proposal import PATH_C_ALLOWED_TAGS
+from darwin_dna.neurons import Neuron
 from darwin_dna.strategies import Strategy
 
 # Absolute imports a soma strategy may use — the strategy is a small,
@@ -162,6 +164,35 @@ class SomaLoader:
         return SomaLoadResult(None, False, None, "", last_reason)
 
     # -- helpers -----------------------------------------------------------
+    def load_neurons(self) -> list[Neuron]:
+        """Load validated soma-authored neurons from ``soma/neurons/*.py``.
+
+        Each neuron must (a) pass the same path-sandbox + AST guard as a
+        strategy, (b) structurally satisfy the :class:`Neuron` protocol, and
+        (c) declare ``capability_tags`` that are a SUBSET of the Path-C
+        allowlist — so a file-authored neuron is held to the same envelope as a
+        Path-C structured proposal (never ``treasury.write``: the one-money-door
+        invariant is preserved, and the runtime's ``load_catalog`` contract
+        check re-asserts it when the overlay is merged). Returns the valid
+        neurons (possibly empty); a bad file is skipped, never fatal.
+
+        NOTE: the patch validator does NOT yet permit a Darwin to *write*
+        ``soma/neurons/*.py`` (only Path-C structured proposals author neurons);
+        this is the read side, ready for operator-placed or future-bridged
+        neuron files."""
+        out: list[Neuron] = []
+        ndir = self._root / "soma" / "neurons"
+        if not ndir.is_dir():
+            return out
+        for path in sorted(ndir.glob("*.py")):
+            if path.name.startswith("_") or path.name.endswith("_client.py"):
+                continue  # private helpers / neuron clients are not neurons
+            try:
+                out.extend(self._load_neurons_one(path))
+            except Exception:  # noqa: BLE001 — fail closed, skip this file
+                continue
+        return out
+
     def _load_one(self, path: Path) -> tuple[Strategy | None, str]:
         abspath = path.resolve()
         if not self._within_root(abspath):
@@ -170,8 +201,42 @@ class SomaLoader:
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
         tree = ast.parse(source, filename=str(abspath))
         _validate_ast(tree, path=path.name)
-        module = self._import_module(abspath, path.stem, digest)
+        module = self._import_module(
+            abspath, path.stem, digest, package="darwin_dna.strategies",
+        )
         return self._extract_strategy(module), digest
+
+    def _load_neurons_one(self, path: Path) -> list[Neuron]:
+        abspath = path.resolve()
+        if not self._within_root(abspath):
+            raise SomaValidationError(f"{path}: escapes the soma sandbox")
+        source = abspath.read_text()
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        tree = ast.parse(source, filename=str(abspath))
+        _validate_ast(tree, path=path.name)
+        module = self._import_module(
+            abspath, path.stem, digest, package="darwin_dna.neurons",
+        )
+        found: list[Neuron] = []
+        for name, val in vars(module).items():
+            if name.startswith("_") or not isinstance(val, type):
+                continue
+            try:
+                inst = val()
+            except Exception:  # noqa: BLE001 — not a no-arg neuron class
+                continue
+            if not isinstance(inst, Neuron):
+                continue
+            tags = frozenset(getattr(inst, "capability_tags", frozenset()))
+            if not tags or not tags <= PATH_C_ALLOWED_TAGS:
+                # Empty or beyond the Path-C envelope (e.g. treasury.write) —
+                # refuse the whole file, fail closed.
+                raise SomaValidationError(
+                    f"{path.name}: neuron {name!r} declares tags outside the "
+                    f"Path-C allowlist: {sorted(tags - PATH_C_ALLOWED_TAGS)}"
+                )
+            found.append(inst)
+        return found
 
     def _within_root(self, abspath: Path) -> bool:
         root = str(self._root)
@@ -179,15 +244,17 @@ class SomaLoader:
         import os
         return target == root or target.startswith(root + os.sep)
 
-    def _import_module(self, abspath: Path, stem: str, digest: str):
-        # Name it a submodule of darwin_dna.strategies so the soma file's
+    def _import_module(
+        self, abspath: Path, stem: str, digest: str, *, package: str,
+    ):
+        # Name it a submodule of the genome ``package`` so the soma file's
         # relative imports (``._base`` / ``..neurons``) resolve, but with a
         # per-(root,file) suffix so two Darwins never collide or shadow the
         # real package module.
         tag = hashlib.sha256(
             (str(self._root) + digest).encode("utf-8")
         ).hexdigest()[:12]
-        mod_name = f"darwin_dna.strategies._soma_{tag}_{stem}"
+        mod_name = f"{package}._soma_{tag}_{stem}"
         spec = importlib.util.spec_from_file_location(mod_name, str(abspath))
         if spec is None or spec.loader is None:
             raise SomaValidationError(f"{abspath}: cannot build import spec")

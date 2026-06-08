@@ -205,6 +205,20 @@ class DarwinRuntime:
         self.catalog = build_catalog(
             wallet=platform.wallet, provision=platform.provision
         )
+        # Soma-authored neuron overlay (doc 33): a platform that loaded this
+        # Darwin's validated soma neurons injects them via
+        # ``platform.neuron_overlay`` so the catalog runs its self-authored
+        # neurons. The contract check (one-money-door etc.) re-runs here; a
+        # violation fails CLOSED to the founding catalog.
+        _overlay_neurons = getattr(platform, "neuron_overlay", None)
+        if _overlay_neurons:
+            try:
+                from ..machinery.neuron_loader import load_catalog
+                self.catalog = load_catalog(
+                    list(self.catalog.values()) + list(_overlay_neurons)
+                )
+            except Exception:
+                pass
         # Path-C admission gate (doc 04 phase 3). The orchestrator's
         # ``propose_mutation`` can emit a NeuronProposal; the
         # ``apply_mutation`` node calls ``gate.submit + gate.admit``
@@ -513,6 +527,59 @@ class DarwinRuntime:
         self.audit.log_event(
             "neuron_proposal.admitted",
             {"name": name, "tags": sorted(neuron.capability_tags)},
+        )
+
+    def consume_soma_reload(self) -> bool:
+        """Return + clear the "a soma patch just landed" signal. The platform's
+        drive loop calls this each heartbeat; a True return means it should
+        reload the soma and rebind via :meth:`rebind_strategy` (doc 33). Only
+        the genome (apply_mutation) ever SETS the flag; only the platform
+        clears it here — so a missed reload is retried next tick."""
+        if not self.state.soma_reload_pending:
+            return False
+        self.state.soma_reload_pending = False
+        return True
+
+    def merge_neurons(self, neurons) -> list[str]:
+        """Merge soma-authored neurons (doc 33) into the LIVE catalog mid-life,
+        updating both ``self.catalog`` and ``self._ctx.catalog`` so the running
+        graph's dispatch can route to them (the nodes read ``ctx.catalog``
+        each tick). Re-runs the catalog contract check (one-money-door, name
+        collisions) — RAISES on violation, so the platform caller fails closed
+        and keeps the prior catalog. Returns the merged neuron names."""
+        if not neurons:
+            return []
+        # Idempotent: only merge neurons not already in the catalog, so a
+        # hot-reload that re-sees the same overlay is a no-op (re-adding a name
+        # would trip load_catalog's collision check).
+        new = [
+            n for n in neurons
+            if getattr(n, "name", None) not in self.catalog
+        ]
+        if not new:
+            return []
+        from ..machinery.neuron_loader import load_catalog
+        merged = load_catalog(list(self.catalog.values()) + new)
+        self.catalog = merged
+        self._ctx.catalog = merged
+        names = [getattr(n, "name", "?") for n in new]
+        self.audit.log_event("soma.neurons_merged", {"names": names})
+        return names
+
+    def rebind_strategy(self, strategy) -> None:
+        """Hot-swap the running strategy mid-life (doc 33). The graph nodes
+        read ``ctx.strategy`` live each tick, so updating the context is what
+        actually takes effect — ``self.strategy`` is kept in sync for
+        introspection. The platform calls this at a quiescent boundary (between
+        heartbeats) after the SomaLoader produced a validated overlay; a None
+        load result must NOT reach here (keep the prior strategy)."""
+        if strategy is None:
+            return
+        self.strategy = strategy
+        self._ctx.strategy = strategy
+        self.audit.log_event(
+            "soma.strategy_hot_swapped",
+            {"strategy_id": getattr(getattr(strategy, "spec", None), "id", "?")},
         )
 
     def install_amendment(self, blob: bytes, name: str) -> None:

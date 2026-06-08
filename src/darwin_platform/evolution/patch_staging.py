@@ -48,6 +48,15 @@ from darwin_dna.machinery.eval_harness import (
 from darwin_dna.machinery.patch_validator import Patch, validate_patch
 
 
+def _targets_strategy(patch: Patch) -> bool:
+    """True when any change in the patch rewrites a soma strategy file — the
+    signal to run the real candidate strategy rather than the proxy (doc 33)."""
+    return any(
+        getattr(c, "path", "").startswith("soma/strategies/")
+        for c in patch.changes
+    )
+
+
 @runtime_checkable
 class StagingSandbox(Protocol):
     """The minimal sandbox surface :class:`PatchStagingService` needs.
@@ -170,6 +179,7 @@ class PatchStagingService:
         hp: Hyperparameters = DEFAULT_HYPERPARAMETERS,
         evaluation_timeout_s: float = 30.0,
         history_cap: int = 256,
+        soma_root: str | None = None,
     ) -> None:
         self._sandbox_factory = sandbox_factory
         self._clock = clock
@@ -178,6 +188,11 @@ class PatchStagingService:
         self._timeout = float(evaluation_timeout_s)
         self._history_cap = max(1, int(history_cap))
         self._history: list[StagingVerdict] = []
+        # When configured (doc 33), a patch that targets a strategy file is
+        # evaluated by RUNNING the real candidate strategy (apply to a temp
+        # soma → SomaLoader → score) instead of only the BehaviorDelta proxy.
+        from pathlib import Path as _Path
+        self._soma_root = _Path(soma_root) if soma_root is not None else None
 
     # -- public entry point ------------------------------------------------
     def stage_and_evaluate(
@@ -212,6 +227,18 @@ class PatchStagingService:
             recurrence=recurrence,
             recent_audit=recent_audit or [],
         )
+
+        # Real-soma evaluation (doc 33): when a soma root is configured and the
+        # patch rewrites a strategy, RUN the real candidate strategy rather than
+        # only the BehaviorDelta proxy. Falls through to the proxy path when not
+        # applicable or if the candidate can't be built (best-effort, additive).
+        if self._soma_root is not None and _targets_strategy(patch):
+            verdict = self._evaluate_real_soma_strategy(
+                darwin_id=darwin_id, patch=patch, scenario=scenario,
+                failure_class=failure_class,
+            )
+            if verdict is not None:
+                return self._record(verdict)
 
         if self._sandbox_factory is None:
             return self._record(self._evaluate_in_process(
@@ -356,6 +383,97 @@ class PatchStagingService:
             failure_class=delta.failure_class,
             ran_in_sandbox=False,
         )
+
+    # -- real-soma strategy evaluation (doc 33) ----------------------------
+    def _evaluate_real_soma_strategy(
+        self,
+        *,
+        darwin_id: str,
+        patch: Patch,
+        scenario: FrozenScenario,
+        failure_class: str,
+    ) -> StagingVerdict | None:
+        """Apply the candidate patch to a temp soma, load baseline + candidate
+        strategies, and score them by actually RUNNING ``.propose()`` over the
+        scenario (the in-DNA :func:`evaluate_strategy_candidate`). Returns a
+        verdict, or ``None`` to fall through to the BehaviorDelta proxy when the
+        candidate can't be built (a hunk that won't apply, a soma that won't
+        load) — additive, never fatal."""
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from darwin_dna.machinery.eval_harness import (
+            evaluate_strategy_candidate,
+        )
+        from darwin_dna.strategies import founding_strategy
+
+        from .soma_loader import SomaLoader
+        from .soma_merge import SomaMerger
+
+        live_root = self._soma_root / darwin_id
+        tmp = Path(tempfile.mkdtemp(prefix="soma-eval-"))
+        try:
+            # Seed the temp soma's base strategy files so the candidate hunk
+            # applies: prefer the Darwin's live soma; else the shipped founding
+            # source; else leave absent (a new-file diff).
+            for change in patch.changes:
+                rel = change.path
+                if not rel.startswith("soma/strategies/"):
+                    continue
+                dst = tmp / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                live = live_root / rel
+                if live.is_file():
+                    shutil.copyfile(live, dst)
+                else:
+                    pkg = self._package_strategy_source(Path(rel).name)
+                    if pkg is not None:
+                        dst.write_text(pkg)
+            # Apply the candidate patch onto the temp copy.
+            merge = SomaMerger(tmp, clock=self._clock).merge(patch)
+            if not merge.merged:
+                return None  # hunk didn't apply → fall through to the proxy
+            candidate = SomaLoader(tmp).load_strategy().strategy
+            if candidate is None:
+                return None
+            # Baseline = the live soma overlay if there is one, else founding.
+            baseline = SomaLoader(live_root).load_strategy().strategy
+            if baseline is None:
+                baseline = founding_strategy()
+            result = evaluate_strategy_candidate(
+                baseline, candidate, scenario,
+                hp=self._hp, validator_clean=True,
+            )
+            return StagingVerdict(
+                promote=result.promote, reason=result.reason,
+                baseline_score=result.baseline.score,
+                candidate_score=result.candidate.score,
+                sandbox_cost_usdc=0.0,
+                sandbox_session_id=f"real-soma-{darwin_id}",
+                failure_class=failure_class,
+                ran_in_sandbox=False,
+            )
+        except Exception:  # noqa: BLE001 — additive gate, never fatal
+            return None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @staticmethod
+    def _package_strategy_source(filename: str) -> str | None:
+        """The shipped founding source for ``soma/strategies/<filename>`` — the
+        diff base when a Darwin first rewrites a strategy it hasn't yet
+        modified. None when no such founding strategy file exists."""
+        from pathlib import Path
+
+        import darwin_dna.strategies as _strat
+
+        pkg_dir = Path(_strat.__file__).parent
+        src = pkg_dir / filename
+        try:
+            return src.read_text() if src.is_file() else None
+        except OSError:
+            return None
 
     # -- scenario builder --------------------------------------------------
     def _scenario_from_audit(

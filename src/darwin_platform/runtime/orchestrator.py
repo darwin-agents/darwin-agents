@@ -175,18 +175,22 @@ def _apply_real_adapters(
 
 
 def _load_pod_soma_strategy(platform, soma_root, darwin_id: str) -> None:
-    """Inject this Darwin's evolved soma strategy overlay (doc 33) onto the
-    platform so ``boot`` binds it instead of ``founding_strategy()``. No-op
-    without a soma root; the loader fails closed, so a bad/tampered soma simply
-    leaves the platform default."""
+    """Inject this Darwin's evolved soma strategy + neuron overlay (doc 33)
+    onto the platform so ``boot`` binds them instead of the founding defaults.
+    No-op without a soma root; the loader fails closed, so a bad/tampered soma
+    simply leaves the platform defaults."""
     if soma_root is None:
         return
     try:
         from ..evolution.soma_loader import SomaLoader
 
-        result = SomaLoader(Path(soma_root) / darwin_id).load_strategy()
+        loader = SomaLoader(Path(soma_root) / darwin_id)
+        result = loader.load_strategy()
         if result.loaded and result.strategy is not None:
             platform.strategy = result.strategy
+        neurons = loader.load_neurons()
+        if neurons:
+            platform.neuron_overlay = neurons
     except Exception:
         return
 
@@ -301,6 +305,9 @@ class OrchestratorState:
                     self.runtime.state.force_reproduce = True
                     self._reproduce_requested = False
                 await self.runtime.run(max_heartbeats=1)
+                # Hot-swap the strategy if a soma patch landed this tick (doc
+                # 33) — the pod's quiescent boundary, same as the supervisor.
+                self._maybe_hot_reload_soma()
                 if not self.runtime.state.alive:
                     break
                 await asyncio.sleep(self._heartbeat)
@@ -316,6 +323,34 @@ class OrchestratorState:
                 except Exception:
                     pass
             raise
+
+    def _maybe_hot_reload_soma(self) -> None:
+        """Hot-swap the strategy mid-life when a soma patch landed this tick
+        (doc 33). Consumes the genome's reload signal; reloads via SomaLoader
+        rooted at the merger's soma root; rebinds only on a valid load.
+        Best-effort + never raises."""
+        try:
+            if not self.runtime.consume_soma_reload():
+                return
+        except Exception:
+            return
+        if self._soma_merger is None:
+            return
+        try:
+            from ..evolution.soma_loader import SomaLoader
+
+            loader = SomaLoader(self._soma_merger.root)
+            result = loader.load_strategy()
+            if result.loaded and result.strategy is not None:
+                self.runtime.rebind_strategy(result.strategy)
+            neurons = loader.load_neurons()
+            if neurons:
+                try:
+                    self.runtime.merge_neurons(neurons)
+                except Exception:
+                    pass  # contract violation → keep prior catalog
+        except Exception:
+            return
 
     # -- control verbs --------------------------------------------------
     def snapshot(self) -> dict[str, Any]:

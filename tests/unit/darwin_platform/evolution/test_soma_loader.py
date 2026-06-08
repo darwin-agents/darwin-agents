@@ -130,3 +130,71 @@ def test_no_overlay_when_no_strategy_object(tmp_path):
     res = SomaLoader(tmp_path).load_strategy()
     assert res.loaded is False
     assert res.strategy is None
+
+
+# -- soma-authored neurons (doc 33) ---------------------------------------
+_VALID_NEURON = '''
+from ._base import (
+    BaseNeuron, CostEstimate, FailureMode, NeuronResult, Plan,
+)
+
+
+class LearnedSummarizer(BaseNeuron):
+    name = "learned.summarizer"
+    version = "1.0.0"
+    capability_tags = frozenset({"content.summarize"})
+    cost_estimate = CostEstimate(
+        usd_p50=0.01, usd_p95=0.05, latency_p50_ms=10, latency_p95_ms=50,
+        escalation_probability=0.0,
+    )
+    failure_modes = [
+        FailureMode(code="empty_input", description="no text",
+                    escalation_hint="ask owner for input"),
+    ]
+
+    async def plan(self, task, context):
+        return Plan(steps=["summarize"], est_cost=self.cost_estimate)
+
+    async def execute(self, plan, context):
+        return NeuronResult(ok=True, output={"summary": "ok"})
+'''
+
+
+def _seed_neuron(root, name, body):
+    d = root / "soma" / "neurons"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(body)
+
+
+def test_loads_valid_soma_neuron(tmp_path):
+    _seed_neuron(tmp_path, "summarizer.py", _VALID_NEURON)
+    neurons = SomaLoader(tmp_path).load_neurons()
+    assert len(neurons) == 1
+    assert neurons[0].name == "learned.summarizer"
+    assert neurons[0].capability_tags == frozenset({"content.summarize"})
+
+
+def test_no_neurons_without_neurons_dir(tmp_path):
+    assert SomaLoader(tmp_path).load_neurons() == []
+
+
+def test_rejects_neuron_with_tag_outside_path_c_allowlist(tmp_path):
+    # treasury.write (or any non-allowlisted tag) is refused — the
+    # one-money-door invariant must not be breachable via a soma neuron file.
+    body = _VALID_NEURON.replace(
+        'frozenset({"content.summarize"})',
+        'frozenset({"treasury.write"})',
+    )
+    _seed_neuron(tmp_path, "summarizer.py", body)
+    assert SomaLoader(tmp_path).load_neurons() == []
+
+
+def test_neuron_ast_guard_rejects_dangerous_import(tmp_path):
+    _seed_neuron(tmp_path, "evil.py", "import socket\n")
+    assert SomaLoader(tmp_path).load_neurons() == []
+
+
+def test_skips_neuron_client_files(tmp_path):
+    # *_client.py are neuron CLIENTS, not neurons — never loaded as neurons.
+    _seed_neuron(tmp_path, "http_client.py", _VALID_NEURON)
+    assert SomaLoader(tmp_path).load_neurons() == []

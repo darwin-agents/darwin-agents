@@ -77,6 +77,86 @@ def test_dna_patch_is_rejected_before_sandbox():
 # In-process fallback
 # ---------------------------------------------------------------------------
 
+_BASELINE_STRATEGY = (
+    "from ._base import StrategyAction, StrategySpec\n"
+    "\n"
+    "\n"
+    "class S:\n"
+    "    _spec = StrategySpec(\n"
+    '        id="base", archetype="content.affiliate",\n'
+    '        neurons_used=frozenset({"content.writer"}),\n'
+    "        required_capabilities=frozenset(),\n"
+    '        fitness_signals=["x"], est_daily_cost_usdc=0.1,\n'
+    "        revenue_cadence_days=7.0,\n"
+    "    )\n"
+    "\n"
+    "    @property\n"
+    "    def spec(self):\n"
+    "        return self._spec\n"
+    "\n"
+    "    def propose(self, obs):\n"
+    '        return StrategyAction(kind="wait", reason="idle")\n'
+    "\n"
+    "\n"
+    "def founding_strategy():\n"
+    "    return S()\n"
+)
+
+# Flip the idle baseline into an active (metabolising) candidate.
+_STRATEGY_DIFF = (
+    "--- a/soma/strategies/content_affiliate.py\n"
+    "+++ b/soma/strategies/content_affiliate.py\n"
+    "@@ -18,1 +18,1 @@\n"
+    '-        return StrategyAction(kind="wait", reason="idle")\n'
+    '+        return StrategyAction(kind="dispatch", reason="go", '
+    'neuron="content.writer")\n'
+)
+
+
+def test_real_soma_strategy_eval_runs_the_candidate(tmp_path):
+    """With a soma root, a strategy-rewriting patch is scored by RUNNING the
+    real candidate (doc 33) — an active rewrite of an idle baseline promotes,
+    and the verdict is stamped from the real-soma path, not the proxy."""
+    live = tmp_path / "d-soma" / "soma" / "strategies"
+    live.mkdir(parents=True)
+    (live / "content_affiliate.py").write_text(_BASELINE_STRATEGY)
+
+    svc = PatchStagingService(sandbox_factory=None, soma_root=str(tmp_path))
+    patch = Patch(
+        rationale="metabolise instead of idling",
+        changes=[FileChange(
+            path="soma/strategies/content_affiliate.py", diff=_STRATEGY_DIFF,
+        )],
+    )
+    v = svc.stage_and_evaluate(
+        darwin_id="d-soma", patch=patch, behavior_delta=_delta(after=2),
+        failure_class="flaky_io", recurrence=5,
+    )
+    assert v.sandbox_session_id == "real-soma-d-soma"  # real path, not proxy
+    assert v.promote is True
+    assert v.candidate_score > v.baseline_score
+
+
+def test_real_soma_eval_falls_through_when_patch_wont_apply(tmp_path):
+    """If the candidate hunk can't apply (no matching base), the real-soma path
+    returns None and the proxy BehaviorDelta path still produces a verdict."""
+    svc = PatchStagingService(sandbox_factory=None, soma_root=str(tmp_path))
+    # A hunk that won't match any base file (no live soma, no founding line).
+    patch = Patch(
+        rationale="bad hunk",
+        changes=[FileChange(
+            path="soma/strategies/content_affiliate.py",
+            diff="@@ -999,1 +999,1 @@\n-NOPE\n+NOPED\n",
+        )],
+    )
+    v = svc.stage_and_evaluate(
+        darwin_id="d-x", patch=patch, behavior_delta=_delta(after=2),
+        failure_class="flaky_io", recurrence=10,
+    )
+    # Fell through to the proxy harness (in-process), still a verdict.
+    assert v.sandbox_session_id.startswith("in_process-")
+
+
 def test_in_process_fallback_returns_verdict():
     svc = PatchStagingService(sandbox_factory=None)
     v = svc.stage_and_evaluate(

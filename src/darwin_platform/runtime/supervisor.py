@@ -619,6 +619,9 @@ class Supervisor:
             clock=clock,
             quota=patch_staging_quota,
             evaluation_timeout_s=patch_staging_timeout_s,
+            # Real-soma strategy evaluation (doc 33): a strategy-rewriting patch
+            # is scored by running the actual candidate, not just the proxy.
+            soma_root=str(soma_root) if soma_root is not None else None,
         )
         self._eval_runner = EvalRunner(
             staging=self._patch_staging,
@@ -1380,6 +1383,9 @@ class Supervisor:
             _overlay_strategy = self._load_soma_strategy(darwin_id_now)
             if _overlay_strategy is not None:
                 _platform.strategy = _overlay_strategy
+            _overlay_neurons = self._load_soma_neurons(darwin_id_now)
+            if _overlay_neurons:
+                _platform.neuron_overlay = _overlay_neurons
             runtime = boot(
                 _platform, sleep=lambda _: None, hp=self._darwin_hp,
             )
@@ -1938,6 +1944,56 @@ class Supervisor:
             except Exception:
                 pass
         return result.strategy
+
+    def _load_soma_neurons(self, darwin_id: str) -> list:
+        """Load this Darwin's validated soma-authored neurons (doc 33), held to
+        the Path-C safety envelope by the SomaLoader. Empty without a soma root;
+        fails closed per-file. Audited only when something loaded."""
+        if self._soma_root is None:
+            return []
+        try:
+            neurons = SomaLoader(self._soma_root / darwin_id).load_neurons()
+        except Exception:
+            return []
+        if neurons:
+            try:
+                self._audit.record(
+                    actor="supervisor", action="soma_neurons_loaded",
+                    darwin_id=darwin_id,
+                    metadata={"names": [getattr(n, "name", "?")
+                                        for n in neurons]},
+                )
+            except Exception:
+                pass
+        return neurons
+
+    def _maybe_hot_reload_soma(self, handle: _Handle) -> None:
+        """Hot-swap a Darwin's strategy + neuron catalog mid-life when a soma
+        patch landed this tick (doc 33), so a promoted self-modification takes
+        effect THIS life, not only at the next boot. Runs at the drive loop's
+        quiescent boundary (the genome tick is complete). Consumes the genome's
+        one-shot reload signal; reloads via the SomaLoader; rebinds/merges ONLY
+        on a valid load (fail-closed keeps the prior soma). Never raises."""
+        runtime = handle.runtime
+        try:
+            if not runtime.consume_soma_reload():
+                return
+        except Exception:
+            return
+        if self._soma_root is None:
+            return
+        overlay = self._load_soma_strategy(handle.darwin_id)
+        if overlay is not None:
+            try:
+                runtime.rebind_strategy(overlay)
+            except Exception:
+                pass
+        neurons = self._load_soma_neurons(handle.darwin_id)
+        if neurons:
+            try:
+                runtime.merge_neurons(neurons)
+            except Exception:
+                pass  # contract violation → keep the prior catalog
 
     def _capture_death_forensics(self, handle: _Handle, *, reason: str) -> None:
         """Snapshot the dead Darwin's soma for post-mortem forensics (doc 05
@@ -4414,6 +4470,27 @@ class Supervisor:
             kwargs["vault"] = vault
         return self._llm_factory(wallet, self._clock, **kwargs)
 
+    def _invoke_episodic_memory_factory(
+        self, darwin_id: str, wallet: Any, virtual_key: str | None,
+    ) -> Any:
+        """Call the episodic-memory factory, passing only the keyword
+        arguments its signature accepts. The legacy factory takes just
+        ``(darwin_id)``; the metered LanceDB factory additionally accepts
+        ``wallet`` (to bill embedding spend under ``llm:embedding``) and
+        ``virtual_key`` (so the proxy attributes the embedding to this
+        Darwin). Signature inspection keeps both shapes working."""
+        factory = self._episodic_memory_factory
+        kwargs: dict[str, Any] = {}
+        try:
+            params = inspect.signature(factory).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if "wallet" in params:
+            kwargs["wallet"] = wallet
+        if "virtual_key" in params:
+            kwargs["virtual_key"] = virtual_key
+        return factory(darwin_id, **kwargs)
+
     def _revoke_llm_virtual_key(self, darwin_id: str) -> None:
         """Revoke a dead Darwin's virtual key on the proxy so the credential
         stops working immediately. Best-effort + audited; never raises into
@@ -5106,6 +5183,10 @@ class Supervisor:
                     handle.disabled_categories
                 )
                 await runtime.run(max_heartbeats=1)
+                # If a soma patch landed this tick, hot-swap the running
+                # strategy now (quiescent boundary) so the rewrite takes effect
+                # this life, not only at next boot (doc 33).
+                self._maybe_hot_reload_soma(handle)
                 # A new child may have been spawned during this tick. Auto-
                 # boot it so the same supervisor instance drives the next
                 # generation — this is what a real platform's supervisor does
@@ -6908,6 +6989,9 @@ class Supervisor:
                 _child_overlay = self._load_soma_strategy(child_id)
                 if _child_overlay is not None:
                     child_platform.strategy = _child_overlay
+                _child_neurons = self._load_soma_neurons(child_id)
+                if _child_neurons:
+                    child_platform.neuron_overlay = _child_neurons
                 child_runtime = boot(
                     child_platform, sleep=lambda _: None, hp=self._darwin_hp,
                 )

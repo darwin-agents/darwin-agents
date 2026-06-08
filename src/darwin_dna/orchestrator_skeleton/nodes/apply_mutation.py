@@ -49,6 +49,12 @@ def run(state, ctx):
     if fix_landed and failure_class in state.recurring_failures:
         del state.recurring_failures[failure_class]
     state.mutation_gate_open = False
+    # A REAL patch reached disk → signal the platform to hot-reload the soma
+    # at the next quiescent boundary so the rewrite changes behaviour this
+    # life, not only at next boot (doc 33). Phase-0 simulation (no merge hook)
+    # never sets it — there is no new code to load.
+    if merge_result is not None and merge_result.merged:
+        state.soma_reload_pending = True
 
     if merge_result is not None and not merge_result.merged:
         archive = getattr(ctx, "archive", None)

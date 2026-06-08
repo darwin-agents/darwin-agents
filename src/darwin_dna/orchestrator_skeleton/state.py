@@ -60,6 +60,12 @@ class OrchestratorState(BaseModel):
     recurring_failures: dict[str, int] = Field(default_factory=dict)
     distinct_strategies: list[str] = Field(default_factory=list)
     mutation_gate_open: bool = False
+    # Set by apply_mutation when a real soma patch LANDS on disk (doc 33). The
+    # platform's drive loop observes it at the next quiescent boundary, reloads
+    # the evolved soma, and rebinds the running strategy/catalog — so a
+    # promoted self-modification takes effect THIS life, not only at next boot.
+    # The platform consumes (clears) it; the genome only ever sets it.
+    soma_reload_pending: bool = False
     pending_capability_requests: list[str] = Field(default_factory=list)
     pending_escalations: list[str] = Field(default_factory=list)
 
