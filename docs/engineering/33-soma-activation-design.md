@@ -207,10 +207,19 @@ eval harness can stage and measure the *real* candidate soma instead of a
 
 ## Open questions
 
-- **`neurons/` overlay:** strategies first; loading soma-authored *neurons* is a
-  larger surface (capability tags, treasury gates) — separate slice.
-- **Hot-swap barrier (Option B):** if/when built, the only safe reload point is
-  between heartbeats at a graph quiescent boundary; needs its own design.
-- **Eval-harness rewire:** once soma is live, point the Phase-1 staging harness
-  at the real candidate soma; quantify the measured-improvement claim doc 21
-  makes. Tracked separately.
+- **`neurons/` overlay:** DONE — `SomaLoader.load_neurons()` loads
+  `soma/neurons/*.py` under the Path-C tag allowlist + the one-money-door
+  contract check, and the patch validator now permits *writing* a whole neuron
+  file (the write is gated on paths/anchors; the run is gated on the Neuron
+  protocol + tags), so self-authored neurons are symmetric with strategies.
+  Still open: the genome's `propose_mutation` does not yet *generate*
+  neuron-file patches (it emits strategy patches + Path-C structured proposals),
+  so the write path is exercised by operators/tests today, not autonomously.
+- **Hot-swap barrier (Option B):** DONE — `apply_mutation` raises
+  `state.soma_reload_pending`; the platform drive loop reloads + rebinds at the
+  between-heartbeats quiescent boundary.
+- **Eval-harness rewire:** DONE — `evaluate_strategy_candidate` runs the real
+  candidate; `StrategyObservation.recurring_failures` exposes the live
+  failure signal so the candidate's *failure-avoidance* is measured (not just
+  metabolism). Still open: the strategy economic model in the harness
+  (dispatch = earn/cost) is a proxy, not the full neuron economy.
