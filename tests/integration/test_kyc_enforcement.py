@@ -135,6 +135,50 @@ def test_kyc_http_start_status_webhook_roundtrip():
         assert r3.json()["is_adult"] is True
 
 
+def test_kyc_signed_webhook_route_caches_verdict():
+    """POST /webhooks/kyc — a signature-authenticated provider callback that
+    refreshes the verdict (no bearer token; the signature is the auth)."""
+    import hashlib
+    import hmac
+    import json
+
+    sup = Supervisor(
+        heartbeat_seconds=0.001,
+        kyc_service=KYCService(provider=StubKYCProvider(webhook_secret="whsec")),
+    )
+    with _client(sup) as client:
+        r = client.post("/platform/kyc/start", json={"subject": "alice"})
+        inq = r.json()["inquiry_id"]
+        body = json.dumps(
+            {"inquiry_id": inq, "subject": "alice"}
+        ).encode("utf-8")
+        sig = hmac.new(b"whsec", body, hashlib.sha256).hexdigest()
+        # Valid signature → 200, verdict cached as approved.
+        ok = client.post(
+            "/webhooks/kyc", content=body, headers={"X-Kyc-Signature": sig},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"] == "approved"
+        assert (
+            client.get("/platform/kyc/status", params={"subject": "alice"})
+            .json()["status"]
+            == "approved"
+        )
+        # Bad signature → 400.
+        bad = client.post(
+            "/webhooks/kyc", content=body, headers={"X-Kyc-Signature": "nope"},
+        )
+        assert bad.status_code == 400
+
+
+def test_kyc_signed_webhook_503_when_unconfigured():
+    sup = Supervisor(heartbeat_seconds=0.001)  # no kyc_service
+    with _client(sup) as client:
+        assert client.post(
+            "/webhooks/kyc", content=b"{}", headers={},
+        ).status_code == 503
+
+
 def test_kyc_routes_503_when_unconfigured():
     sup = Supervisor(heartbeat_seconds=0.001)  # no kyc_service
     with _client(sup) as client:
