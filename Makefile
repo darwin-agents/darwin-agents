@@ -258,6 +258,11 @@ dev-down: ## Tear down the local kind stack + dashboard
 dev-kubeconfig: ## Print KUBECONFIG export for the local kind cluster
 	@echo "export KUBECONFIG=$(abspath infra/terraform/envs/local/.kubeconfig)"
 
+.PHONY: local-down
+local-down: ## Tear down BOTH local stacks: kind (dev) + Compose (docker)
+	-$(MAKE) dev-down
+	-$(MAKE) docker-down
+
 # --- Web dashboard (Next.js) --------------------------------------------------
 
 WEB_DIR := web
