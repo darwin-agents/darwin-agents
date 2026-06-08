@@ -122,6 +122,11 @@ Before a user can fund a Darwin (or before a Darwin can perform identity-sensiti
 - KYC documents (ID scan, selfie, utility bill) are written to the user's vault under `tier=sensitive` — readable only when a neuron presents an owner-approved escalation token.
 - The platform never stores KYC docs in plaintext outside the vault.
 
+**Provider adapters + verdict ingestion.** `security/kyc.py` ships `PersonaKYCProvider` and `OnfidoKYCProvider` behind the `KYCProvider` protocol (`start_inquiry` / `poll_inquiry` / `verify_webhook` / `revoke`); `KYCService` caches verdicts, ages them at the retention TTL, and exposes the spawn/fiat gate. Verdicts arrive two ways:
+
+- **Operator/manual poll** — `POST /platform/kyc/webhook` (bearer-authenticated) re-polls a named inquiry.
+- **Provider callback** — `POST /webhooks/kyc` (unauthenticated at the bearer layer; the provider's signature is the auth). The configured adapter verifies the signature over the raw body — Persona's `Persona-Signature` (`t=…,v1=…` HMAC-SHA256 of `"{t}.{body}"`, hex, with secret-rotation support) or Onfido's `X-SHA2-Signature` (HMAC-SHA256 of the raw body keyed by the webhook token) — then the service re-polls for the authoritative verdict and caches it. Secrets are wired via `--kyc-persona-webhook-secret` / `--kyc-onfido-webhook-token` (or their env vars) and are never logged.
+
 ### Real wallet provisioning (mainnet)
 
 Each spawned Darwin gets a **Coinbase Agentic Wallet** on Base mainnet:

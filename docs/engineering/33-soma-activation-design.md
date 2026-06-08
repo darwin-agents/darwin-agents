@@ -2,13 +2,22 @@
 
 ## Status
 
-**Option A implemented (2026-06-04).** `darwin_platform/evolution/soma_loader.py`
+**Option A + B implemented (2026-06-04).** `darwin_platform/evolution/soma_loader.py`
 (`SomaLoader`) loads the validated soma `strategies/` overlay; the runtime binds
 it via the `platform.strategy` injection seam (`darwin_dna/evolution/loop.py`),
 wired into both the in-process supervisor spawn/child-boot paths and the k8s pod
 orchestrator. Gated on `--soma-root`, Layer-0 immutable, fail-closed to
-`founding_strategy()`. Options B (hot-swap) and C (offspring inheritance) remain
-as described below (B deferred, C rejected).
+`founding_strategy()`. **Option B (hot-swap) is now also built:** `apply_mutation`
+sets `state.soma_reload_pending` when a real patch lands; the platform drive loop
+consumes it at the quiescent boundary and calls `runtime.rebind_strategy()` /
+`runtime.merge_neurons()` so a promoted rewrite takes effect THIS life. Three
+further pieces landed alongside: a **soma-authored neuron overlay**
+(`SomaLoader.load_neurons()` under the Path-C tag allowlist + contract check,
+merged via `platform.neuron_overlay` / `runtime.merge_neurons`), and a
+**real-candidate eval** (`eval_harness.evaluate_strategy_candidate` runs the real
+strategy over the frozen tape; `PatchStagingService` applies a strategy patch to
+a temp soma, loads it, and scores it instead of the `BehaviorDelta` proxy).
+Option C (offspring inheritance) remains rejected (contradicts doc 06).
 
 Originally written 2026-06-04 after a code audit found that promoted
 self-modifications were written to disk but **never executed by anything** — the
