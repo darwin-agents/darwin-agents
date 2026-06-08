@@ -113,7 +113,10 @@ module "platform_stack" {
   # Allow the local web dashboard (compose, :3000) to call the platform
   # API cross-origin. Without this the supervisor is same-origin only and
   # the browser blocks the dashboard's fetches (CORS preflight 405).
-  extra_args = ["--cors-origin", "http://localhost:3000"]
+  # Local dev convenience: expose Swagger UI (/docs), ReDoc (/redoc) and
+  # /openapi.json. Off by default in the chart; this is a local-only env so
+  # it's safe here. Drop --enable-docs for any internet-facing deployment.
+  extra_args = ["--cors-origin", "http://localhost:3000", "--enable-docs"]
 
   depends_on = [module.cluster, kubectl_manifest.kata_shim]
 }

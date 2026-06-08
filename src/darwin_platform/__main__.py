@@ -1657,6 +1657,8 @@ def _serve(args: argparse.Namespace) -> int:
         # doc 01/05: in production, spawns must carry owner consent (kill-switch
         # terms + 18+). Captured always; enforced in production.
         require_spawn_consent=_is_production(args),
+        # None → build_app falls back to the DARWIN_ENABLE_DOCS env var.
+        enable_docs=getattr(args, "enable_docs", None),
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -1739,6 +1741,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Required when the Next.js dashboard runs on a separate port; "
             "without it the browser preflight OPTIONS gets a 405. "
             "Defaults to empty — same-origin only."
+        ),
+    )
+    serve.add_argument(
+        "--enable-docs", dest="enable_docs", action="store_true", default=None,
+        help=(
+            "Expose interactive API docs (Swagger UI at /docs, ReDoc at "
+            "/redoc, OpenAPI JSON at /openapi.json). Off by default — this "
+            "surface is meant to sit behind the platform edge/auth. When the "
+            "flag is omitted, the DARWIN_ENABLE_DOCS env var is honored "
+            "(1/true/yes/on). Use for local dev only."
         ),
     )
     serve.add_argument(

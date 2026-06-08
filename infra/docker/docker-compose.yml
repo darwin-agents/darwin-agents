@@ -45,6 +45,10 @@ services:
       - "0.0.0.0"
       - --port
       - "8000"
+      # Local dev convenience: expose Swagger UI (/docs), ReDoc (/redoc) and
+      # /openapi.json. Off by default in the app; this is a local-only stack
+      # so it's safe here. Drop --enable-docs for any internet-facing run.
+      - --enable-docs
       # Persistence — Postgres (restart-survivable; the service is
       # healthy-gated via depends_on below). Swap back to the SQLite line
       # (--db /data/state.db) for a dependency-free dev run.
