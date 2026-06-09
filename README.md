@@ -230,7 +230,7 @@ In-memory implementations of external deps (`FakeLLM`, `FakeWallet`, `FakeVault`
 **Prerequisites:** Python 3.12+, [uv](https://github.com/astral-sh/uv)
 
 A **[Makefile](Makefile)** wraps the usual commands — run `make help` for the full list
-(install, test tiers, lint, Docker stack, serve, changelog, Helm).
+(install, test tiers, lint, Docker stack, kind dev stack, serve, changelog, Helm).
 
 ### 1 — Install and run the tests
 
@@ -258,17 +258,35 @@ Dashboard on `:3000`, Supervisor on `:8000`, Postgres, LiteLLM proxy, Prometheus
 
 ```bash
 make docker-up      # copies .env.example → .env if missing, then compose up
+make docker-down    # stop the stack (named volumes are kept)
 ```
 
-Full instructions: [`infra/docker/README.md`](infra/docker/README.md)
+The Compose stack live-mounts `src/`, so a `make docker-up` restart picks up code edits without a rebuild. Full instructions: [`infra/docker/README.md`](infra/docker/README.md)
 
-### 4 — Platform CLI (bare metal)
+### 4 — Local k8s dev stack (kind)
+
+A miniature of the production deployment: the supervisor runs as a **pod** in a local [kind](https://kind.sigs.k8s.io/) cluster (Postgres + Vault + LiteLLM + ingress via Terraform), with the dashboard on `:3000` and the API on `:8000`. Use this to exercise the real Kubernetes driver (per-Darwin pods, NetworkPolicies, leader election).
+
+```bash
+make dev            # build image → kind load → terraform apply → roll supervisor
+make dev-down       # delete the local kind cluster + dashboard
+```
+
+`make dev` is **idempotent** — re-run it after editing code to rebuild the image and roll the pod (unlike Compose, the kind pod bakes the code into its image, so a plain restart won't pick up `src/` edits).
+
+> **Tearing down both stacks at once:** `make local-down` runs `dev-down` + `docker-down`.
+
+> **API docs (Swagger):** the interactive docs are **off by default** (this surface is meant to sit behind the platform edge/auth). Enable them for local dev with `DARWIN_ENABLE_DOCS=1` (Compose / kind) or the `--enable-docs` flag (CLI), then browse `http://localhost:8000/docs` (ReDoc at `/redoc`, schema at `/openapi.json`).
+
+Full instructions: [`infra/terraform/README.md`](infra/terraform/README.md)
+
+### 5 — Platform CLI (bare metal)
 
 ```bash
 pip install -e ".[platform,postgres]"
 
-# Dev (SQLite, no auth):
-darwin-platform serve --db var/state.db
+# Dev (SQLite, no auth, Swagger UI at /docs):
+darwin-platform serve --db var/state.db --enable-docs
 
 # Production (Postgres, HA leader election):
 darwin-platform serve \
