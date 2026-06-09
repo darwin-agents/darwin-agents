@@ -82,12 +82,17 @@ self.addEventListener("notificationclick", (event) => {
 // event when they rotate the underlying subscription. The PWA needs to
 // re-publish to the backend so future pushes hit the new endpoint.
 self.addEventListener("pushsubscriptionchange", (event) => {
+  // Carry the rotated-away endpoint so the client can revoke the stale
+  // backend row after it re-registers the new one.
+  const oldEndpoint = event.oldSubscription
+    ? event.oldSubscription.endpoint
+    : null;
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
       .then((wins) => {
         for (const w of wins) {
-          w.postMessage({ type: "push-subscription-change" });
+          w.postMessage({ type: "push-subscription-change", oldEndpoint });
         }
       }),
   );
