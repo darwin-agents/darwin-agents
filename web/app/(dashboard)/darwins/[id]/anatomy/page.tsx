@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Clock, Pause, Play, RefreshCw } from "lucide-react";
@@ -34,6 +34,28 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
     preselected,
   );
   const [paused, setPaused] = useState(false);
+  // When paused, the canvas freezes for study while the stream keeps
+  // flowing. We coalesce arrivals into `pendingRef` (only the latest
+  // snapshot matters — each WS frame is a full snapshot) and surface a
+  // count so the user knows updates are waiting. `pausedRef` mirrors
+  // `paused` so the WS handler reads the live value without re-subscribing.
+  const pausedRef = useRef(false);
+  const pendingRef = useRef<AnatomySnapshot | null>(null);
+  const [bufferedCount, setBufferedCount] = useState(0);
+
+  function togglePause() {
+    setPaused((p) => {
+      const next = !p;
+      pausedRef.current = next;
+      if (!next && pendingRef.current) {
+        // Resuming: flush the latest buffered snapshot.
+        setSnapshot(pendingRef.current);
+        pendingRef.current = null;
+        setBufferedCount(0);
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!snapshot && initial.data) setSnapshot(initial.data as AnatomySnapshot);
@@ -47,21 +69,19 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
       onStateChange: setConnection,
       onMessage: (msg: StreamMessage) => {
         if (msg.type === "snapshot.anatomy" || msg.type === "anatomy.patch") {
-          setSnapshot(msg.payload as AnatomySnapshot);
+          const next = msg.payload as AnatomySnapshot;
+          if (pausedRef.current) {
+            pendingRef.current = next;
+            setBufferedCount((c) => c + 1);
+          } else {
+            setSnapshot(next);
+          }
         }
       },
     });
     stream.start();
     return () => stream.stop();
   }, [id, initial.data]);
-
-  // Pause toggle: gate the stream so the canvas freezes for study.
-  useEffect(() => {
-    // The current canvas always renders whatever `snapshot` holds — we
-    // don't need to do anything explicit on pause beyond stopping
-    // setSnapshot. This effect is here to wire a future buffered-update
-    // counter once anatomy.patch carries deltas instead of full snapshots.
-  }, [paused]);
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
@@ -79,17 +99,33 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
             <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
               Orchestrator + active neurons · {snapshot?.neurons.length ?? "—"} nodes ·{" "}
               <ConnectionPill state={connection} />
+              {paused && (
+                <span className="text-[var(--color-alert-warning)]">
+                  {" "}
+                  · paused{bufferedCount > 0 ? ` (${bufferedCount} buffered)` : ""}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPaused((p) => !p)}
-              title={paused ? "Resume live updates" : "Pause live updates"}
+              onClick={togglePause}
+              title={
+                paused
+                  ? bufferedCount > 0
+                    ? `Resume — ${bufferedCount} update${bufferedCount === 1 ? "" : "s"} buffered`
+                    : "Resume live updates"
+                  : "Pause live updates"
+              }
             >
               {paused ? <Play className="mr-1 size-4" /> : <Pause className="mr-1 size-4" />}
-              {paused ? "Resume" : "Pause"}
+              {paused
+                ? bufferedCount > 0
+                  ? `Resume (${bufferedCount})`
+                  : "Resume"
+                : "Pause"}
             </Button>
             <Button
               variant="outline"
