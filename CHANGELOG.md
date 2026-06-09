@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- feat(web): gate operator-only consoles on capabilities.is_operator
+- feat(platform): expose is_operator on capabilities endpoint
+
 ## [0.0.6] - 2026-06-09
 
 ### Added
