@@ -190,6 +190,9 @@ async def test_platform_capabilities(client) -> None:
     assert caps["soma_forensics"] is False
     assert caps["organism_browser"] is False
     assert caps["forensics_viewer"] is False
+    # The no-auth test client carries every scope, so raw operator scope is
+    # True even though the deployment-gated flags above are False.
+    assert caps["is_operator"] is True
 
 
 async def test_organism_data_browser_routes(client) -> None:

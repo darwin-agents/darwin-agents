@@ -53,6 +53,12 @@ async def platform_capabilities(
     is_operator = ctx.has_scope(PLATFORM_OPERATOR)
     return {
         **caps,
+        # Raw operator scope of the *caller* — the dashboard gates the
+        # operator-only consoles (pre-approvals, fiat payments, fiat
+        # withdraw) on this so an owner token never sees a tab that would
+        # only ever 403. Unlike the two flags below it is not folded with a
+        # deployment capability: operator scope alone unlocks those routes.
+        "is_operator": is_operator,
         "organism_browser": caps["tenant_namespaces"] and is_operator,
         "forensics_viewer": caps["soma_forensics"] and is_operator,
     }
