@@ -101,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- refactor(platform): split HTTP API into domain routers
 - docs: mark soma activation open questions as done in design doc
 - docs: update soma activation status and KYC webhook ingestion
 - docs: note exchange-custody holdings in threat model
@@ -129,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): fail closed on embedding budget exhaustion
 - fix(platform): meter LanceDB embedding spend via per-Darwin virtual key
 - fix(terraform): use nonsensitive toset for sensitive for_each
 - fix(dna): thread owner data and grant_token on escalation approve
