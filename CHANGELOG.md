@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): centralize OpenAPI metadata for Swagger documentation
 - feat(dna): measure strategy failure-avoidance and allow soma neuron patches
 - feat(devx): add --enable-docs flag and enable in local stacks
 - feat(platform): soma hot-swap, neuron overlay, and real-candidate staging
@@ -101,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: expand README for kind dev stack, local-down, and API docs
 - refactor(platform): split HTTP API into domain routers
 - docs: mark soma activation open questions as done in design doc
 - docs: update soma activation status and KYC webhook ingestion
