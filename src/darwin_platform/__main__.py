@@ -681,9 +681,10 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # <base>/<darwin_id> so lifetimes stay isolated on disk; embeddings
     # are produced via litellm.embedding (routed through the proxy when
     # --litellm-url is set, direct otherwise), with the per-Darwin virtual
-    # key for proxy attribution and a best-effort wallet debit under
-    # `llm:embedding` so embedding spend is metered + reconciled like
-    # completions (not silently incurred at the proxy).
+    # key for proxy attribution and a wallet debit under `llm:embedding` so
+    # embedding spend is metered + reconciled like completions (not silently
+    # incurred at the proxy). The wallet is a real gate: a budget-less Darwin's
+    # embedding fails closed and the memory write degrades.
     episodic_choice = getattr(args, "episodic_memory", "deterministic")
     lancedb_path = getattr(args, "lancedb_path", None) or os.environ.get(
         "DARWIN_LANCEDB_PATH"
@@ -724,13 +725,20 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
             _markup=embed_markup,
         ):
             # Per-Darwin embedder. Routes through the proxy with the Darwin's
-            # virtual key (so the proxy attributes spend to it) and meters the
-            # cost onto the Darwin's wallet under the `llm:embedding` memo —
-            # closing the gap where embedding spend was incurred but never
-            # billed or reconciled. Metering is BEST-EFFORT: episodic
-            # record/recall are not wrapped by the genome, so a wallet refusal
-            # must never crash a memory write (embeddings are a sub-cent
-            # metered utility, not a gated payment).
+            # virtual key (so the proxy attributes + budget-enforces the spend)
+            # and meters the cost onto the Darwin's wallet under the
+            # `llm:embedding` memo — closing the gap where embedding spend was
+            # incurred but never billed or reconciled.
+            #
+            # The wallet is a real GATE, not advisory: a refused debit (out of
+            # funds / day cap) RAISES, failing the embedding so a budget-less
+            # Darwin cannot keep buying embeddings. In production the proxy
+            # enforces the same budget on the virtual key — a broke key gets a
+            # 429 before any cost is incurred, which also raises here. Either
+            # way the caller (the LanceDB episodic memory) catches the failure
+            # and degrades the memory write gracefully, so enforcing the budget
+            # never crashes the heartbeat; the solvency gate then reaps the
+            # bankrupt Darwin on its normal cadence.
             api_key = virtual_key or _key
 
             def _embed(text: str) -> list[float]:
@@ -750,12 +758,9 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                     except Exception:
                         cost = 0.0
                     if cost > 0.0:
-                        try:
-                            wallet.debit(cost * (1.0 + _markup), "llm:embedding")
-                        except Exception:
-                            # Out of funds / day cap: meter what we can, never
-                            # break the memory write.
-                            pass
+                        # No try/except: a refused debit must propagate so the
+                        # embedding fails closed (budget enforcement).
+                        wallet.debit(cost * (1.0 + _markup), "llm:embedding")
                 return list(resp["data"][0]["embedding"])
 
             return _embed

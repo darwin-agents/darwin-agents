@@ -82,8 +82,19 @@ class LanceDbEpisodicMemory:
     ) -> None:
         import time
 
+        # The embedder bills the Darwin's wallet and fails closed when the
+        # budget is exhausted (a refused debit or a proxy 429). Episodic memory
+        # is a best-effort substrate, so a budget-failed (or transient) embed
+        # SKIPS the write rather than crashing the heartbeat — a Darwin that
+        # can't pay simply stops growing its memory until the solvency gate
+        # reaps it.
+        try:
+            vector = [float(x) for x in self._embed(signature)]
+        except Exception:
+            return
+
         row = {
-            "vector": [float(x) for x in self._embed(signature)],
+            "vector": vector,
             "tick": int(tick),
             "ts": time.time() if ts is None else float(ts),
             "signature": signature,
@@ -104,7 +115,12 @@ class LanceDbEpisodicMemory:
         embeds to the same vector, so an exact prior ranks first."""
         if self._table is None or limit <= 0:
             return []
-        query = [float(x) for x in self._embed(signature)]
+        # As in record(): a budget-failed/transient embed degrades to an empty
+        # recall rather than crashing the planner.
+        try:
+            query = [float(x) for x in self._embed(signature)]
+        except Exception:
+            return []
         rows = self._table.search(query).limit(limit).to_list()
         return [_to_record(r) for r in rows]
 

@@ -270,9 +270,11 @@ def test_episodic_embed_meters_wallet(tmp_path, monkeypatch):
     assert amount == pytest.approx(0.001 * 1.10)  # provider cost + 10% markup
 
 
-def test_episodic_embed_metering_is_best_effort(tmp_path, monkeypatch):
-    """A wallet refusal (out of funds / cap) must NOT break a memory write —
-    episodic record/recall are not wrapped by the genome."""
+def test_episodic_embed_budget_refusal_fails_closed(tmp_path, monkeypatch):
+    """A wallet refusal (out of funds / cap) must FAIL the embedding — a
+    budget-less Darwin can't keep buying embeddings — but degrade the memory
+    write instead of crashing the heartbeat (episodic record/recall aren't
+    wrapped by the genome). So: no row stored, and no exception."""
     pytest.importorskip("lancedb")
     import litellm
 
@@ -298,9 +300,45 @@ def test_episodic_embed_metering_is_best_effort(tmp_path, monkeypatch):
     mem = factories["episodic_memory_factory"](
         "darwin-2", wallet=_BrokeWallet(), virtual_key="sk-darwin-2",
     )
-    # Must not raise despite the wallet refusing the debit.
+    # Degrades: no crash, and the budget-failed write is NOT stored.
     mem.record(tick=1, signature="sig", neuron="n", outcome="ok")
-    assert len(mem) == 1
+    assert len(mem) == 0
+    # Recall also degrades to empty rather than raising.
+    assert mem.recall("sig") == []
+
+
+def test_episodic_embed_proxy_429_degrades(tmp_path, monkeypatch):
+    """A proxy budget-exhaustion 429 (production virtual-key enforcement)
+    raises from litellm.embedding before any cost; the memory write degrades
+    rather than crashing."""
+    pytest.importorskip("lancedb")
+    import litellm
+
+    def _boom(**kw):
+        raise RuntimeError("429 budget exceeded for key")
+
+    monkeypatch.setattr(litellm, "embedding", _boom)
+
+    debits: list = []
+
+    class _Wallet:
+        def debit(self, amount_usdc, memo):
+            debits.append((amount_usdc, memo))
+
+    factories = _build_real_factories(
+        _serve_args(
+            "--episodic-memory", "lancedb",
+            "--lancedb-path", str(tmp_path),
+            "--litellm-url", "http://litellm:4000",
+        )
+    )
+    mem = factories["episodic_memory_factory"](
+        "darwin-3", wallet=_Wallet(), virtual_key="sk-darwin-3",
+    )
+    mem.record(tick=1, signature="sig", neuron="n", outcome="ok")
+    assert len(mem) == 0
+    # No debit: the proxy refused before any cost was incurred.
+    assert debits == []
 
 
 def test_invoke_episodic_memory_factory_is_signature_aware():
