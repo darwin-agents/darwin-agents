@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(web): resync push subscriptions on endpoint rotation
+- feat(web): add vault secret upload form in dashboard
+- feat(web): add browser sessions card to resources page
+- feat(web): buffer anatomy snapshots while paused
 - feat(web): gate operator-only consoles on capabilities.is_operator
 - feat(platform): expose is_operator on capabilities endpoint
+
+### Changed
+
+- refactor(web): route harvest through api client with idempotency key
 
 ## [0.0.6] - 2026-06-09
 
