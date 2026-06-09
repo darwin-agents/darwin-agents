@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-06-09
+
 ### Added
 
 - feat(platform): centralize OpenAPI metadata for Swagger documentation
