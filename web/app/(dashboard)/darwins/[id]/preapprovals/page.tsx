@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { OperatorOnly } from "@/components/layout/operator-only";
 import type { PreApprovalRequest } from "@/lib/types";
 
 const CATEGORIES = [
@@ -79,6 +80,16 @@ export default function PreApprovalsPage({
   const { id } = use(params);
   const qc = useQueryClient();
 
+  // Operator-only console — the nav tab is hidden for owners; this guards
+  // direct-URL access. Hooks below still run; we swap the render once caps
+  // resolve.
+  const { data: caps } = useQuery({
+    queryKey: queryKeys.capabilities(),
+    queryFn: () => api.capabilities(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.preapprovals(id),
     queryFn: () => api.listPreapprovals(id),
@@ -108,6 +119,10 @@ export default function PreApprovalsPage({
   });
 
   const rules = useMemo(() => data ?? [], [data]);
+
+  if (caps && !caps.is_operator) {
+    return <OperatorOnly title="Pre-approvals" />;
+  }
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">

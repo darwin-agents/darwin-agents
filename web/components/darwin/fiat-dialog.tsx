@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,16 +35,29 @@ export function FiatDialog({ darwinId }: { darwinId: string | null }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("deposit");
 
+  // Deposit is owner-scoped; withdraw is `/platform/fiat/withdraw`
+  // (PLATFORM_OPERATOR). Hide the withdraw toggle for owners so they never
+  // land on a panel that would only 403.
+  const { data: caps } = useQuery({
+    queryKey: queryKeys.capabilities(),
+    queryFn: () => api.capabilities(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const canWithdraw = caps?.is_operator ?? false;
+  // If caps flip to non-operator while parked on withdraw, fall back.
+  const activeMode: Mode = mode === "withdraw" && !canWithdraw ? "deposit" : mode;
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm">
-          {mode === "deposit" ? (
+          {activeMode === "deposit" ? (
             <ArrowDownToLine className="mr-1 size-4" />
           ) : (
             <ArrowUpFromLine className="mr-1 size-4" />
           )}
-          Deposit / withdraw
+          {canWithdraw ? "Deposit / withdraw" : "Deposit"}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">
@@ -56,16 +70,18 @@ export function FiatDialog({ darwinId }: { darwinId: string | null }) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex gap-2">
-          <ModeButton current={mode} value="deposit" onClick={setMode}>
-            Deposit
-          </ModeButton>
-          <ModeButton current={mode} value="withdraw" onClick={setMode}>
-            Withdraw
-          </ModeButton>
-        </div>
+        {canWithdraw && (
+          <div className="flex gap-2">
+            <ModeButton current={activeMode} value="deposit" onClick={setMode}>
+              Deposit
+            </ModeButton>
+            <ModeButton current={activeMode} value="withdraw" onClick={setMode}>
+              Withdraw
+            </ModeButton>
+          </div>
+        )}
 
-        {mode === "deposit" ? (
+        {activeMode === "deposit" ? (
           <DepositPanel darwinId={darwinId} onDone={() => setOpen(false)} />
         ) : (
           <WithdrawPanel onDone={() => setOpen(false)} />

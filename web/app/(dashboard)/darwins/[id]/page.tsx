@@ -38,7 +38,8 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
     refetchInterval: 30_000,
   });
   // Capabilities gate the deployment-mode-only tabs (forensics here, organism
-  // inside the Data page). On error they stay hidden — fail safe.
+  // inside the Data page) and the operator-only consoles (pre-approvals,
+  // payments — `caps.is_operator`). On error they stay hidden — fail safe.
   const { data: caps } = useQuery({
     queryKey: queryKeys.capabilities(),
     queryFn: () => api.capabilities(),
@@ -58,8 +59,16 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
         <SubNav href={`/darwins/${id}/lineage`} icon={GitBranch} label="Lineage" />
         <SubNav href={`/darwins/${id}/billing`} icon={Receipt} label="Billing & ledger" />
         <SubNav href={`/darwins/${id}/summary`} icon={FileText} label="Tax summary" />
-        <SubNav href={`/darwins/${id}/preapprovals`} icon={ShieldCheck} label="Pre-approvals" />
-        <SubNav href={`/darwins/${id}/payments`} icon={CreditCard} label="Payments" />
+        {caps?.is_operator && (
+          <SubNav
+            href={`/darwins/${id}/preapprovals`}
+            icon={ShieldCheck}
+            label="Pre-approvals"
+          />
+        )}
+        {caps?.is_operator && (
+          <SubNav href={`/darwins/${id}/payments`} icon={CreditCard} label="Payments" />
+        )}
         <SubNav href={`/darwins/${id}/vault`} icon={Lock} label="Vault" />
         <SubNav href={`/darwins/${id}/resources`} icon={Server} label="Resources" />
         <SubNav href={`/darwins/${id}/data`} icon={Database} label="Data" />

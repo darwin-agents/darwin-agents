@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { OperatorOnly } from "@/components/layout/operator-only";
 
 function FlashLine({
   kind,
@@ -46,6 +47,16 @@ export default function DarwinPaymentsPage({
 }) {
   const { id } = use(params);
   const qc = useQueryClient();
+
+  // Operator-only console — the nav tab is hidden for owners; this guards
+  // direct-URL access. Hooks below still run (rules-of-hooks); we only swap
+  // the render once caps resolve.
+  const { data: caps } = useQuery({
+    queryKey: queryKeys.capabilities(),
+    queryFn: () => api.capabilities(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
 
   const { data: freelancers, isLoading: loadingFreelancers } = useQuery({
     queryKey: queryKeys.myFreelancers(),
@@ -144,6 +155,10 @@ export default function DarwinPaymentsPage({
       });
     },
   });
+
+  if (caps && !caps.is_operator) {
+    return <OperatorOnly title="Payments" />;
+  }
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">

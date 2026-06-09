@@ -186,6 +186,10 @@ export interface PlatformCapabilities {
   k8s: boolean;
   organism_browser: boolean;
   forensics_viewer: boolean;
+  // Raw operator scope of the caller. Gates the operator-only consoles
+  // (pre-approvals, payments, fiat withdraw) so an owner token never sees a
+  // tab that would only ever 403.
+  is_operator: boolean;
   [k: string]: unknown;
 }
 
