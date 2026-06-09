@@ -323,11 +323,6 @@ export const api = {
     );
   },
 
-  escalation: (id: string, escalationId: string) =>
-    apiFetch<Record<string, unknown>>(
-      `/darwins/${id}/escalations/${escalationId}`,
-    ),
-
   // Lineage
   lineageTree: (id: string, maxDepth = 16) =>
     apiFetch<LineageTreeResponse>(`/darwins/${id}/lineage/tree`, {
@@ -337,11 +332,14 @@ export const api = {
   // Alerts
   alerts: (id: string) => apiFetch<AlertsResponse>(`/darwins/${id}/alerts`),
 
-  // Harvest
-  harvest: (id: string, req: HarvestRequest) =>
+  // Harvest. `idempotencyKey` lets the caller pin a stable key for the
+  // lifetime of a confirm dialog so re-pressing never moves funds twice;
+  // omit it and a fresh key is generated per call (`mutating`).
+  harvest: (id: string, req: HarvestRequest, idempotencyKey?: string) =>
     apiFetch<{ status: string }>(`/darwins/${id}/harvest`, {
       method: "POST",
       body: req,
+      idempotencyKey,
       mutating: true,
     }),
 
@@ -516,8 +514,7 @@ export const api = {
       `/platform/darwins/${id}/forensics/${encodeURIComponent(snapshotId)}`,
     ),
 
-  // Health
-  healthz: () => apiFetch<unknown>("/healthz"),
+  // Health — readyz is the dashboard's liveness probe (see ApiBanner).
   readyz: () => apiFetch<unknown>("/readyz"),
 
   /* -------------------------------------------------------------------------

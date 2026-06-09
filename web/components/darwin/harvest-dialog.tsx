@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDownToLine } from "lucide-react";
-import { api, apiFetch, ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,14 +38,11 @@ export function HarvestDialog({ darwinId }: { darwinId: string }) {
 
   const mutation = useMutation({
     mutationFn: () =>
-      apiFetch<{ status: string }>(`/darwins/${darwinId}/harvest`, {
-        method: "POST",
-        body: {
-          amount_usdc: Number(amount),
-          destination: destination.trim(),
-        },
+      api.harvest(
+        darwinId,
+        { amount_usdc: Number(amount), destination: destination.trim() },
         idempotencyKey,
-      }),
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.billing(darwinId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.ledger(darwinId, 0) });
