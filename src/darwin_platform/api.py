@@ -38,6 +38,9 @@ from .security.auth import (
 # helpers used to be defined in this module. They now live in the routers
 # package; re-exported here so existing imports keep working.
 from .routers import ALL_ROUTERS
+from .routers._openapi import DESCRIPTION as _OPENAPI_DESCRIPTION
+from .routers._openapi import TAGS as _OPENAPI_TAGS
+from .routers._openapi import apply_openapi_metadata
 from .routers.metrics_text import _escape_label, _fmt, _render_metrics
 from .routers.models import (
     AmendmentRequest,
@@ -174,8 +177,9 @@ def build_app(
     app = FastAPI(
         title="Darwin Supervisor",
         version="0.1.0",
-        description="Platform control plane (docs/engineering/08), first pass.",
+        description=_OPENAPI_DESCRIPTION,
         lifespan=lifespan,
+        openapi_tags=_OPENAPI_TAGS,
         docs_url="/docs" if docs_on else None,
         redoc_url="/redoc" if docs_on else None,
         openapi_url="/openapi.json" if docs_on else None,
@@ -208,6 +212,9 @@ def build_app(
     app.state.started_ts = app_started_ts
     for _router in ALL_ROUTERS:
         app.include_router(_router)
+
+    # Stamp per-endpoint summaries/descriptions for Swagger.
+    apply_openapi_metadata(app)
 
     return app
 
