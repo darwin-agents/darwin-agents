@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { use } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Server, Trash2 } from "lucide-react";
+import { ArrowLeft, Globe, Server, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,23 @@ interface ResourceRecord {
   created_at: number;
   deprovisioned_at: number | null;
 }
+
+interface BrowserSessionRow {
+  trace_id: string;
+  neuron: string;
+  url: string | null;
+  status: "ok" | "blocked" | "fail" | string;
+  via: "exploration" | "cached" | string;
+  cost_usdc: number;
+  latency_ms: number;
+  ts: number;
+}
+
+const SESSION_STATUS_BADGE: Record<string, string> = {
+  ok: "bg-[var(--color-status-alive)]/20 text-[var(--color-status-alive)]",
+  blocked: "bg-[var(--color-alert-warning)]/20 text-[var(--color-alert-warning)]",
+  fail: "bg-[var(--color-destructive)]/20 text-[var(--color-destructive)]",
+};
 
 export default function ResourcesPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -123,7 +140,79 @@ export default function ResourcesPage({ params }: { params: Promise<{ id: string
           Deprovision failed: {(remove.error as Error).message}
         </p>
       )}
+
+      <BrowserSessionsCard darwinId={id} />
     </div>
+  );
+}
+
+/**
+ * Read-only per-Darwin browser session log (`GET /darwins/{id}/browser/sessions`).
+ * Each row is one browser call the Darwin made — status, whether it used the
+ * cached path or live exploration, cost, and latency.
+ */
+function BrowserSessionsCard({ darwinId }: { darwinId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["darwin", darwinId, "browser-sessions"] as const,
+    queryFn: () => api.browserSessions(darwinId),
+    refetchInterval: 30_000,
+  });
+
+  const sessions = ((data?.sessions ?? []) as unknown as BrowserSessionRow[])
+    .slice()
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 50);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Globe className="size-4 text-[var(--color-muted-foreground)]" />
+          Browser sessions
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="space-y-2 p-3">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <Skeleton key={i} className="h-12 w-full" />
+            ))}
+          </div>
+        ) : sessions.length === 0 ? (
+          <p className="px-4 pb-4 text-sm text-[var(--color-muted-foreground)]">
+            No browser sessions yet. They appear once the Darwin drives a headless browser.
+          </p>
+        ) : (
+          <ul className="divide-y divide-[var(--color-border)]">
+            {sessions.map((s) => (
+              <li key={s.trace_id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-3 px-4 py-3">
+                <span
+                  className={`mt-0.5 inline-flex h-fit items-center rounded-full px-2 py-0.5 text-[10px] uppercase ${
+                    SESSION_STATUS_BADGE[s.status] ?? SESSION_STATUS_BADGE.blocked
+                  }`}
+                >
+                  {s.status}
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-sm">
+                    {s.url ?? <span className="text-[var(--color-muted-foreground)]">no URL</span>}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-[var(--color-muted-foreground)]">
+                    <span className="mono">{s.neuron}</span>
+                    <span>{s.via}</span>
+                    <span>{s.latency_ms} ms</span>
+                    {s.ts ? <span>{formatRelative(s.ts)}</span> : null}
+                  </div>
+                </div>
+                <span className="mono text-xs text-[var(--color-muted-foreground)]">
+                  ${s.cost_usdc.toFixed(4)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
