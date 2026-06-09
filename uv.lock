@@ -821,7 +821,7 @@ wheels = [
 
 [[package]]
 name = "darwin-dna"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
