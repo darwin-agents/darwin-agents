@@ -1,14 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { use } from "react";
+import { use, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Lock, Trash2, User, Bot } from "lucide-react";
-import { api, type ApiError } from "@/lib/api";
+import { ArrowLeft, Lock, Plus, Trash2, User, Bot } from "lucide-react";
+import { api, ApiError } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelative } from "@/lib/format";
+import type { VaultPutRequest } from "@/lib/types";
 
 interface VaultEntry {
   darwin_id: string;
@@ -69,10 +71,12 @@ export default function VaultPage({ params }: { params: Promise<{ id: string }> 
         </p>
       )}
 
+      <AddEntryCard darwinId={id} onAdded={() => queryClient.invalidateQueries({ queryKey })} />
+
       <Section
         title="Owner-provided"
         icon={User}
-        empty="Nothing here. Upload secrets via CLI for now."
+        empty="Nothing here yet. Add a secret or API key with the form above."
         loading={isLoading}
         entries={ownerProvided}
         onRevoke={(e) => remove.mutate({ tier: e.tier, key: e.key })}
@@ -176,6 +180,174 @@ function Section({
             ))}
           </ul>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+const TIERS = ["sensitive", "scoped", "public"] as const;
+
+/**
+ * Owner-provided secret / API-key upload (`POST /darwins/{id}/vault`). The
+ * value is write-only — the API never echoes it back, so there's no edit
+ * flow, only add + revoke. `scope` is required for the `scoped` tier (it
+ * pins which neuron category may read it); ttl is optional.
+ */
+function AddEntryCard({
+  darwinId,
+  onAdded,
+}: {
+  darwinId: string;
+  onAdded: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tier, setTier] = useState<(typeof TIERS)[number]>("sensitive");
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
+  const [scope, setScope] = useState("");
+  const [ttlDays, setTtlDays] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const put = useMutation({
+    mutationFn: (req: VaultPutRequest) => api.putVault(darwinId, req),
+    onSuccess: () => {
+      setKey("");
+      setValue("");
+      setScope("");
+      setTtlDays("");
+      setFormError(null);
+      setOpen(false);
+      onAdded();
+    },
+    onError: (err: unknown) => {
+      setFormError(err instanceof ApiError ? err.message : String(err));
+    },
+  });
+
+  const ttlValid = ttlDays === "" || Number(ttlDays) > 0;
+  const scopeValid = tier !== "scoped" || scope.trim().length > 0;
+  const valid =
+    key.trim().length > 0 && value.length > 0 && ttlValid && scopeValid;
+
+  if (!open) {
+    return (
+      <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
+        <Plus className="mr-1 size-4" />
+        Add secret / API key
+      </Button>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Add an entry</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setFormError(null);
+            if (!valid) {
+              setFormError(
+                !scopeValid
+                  ? "scope is required for the scoped tier"
+                  : "key and value are required",
+              );
+              return;
+            }
+            put.mutate({
+              tier,
+              key: key.trim(),
+              value,
+              scope: tier === "scoped" ? scope.trim() : null,
+              ttl_seconds: ttlDays === "" ? null : Math.round(Number(ttlDays) * 86400),
+            });
+          }}
+        >
+          <label className="text-xs">
+            <span className="mb-1 block text-[var(--color-muted-foreground)]">Tier</span>
+            <select
+              value={tier}
+              onChange={(e) => setTier(e.target.value as (typeof TIERS)[number])}
+              className="h-9 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 text-sm"
+            >
+              {TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs">
+            <span className="mb-1 block text-[var(--color-muted-foreground)]">Key</span>
+            <Input
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="e.g. openai_api_key"
+              className="font-mono"
+            />
+          </label>
+          <label className="text-xs sm:col-span-2">
+            <span className="mb-1 block text-[var(--color-muted-foreground)]">
+              Value (write-only — never shown again)
+            </span>
+            <Input
+              type="password"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="secret value"
+              className="font-mono"
+              autoComplete="off"
+            />
+          </label>
+          {tier === "scoped" && (
+            <label className="text-xs">
+              <span className="mb-1 block text-[var(--color-muted-foreground)]">
+                Scope (neuron category)
+              </span>
+              <Input
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+                placeholder="e.g. payments"
+                className="font-mono"
+              />
+            </label>
+          )}
+          <label className="text-xs">
+            <span className="mb-1 block text-[var(--color-muted-foreground)]">
+              Expires in (days, optional)
+            </span>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={ttlDays}
+              onChange={(e) => setTtlDays(e.target.value)}
+              placeholder="never"
+            />
+          </label>
+          {formError && (
+            <p className="text-xs text-[var(--color-destructive)] sm:col-span-2">{formError}</p>
+          )}
+          <div className="flex gap-2 sm:col-span-2">
+            <Button type="submit" disabled={!valid || put.isPending}>
+              {put.isPending ? "Saving…" : "Save entry"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={put.isPending}
+              onClick={() => {
+                setOpen(false);
+                setFormError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
       </CardContent>
     </Card>
   );
