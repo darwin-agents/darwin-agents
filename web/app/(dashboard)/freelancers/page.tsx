@@ -9,7 +9,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2, UserPlus } from "lucide-react";
+import { BadgeCheck, Trash2, UserPlus } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,7 +17,122 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import type { RegisterFreelancerRequest } from "@/lib/types";
+import type { KycStartRequest, RegisterFreelancerRequest } from "@/lib/types";
+
+const KYC_TIERS: NonNullable<KycStartRequest["tier"]>[] = [
+  "basic",
+  "standard",
+  "enhanced",
+];
+
+const KYC_OK = new Set(["approved", "verified"]);
+
+/**
+ * Owner identity verification (`/platform/kyc/*`). KYC gates non-anonymous
+ * owner actions (omnibus funding, fiat payouts). Starting a verification
+ * returns a provider redirect URL we open in a new tab; status reflects the
+ * latest verdict on the owner's own subject.
+ */
+function OwnerKycCard() {
+  const qc = useQueryClient();
+  const [tier, setTier] =
+    useState<NonNullable<KycStartRequest["tier"]>>("standard");
+
+  const status = useQuery({
+    // Empty subject = the authenticated owner (server fills ctx.subject).
+    queryKey: queryKeys.kycStatus("me"),
+    queryFn: () => api.kycStatus(),
+    retry: false,
+  });
+
+  const start = useMutation({
+    mutationFn: () => api.kycStart({ tier }),
+    onSuccess: (res) => {
+      if (res.redirect_url && typeof window !== "undefined") {
+        window.open(res.redirect_url, "_blank", "noopener,noreferrer");
+      }
+      qc.invalidateQueries({ queryKey: queryKeys.kycStatus("me") });
+    },
+  });
+
+  const verdict = status.data;
+  const current = (verdict?.status ?? "unknown").toLowerCase();
+  const verified = KYC_OK.has(current);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <BadgeCheck
+            className={
+              verified
+                ? "size-4 text-[var(--color-status-alive)]"
+                : "size-4 text-[var(--color-muted-foreground)]"
+            }
+          />
+          Your identity verification
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-[var(--color-muted-foreground)]">
+          KYC unlocks non-anonymous owner actions — omnibus funding and fiat
+          payouts. Verification runs through the platform&apos;s configured
+          provider.
+        </p>
+        {status.isLoading ? (
+          <Skeleton className="h-6 w-40" />
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-[var(--color-muted-foreground)]">Status:</span>
+            <Badge variant={verified ? "default" : current === "pending" ? "outline" : "destructive"}>
+              {current}
+            </Badge>
+            {verdict?.tier && (
+              <span className="text-xs text-[var(--color-muted-foreground)]">
+                tier {verdict.tier}
+              </span>
+            )}
+            {verdict?.reason && current !== "approved" && (
+              <span className="text-xs text-[var(--color-muted-foreground)]">
+                · {verdict.reason}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs">
+            <span className="mb-1 block text-[var(--color-muted-foreground)]">Tier</span>
+            <select
+              value={tier}
+              onChange={(e) =>
+                setTier(e.target.value as NonNullable<KycStartRequest["tier"]>)
+              }
+              className="h-9 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 text-sm"
+            >
+              {KYC_TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Button size="sm" disabled={start.isPending} onClick={() => start.mutate()}>
+            {start.isPending
+              ? "Starting…"
+              : verified
+                ? "Re-verify"
+                : "Start verification"}
+          </Button>
+        </div>
+        {start.isError && (
+          <p className="text-xs text-[var(--color-destructive)]">
+            {start.error instanceof ApiError ? start.error.message : String(start.error)}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function KycBadge({ status }: { status?: string }) {
   const s = (status ?? "unverified").toLowerCase();
@@ -82,6 +197,8 @@ export default function FreelancersPage() {
           reached by a Darwin&apos;s fiat payment.
         </p>
       </header>
+
+      <OwnerKycCard />
 
       {/* Existing entries */}
       <Card>
