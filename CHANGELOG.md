@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- test(web): add playwright coverage for operator surfaces
+- feat(web): add owner KYC verification card on freelancers page
+- feat(web): add proposals and operator dashboard consoles
+- feat(web): add proposals, operator, and KYC API client methods
+- feat(web): require terms and age consent on spawn
+- feat(web): sync Darwin status from anatomy websocket
 - feat(web): resync push subscriptions on endpoint rotation
 - feat(web): add vault secret upload form in dashboard
 - feat(web): add browser sessions card to resources page
@@ -19,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - refactor(web): route harvest through api client with idempotency key
+
+### Fixed
+
+- fix(web): extend CSP and auth chrome for Clerk production
 
 ## [0.0.6] - 2026-06-09
 
