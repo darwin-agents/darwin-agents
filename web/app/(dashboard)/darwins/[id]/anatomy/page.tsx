@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { use, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Clock, Pause, Play, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
+import type { DarwinStatus } from "@/lib/types";
 import { DarwinStream, type StreamMessage, type ConnectionState } from "@/lib/ws";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,6 +17,7 @@ import { formatRelative } from "@/lib/format";
 
 export default function AnatomyPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const queryClient = useQueryClient();
 
   // Initial snapshot via REST. WS replaces this with live patches.
   const initial = useQuery({
@@ -76,12 +79,18 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
           } else {
             setSnapshot(next);
           }
+        } else if (msg.type === "snapshot.status" || msg.type === "status") {
+          // Live lifecycle status — push it into the shared cache so the
+          // header/treasury strip (and any other reader) reflect it without
+          // waiting for the REST poll. Pausing only freezes the canvas, not
+          // lifecycle state, so this applies even while paused.
+          queryClient.setQueryData(queryKeys.darwin(id), msg.payload as DarwinStatus);
         }
       },
     });
     stream.start();
     return () => stream.stop();
-  }, [id, initial.data]);
+  }, [id, initial.data, queryClient]);
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
