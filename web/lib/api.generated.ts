@@ -11,10 +11,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Darwins */
+        /**
+         * List Darwins
+         * @description List Darwin ids the caller may see — the whole fleet for platform operators, only owned Darwins for an owner.
+         */
         get: operations["list_darwins_darwins_get"];
         put?: never;
-        /** Spawn */
+        /**
+         * Spawn a Darwin
+         * @description Create and boot a new Darwin organism, optionally funded with opening USDC and parented to an existing Darwin. Requires owner scope; in production also requires accepting the kill-switch terms and an 18+ attestation.
+         */
         post: operations["spawn_darwins_post"];
         delete?: never;
         options?: never;
@@ -29,7 +35,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Status */
+        /**
+         * Get Darwin status
+         * @description Current runtime status of a Darwin: alive / paused / killed, balance, tick, and key state.
+         */
         get: operations["status_darwins__darwin_id__get"];
         put?: never;
         post?: never;
@@ -48,7 +57,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Pause */
+        /**
+         * Pause a Darwin
+         * @description Pause a Darwin's drive loop (graded kill-switch). It stops acting but stays warm and can be resumed.
+         */
         post: operations["pause_darwins__darwin_id__pause_post"];
         delete?: never;
         options?: never;
@@ -65,7 +77,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume */
+        /**
+         * Resume a Darwin
+         * @description Resume a previously paused Darwin's drive loop.
+         */
         post: operations["resume_darwins__darwin_id__resume_post"];
         delete?: never;
         options?: never;
@@ -82,7 +97,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Kill */
+        /**
+         * Kill a Darwin
+         * @description Permanently terminate a Darwin (graded kill-switch). Irreversible — the organism is reaped and cannot resume.
+         */
         post: operations["kill_darwins__darwin_id__kill_post"];
         delete?: never;
         options?: never;
@@ -99,7 +117,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reproduce Force */
+        /**
+         * Force reproduction
+         * @description Force this Darwin to reproduce now, minting a child that inherits its genome (operator / owner action).
+         */
         post: operations["reproduce_force_darwins__darwin_id__reproduce_force_post"];
         delete?: never;
         options?: never;
@@ -116,7 +137,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set Spend Lock */
+        /**
+         * Set spend lock
+         * @description Lock or unlock all outbound spending for this Darwin (owner soft kill-switch for money).
+         */
         post: operations["set_spend_lock_darwins__darwin_id__controls_spend_lock_post"];
         delete?: never;
         options?: never;
@@ -133,7 +157,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set Reproduction Block */
+        /**
+         * Set reproduction block
+         * @description Block or unblock this Darwin from reproducing.
+         */
         post: operations["set_reproduction_block_darwins__darwin_id__controls_reproduction_block_post"];
         delete?: never;
         options?: never;
@@ -150,7 +177,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set Disabled Neurons */
+        /**
+         * Set disabled neurons
+         * @description Replace the set of neurons disabled for this Darwin (it will skip dispatching them).
+         */
         post: operations["set_disabled_neurons_darwins__darwin_id__controls_disabled_neurons_post"];
         delete?: never;
         options?: never;
@@ -167,7 +197,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set Disabled Categories */
+        /**
+         * Set disabled categories
+         * @description Replace the set of spend categories this Darwin is forbidden from transacting in.
+         */
         post: operations["set_disabled_categories_darwins__darwin_id__controls_disabled_categories_post"];
         delete?: never;
         options?: never;
@@ -182,80 +215,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Owner Controls */
-        get: operations["get_owner_controls_darwins__darwin_id__controls_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/darwins/{darwin_id}/escalations/{escalation_id}/respond": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Respond Escalation */
-        post: operations["respond_escalation_darwins__darwin_id__escalations__escalation_id__respond_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/escalations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
         /**
-         * List Escalations Fleet
-         * @description Owner-scoped fleet view. Platform operators see every Darwin;
-         *     owners see only their owned set. Sorted by deadline (soonest first).
+         * Get owner controls
+         * @description Current owner safety controls for a Darwin: spend-lock, reproduction-block, disabled neurons, and disabled categories.
          */
-        get: operations["list_escalations_fleet_escalations_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/darwins/{darwin_id}/escalations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Escalations */
-        get: operations["list_escalations_darwins__darwin_id__escalations_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/darwins/{darwin_id}/escalations/{escalation_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Escalation */
-        get: operations["get_escalation_darwins__darwin_id__escalations__escalation_id__get"];
+        get: operations["get_owner_controls_darwins__darwin_id__controls_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -272,7 +236,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Anatomy
+         * Get Darwin anatomy
          * @description Live organism map. Sourced from runtime catalog + recent audit
          *     log; cheap enough to refetch on every WS reconnect.
          */
@@ -292,7 +256,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Lineage */
+        /**
+         * Get Darwin lineage
+         * @description Ancestry of this Darwin — the chain of parent reproductions that produced it.
+         */
         get: operations["lineage_darwins__darwin_id__lineage_get"];
         put?: never;
         post?: never;
@@ -310,12 +277,113 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Lineage Tree
+         * Get lineage tree
          * @description Phase 1 (doc 21 §"Lineage tree"): nested ancestors + descendants
          *     for the minimal dashboard. ``max_depth`` bounds the descendant
          *     recursion.
          */
         get: operations["lineage_tree_darwins__darwin_id__lineage_tree_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get event timeline
+         * @description Paginated timeline of events for this Darwin (state changes, neuron dispatches, escalations).
+         */
+        get: operations["events_darwins__darwin_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/escalations/{escalation_id}/respond": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Respond to an escalation
+         * @description Resolve an open escalation ticket for a Darwin: approve, deny, or supply the requested data.
+         */
+        post: operations["respond_escalation_darwins__darwin_id__escalations__escalation_id__respond_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/escalations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List fleet escalations
+         * @description Owner-scoped fleet view. Platform operators see every Darwin;
+         *     owners see only their owned set. Sorted by deadline (soonest first).
+         */
+        get: operations["list_escalations_fleet_escalations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/escalations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a Darwin's escalations
+         * @description Open (and optionally resolved) escalation tickets raised by this Darwin.
+         */
+        get: operations["list_escalations_darwins__darwin_id__escalations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/escalations/{escalation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an escalation
+         * @description Fetch a single escalation ticket by id.
+         */
+        get: operations["get_escalation_darwins__darwin_id__escalations__escalation_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -331,7 +399,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Ledger */
+        /**
+         * Get transaction ledger
+         * @description Per-Darwin transaction ledger as JSON.
+         */
         get: operations["ledger_darwins__darwin_id__ledger_get"];
         put?: never;
         post?: never;
@@ -349,7 +420,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Ledger Csv
+         * Download ledger as CSV
          * @description Jurisdiction-neutral CSV export of the ledger (docs 05, 17) — the
          *     owner hands this to their accountant; the platform does not file
          *     taxes.
@@ -363,15 +434,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/darwins/{darwin_id}/events": {
+    "/darwins/{darwin_id}/ledger/summary": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Events */
-        get: operations["events_darwins__darwin_id__events_get"];
+        /**
+         * Get ledger summary
+         * @description Jurisdiction-neutral accounting summary (docs 05, 17): totals
+         *     (in/out/net) + per-category breakdown for a tax ``year`` (UTC), or
+         *     lifetime when omitted. The owner hands this to their accountant;
+         *     the platform does not file taxes or generate statutory forms.
+         */
+        get: operations["ledger_summary_darwins__darwin_id__ledger_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/billing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a Darwin's billing
+         * @description Billing summary for this Darwin — platform markup and harvest fees attributed to it.
+         */
+        get: operations["darwin_billing_darwins__darwin_id__billing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/billing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get fleet billing
+         * @description Platform-wide billing rollup: total revenue (markup + harvest fees) across the fleet.
+         */
+        get: operations["fleet_billing_platform_billing_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -389,7 +506,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Harvest */
+        /**
+         * Harvest profit
+         * @description Move a fixed amount of USDC from this Darwin's wallet to a destination address (one-off profit harvest).
+         */
         post: operations["harvest_darwins__darwin_id__harvest_post"];
         delete?: never;
         options?: never;
@@ -397,35 +517,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/darwins/{darwin_id}/billing": {
+    "/darwins/{darwin_id}/harvest_rules": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Darwin Billing */
-        get: operations["darwin_billing_darwins__darwin_id__billing_get"];
+        /**
+         * List harvest rules
+         * @description Recurring harvest rules installed for this Darwin.
+         */
+        get: operations["list_harvest_rules_darwins__darwin_id__harvest_rules_get"];
         put?: never;
-        post?: never;
+        /**
+         * Add a harvest rule
+         * @description Create a recurring harvest rule: auto-move profit to a destination when the balance crosses a trigger, on an interval.
+         */
+        post: operations["add_harvest_rule_darwins__darwin_id__harvest_rules_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/platform/billing": {
+    "/darwins/{darwin_id}/harvest_rules/{rule_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Fleet Billing */
-        get: operations["fleet_billing_platform_billing_get"];
+        get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete a harvest rule
+         * @description Remove a recurring harvest rule by id.
+         */
+        delete: operations["delete_harvest_rule_darwins__darwin_id__harvest_rules__rule_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -438,13 +568,50 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Resource Throttle */
+        /**
+         * Get resource throttle
+         * @description Current resource-neuron throttle (cap + usage today) for a Darwin.
+         */
         get: operations["get_resource_throttle_platform_darwins__darwin_id__resource_throttle_get"];
         put?: never;
-        /** Set Resource Throttle */
+        /**
+         * Set resource throttle
+         * @description Cap a Darwin's daily calls to a resource neuron (sandbox | browser | egress).
+         */
         post: operations["set_resource_throttle_platform_darwins__darwin_id__resource_throttle_post"];
-        /** Clear Resource Throttle */
+        /**
+         * Clear resource throttle
+         * @description Remove a resource-neuron throttle for a Darwin.
+         */
         delete: operations["clear_resource_throttle_platform_darwins__darwin_id__resource_throttle_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/throttle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get LLM throttles
+         * @description Current LLM-tier throttles (caps + usage today) for a Darwin.
+         */
+        get: operations["get_throttles_platform_darwins__darwin_id__throttle_get"];
+        put?: never;
+        /**
+         * Set LLM throttle
+         * @description Cap a Darwin's daily calls to an LLM tier (fast | reasoning | coding | image_gen | embedding).
+         */
+        post: operations["install_throttle_platform_darwins__darwin_id__throttle_post"];
+        /**
+         * Clear LLM throttle
+         * @description Remove an LLM-tier throttle for a Darwin.
+         */
+        delete: operations["clear_throttle_platform_darwins__darwin_id__throttle_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -459,7 +626,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fiat Deposit Quote */
+        /**
+         * Quote a fiat deposit
+         * @description Get a quote (fees, USDC out) for depositing fiat via a payment method toward a Darwin's wallet.
+         */
         post: operations["fiat_deposit_quote_platform_fiat_deposit_quote_post"];
         delete?: never;
         options?: never;
@@ -476,7 +646,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fiat Confirm Deposit */
+        /**
+         * Confirm a fiat deposit
+         * @description Confirm a previously quoted fiat deposit, crediting USDC to the destination.
+         */
         post: operations["fiat_confirm_deposit_platform_fiat_confirm_deposit_post"];
         delete?: never;
         options?: never;
@@ -493,7 +666,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fiat Withdraw */
+        /**
+         * Withdraw to fiat
+         * @description Off-ramp USDC from the platform to a fiat destination.
+         */
         post: operations["fiat_withdraw_platform_fiat_withdraw_post"];
         delete?: never;
         options?: never;
@@ -501,7 +677,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/platform/signing/rotate": {
+    "/darwins/{darwin_id}/fiat_payment": {
         parameters: {
             query?: never;
             header?: never;
@@ -510,9 +686,498 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Rotate Signing Key */
-        post: operations["rotate_signing_key_platform_signing_rotate_post"];
+        /**
+         * Pay a human (fiat payout)
+         * @description Two-leg payout: Darwin USDC wallet → omnibus address (chain) →
+         *     fiat destination (Stripe Connect / MoonPay). Operator-initiated
+         *     after the genome's facilitator escalation has been owner-approved.
+         */
+        post: operations["darwin_fiat_payout_darwins__darwin_id__fiat_payment_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/fiat_payment/refund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refund a failed payout
+         * @description Recovery for a failed fiat payout: refund the leg-1 USDC
+         *     from the omnibus address back to the Darwin's wallet.
+         */
+        post: operations["darwin_fiat_refund_darwins__darwin_id__fiat_payment_refund_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/kyc/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a KYC inquiry
+         * @description Begin a KYC inquiry for the caller (or, for operators, a named
+         *     subject). Returns the provider inquiry id + redirect URL.
+         */
+        post: operations["kyc_start_platform_kyc_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/kyc/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get KYC status
+         * @description Current cached KYC verdict for the subject (default: the caller).
+         */
+        get: operations["kyc_status_platform_kyc_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/kyc/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * KYC inquiry webhook
+         * @description Provider callback / poll-consumption: refresh + cache the verdict
+         *     for an inquiry so the gate sees the latest status.
+         */
+        post: operations["kyc_webhook_platform_kyc_webhook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/stripe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stripe webhook
+         * @description Stripe deposit webhook. UNAUTHENTICATED at the bearer layer —
+         *     authenticity is established by verifying Stripe's signature against
+         *     the configured signing secret (set via --stripe-webhook-secret).
+         *     On ``payment_intent.succeeded`` the matching deposit is confirmed
+         *     and the destination Darwin's wallet credited. Always returns 200 on
+         *     a verified event (even when skipped) so Stripe stops retrying; a
+         *     bad/again signature is a 400.
+         */
+        post: operations["stripe_webhook_webhooks_stripe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/moonpay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * MoonPay webhook
+         * @description MoonPay deposit/withdraw webhook. UNAUTHENTICATED at the bearer
+         *     layer — authenticity is established by the adapter verifying the
+         *     ``Moonpay-Signature-V2`` header against the configured webhook key.
+         *     A ``completed`` buy credits the destination Darwin's wallet (routed
+         *     by the transaction's ``externalCustomerId``). A verified event always
+         *     returns 200 (even when skipped/ignored) so MoonPay stops retrying; a
+         *     bad/missing signature is a 400; an unconfigured ramp is a 503.
+         */
+        post: operations["moonpay_webhook_webhooks_moonpay_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/kyc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * KYC provider webhook
+         * @description KYC provider callback (Persona / Onfido). UNAUTHENTICATED at the
+         *     bearer layer — authenticity is the provider's signature over the raw
+         *     body (``Persona-Signature`` / ``X-SHA2-Signature``), verified by the
+         *     configured KYC adapter. A verified event refreshes + caches the
+         *     subject's verdict and returns 200; a bad/missing signature is a 400;
+         *     an unconfigured KYC service is a 503.
+         *
+         *     This is the provider-driven path; the operator/manual poll trigger
+         *     lives at ``POST /platform/kyc/webhook`` (bearer-authenticated).
+         */
+        post: operations["kyc_provider_webhook_webhooks_kyc_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/freelancers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register a freelancer
+         * @description Operator-onboard a verified fiat payout destination for an owner.
+         */
+        post: operations["register_freelancer_platform_freelancers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/freelancers/{owner_subject}/{freelancer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a freelancer
+         * @description Remove a fiat payout destination from an owner's registry.
+         */
+        delete: operations["revoke_freelancer_platform_freelancers__owner_subject___freelancer_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/freelancers/{owner_subject}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an owner's freelancers
+         * @description Registered fiat payout destinations for a given owner.
+         */
+        get: operations["list_freelancers_platform_freelancers__owner_subject__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/freelancers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List my freelancers
+         * @description Self-service: the authenticated owner's registered payout destinations.
+         */
+        get: operations["me_list_freelancers_me_freelancers_get"];
+        put?: never;
+        /**
+         * Register my freelancer
+         * @description Self-service: the authenticated owner registers one of their own fiat payout destinations.
+         */
+        post: operations["me_register_freelancer_me_freelancers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/freelancers/{freelancer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke my freelancer
+         * @description Self-service: remove one of the authenticated owner's payout destinations.
+         */
+        delete: operations["me_revoke_freelancer_me_freelancers__freelancer_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/push-vapid-public-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get push VAPID key
+         * @description The server's VAPID public key the PWA needs to subscribe to Web Push.
+         */
+        get: operations["me_push_vapid_public_key_me_push_vapid_public_key_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/push-subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List push subscriptions
+         * @description Self-service: the authenticated owner's registered Web-Push subscriptions.
+         */
+        get: operations["me_list_push_subscriptions_me_push_subscriptions_get"];
+        put?: never;
+        /**
+         * Register push subscription
+         * @description Self-service: register a browser Web-Push subscription for notifications.
+         */
+        post: operations["me_register_push_subscription_me_push_subscriptions_post"];
+        /**
+         * Revoke push subscription
+         * @description Self-service: unregister a Web-Push subscription (by ?endpoint=).
+         */
+        delete: operations["me_revoke_push_subscription_me_push_subscriptions_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/darwins/{darwin_id}/omnibus/fund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry omnibus funding
+         * @description Retry a fund_child that was skipped at spawn time.
+         */
+        post: operations["retry_omnibus_fund_darwins__darwin_id__omnibus_fund_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/omnibus/credit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Credit omnibus balance
+         * @description Credit a user's omnibus balance for an already-settled deposit.
+         *     Operator-scoped AND off by default — it mints credit not tied to a
+         *     verified on-chain/Stripe deposit, so it's a faucet/testnet affordance
+         *     only. Enable explicitly with --allow-manual-credit; production
+         *     (real-money) deploys should leave it disabled and credit solely via
+         *     the Stripe webhook + on-chain deposits.
+         */
+        post: operations["omnibus_credit_platform_omnibus_credit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/fleet/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause the fleet
+         * @description Pause every Darwin in the fleet at once (fleet-wide kill-switch step).
+         */
+        post: operations["fleet_pause_platform_fleet_pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/fleet/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume the fleet
+         * @description Resume every paused Darwin in the fleet.
+         */
+        post: operations["fleet_resume_platform_fleet_resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/fleet/spend_lock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fleet spend lock
+         * @description Lock or unlock outbound spending across the entire fleet.
+         */
+        post: operations["fleet_spend_lock_platform_fleet_spend_lock_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/fleet/block_category": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Block a category fleet-wide
+         * @description Forbid every Darwin from transacting in a spend category.
+         */
+        post: operations["fleet_block_category_platform_fleet_block_category_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/fleet/block_counterparty": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Block a counterparty fleet-wide
+         * @description Block an address / counterparty across the entire fleet.
+         */
+        post: operations["block_counterparty_platform_fleet_block_counterparty_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/quarantine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Quarantine a Darwin
+         * @description Isolate a Darwin (graded kill-switch between pause and kill) with an audited reason.
+         */
+        post: operations["quarantine_darwin_platform_darwins__darwin_id__quarantine_post"];
+        /**
+         * Release from quarantine
+         * @description Lift a Darwin's quarantine.
+         */
+        delete: operations["unquarantine_darwin_platform_darwins__darwin_id__quarantine_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -525,7 +1190,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Neuron Proposals */
+        /**
+         * List neuron proposals
+         * @description Self-evolved neuron proposals this Darwin has staged for operator review.
+         */
         get: operations["list_neuron_proposals_darwins__darwin_id__proposals_get"];
         put?: never;
         post?: never;
@@ -544,7 +1212,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Admit Neuron Proposal */
+        /**
+         * Admit a neuron proposal
+         * @description Approve a self-evolved neuron proposal so the Darwin may use it.
+         */
         post: operations["admit_neuron_proposal_platform_darwins__darwin_id__proposals__name__admit_post"];
         delete?: never;
         options?: never;
@@ -561,7 +1232,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reject Neuron Proposal */
+        /**
+         * Reject a neuron proposal
+         * @description Reject a self-evolved neuron proposal with a reason.
+         */
         post: operations["reject_neuron_proposal_platform_darwins__darwin_id__proposals__name__reject_post"];
         delete?: never;
         options?: never;
@@ -569,25 +1243,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/darwins/{darwin_id}/harvest_rules": {
+    "/darwins/{darwin_id}/vault": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Harvest Rules */
-        get: operations["list_harvest_rules_darwins__darwin_id__harvest_rules_get"];
+        /**
+         * List vault entries
+         * @description List a Darwin's vault entries (metadata only; values are not returned).
+         */
+        get: operations["vault_list_darwins__darwin_id__vault_get"];
         put?: never;
-        /** Add Harvest Rule */
-        post: operations["add_harvest_rule_darwins__darwin_id__harvest_rules_post"];
-        delete?: never;
+        /**
+         * Put a vault entry
+         * @description Store a tiered secret / document (public | scoped | sensitive) in a Darwin's vault, optionally with a TTL and watermarking.
+         */
+        post: operations["vault_put_darwins__darwin_id__vault_post"];
+        /**
+         * Delete a vault entry
+         * @description Remove a vault entry (by key / scope) for a Darwin.
+         */
+        delete: operations["vault_delete_darwins__darwin_id__vault_delete"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/darwins/{darwin_id}/harvest_rules/{rule_id}": {
+    "/platform/vault/sweep": {
         parameters: {
             query?: never;
             header?: never;
@@ -596,9 +1280,80 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Sweep expired vault entries
+         * @description Fleet-wide retention sweep: purge expired vault entries.
+         */
+        post: operations["vault_sweep_platform_vault_sweep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/wallets/{darwin_id}/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get wallet policy
+         * @description Current spend-cap policy for a Darwin's wallet.
+         */
+        get: operations["get_wallet_policy_platform_wallets__darwin_id__policy_get"];
+        put?: never;
+        /**
+         * Set wallet policy
+         * @description Set spend caps (per-action / per-day / per-lifetime) for a Darwin's wallet.
+         */
+        post: operations["set_wallet_policy_platform_wallets__darwin_id__policy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/wallets/{darwin_id}/preapprovals/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set a pre-approval rule
+         * @description Create / replace an owner pre-approval rule that auto-authorises matching payouts without a fresh escalation.
+         */
+        put: operations["set_preapproval_platform_wallets__darwin_id__preapprovals__rule_id__put"];
         post?: never;
-        /** Delete Harvest Rule */
-        delete: operations["delete_harvest_rule_darwins__darwin_id__harvest_rules__rule_id__delete"];
+        /**
+         * Revoke a pre-approval rule
+         * @description Remove an owner pre-approval rule.
+         */
+        delete: operations["revoke_preapproval_platform_wallets__darwin_id__preapprovals__rule_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/wallets/{darwin_id}/preapprovals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List pre-approval rules
+         * @description Owner pre-approval rules currently set on a Darwin's wallet.
+         */
+        get: operations["list_preapprovals_platform_wallets__darwin_id__preapprovals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -611,7 +1366,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Browser Sessions */
+        /**
+         * List browser sessions
+         * @description Browser-neuron sessions recorded for a Darwin (cost + cache status).
+         */
         get: operations["browser_sessions_darwins__darwin_id__browser_sessions_get"];
         put?: never;
         post?: never;
@@ -628,46 +1386,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Browser Stats */
+        /**
+         * Get browser cache stats
+         * @description Fleet-wide browser session / cache statistics.
+         */
         get: operations["browser_stats_platform_browser_stats_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/darwins/{darwin_id}/vault": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Vault List */
-        get: operations["vault_list_darwins__darwin_id__vault_get"];
-        put?: never;
-        /** Vault Put */
-        post: operations["vault_put_darwins__darwin_id__vault_post"];
-        /** Vault Delete */
-        delete: operations["vault_delete_darwins__darwin_id__vault_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/platform/vault/sweep": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Vault Sweep */
-        post: operations["vault_sweep_platform_vault_sweep_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -681,7 +1406,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Darwin Resources */
+        /**
+         * List a Darwin's resources
+         * @description Provisioned tenant resources (databases, namespaces) for a Darwin.
+         */
         get: operations["list_darwin_resources_darwins__darwin_id__resources_get"];
         put?: never;
         post?: never;
@@ -701,7 +1429,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Deprovision Resource */
+        /**
+         * Deprovision a resource
+         * @description Tear down a provisioned tenant resource for a Darwin.
+         */
         delete: operations["deprovision_resource_darwins__darwin_id__resources__resource_id__delete"];
         options?: never;
         head?: never;
@@ -715,10 +1446,156 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Fleet Resources */
+        /**
+         * List fleet resources
+         * @description Provisioned tenant resources across the whole fleet.
+         */
         get: operations["fleet_resources_platform_resources_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get platform capabilities
+         * @description Which adapters / features are live (real vs fake): wallet, LLM, sandbox, browser, KYC, fiat, etc.
+         */
+        get: operations["platform_capabilities_platform_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/forensics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List pod forensics
+         * @description Soma forensic snapshots captured for a Darwin's orchestrator pod.
+         */
+        get: operations["list_soma_forensics_platform_darwins__darwin_id__forensics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/forensics/{snapshot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a forensic snapshot
+         * @description Fetch a single soma forensic snapshot by id.
+         */
+        get: operations["read_soma_forensic_platform_darwins__darwin_id__forensics__snapshot_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/organism/tables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List organism tables
+         * @description Public tables in a Darwin's business database, via the read-only dashboard role.
+         */
+        get: operations["list_organism_tables_platform_darwins__darwin_id__organism_tables_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/organism/tables/{table}/rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read organism rows
+         * @description Read rows from a table in a Darwin's business database (SELECT-only).
+         */
+        get: operations["read_organism_rows_platform_darwins__darwin_id__organism_tables__table__rows_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/sms/verification-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get SMS verification code
+         * @description Latest inbound 2FA code from the platform's Twilio inbox — the
+         *     operator (or an automation) reads it to answer an accounts.manager
+         *     'need the SMS code' escalation. Platform-operator scope: the Twilio
+         *     number is shared, so codes are not owner-readable.
+         */
+        get: operations["sms_verification_code_platform_sms_verification_code_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/darwins/{darwin_id}/reproduce_with_amendment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reproduce with amendment
+         * @description Ship a platform amendment layer by forcing reproduction into an amended child, then killing the parent.
+         */
+        post: operations["reproduce_with_amendment_platform_darwins__darwin_id__reproduce_with_amendment_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -732,7 +1609,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Darwin Alerts */
+        /**
+         * List a Darwin's alerts
+         * @description Monitor alerts raised for this Darwin, optionally filtered by severity (info | warn | critical).
+         */
         get: operations["darwin_alerts_darwins__darwin_id__alerts_get"];
         put?: never;
         post?: never;
@@ -749,7 +1629,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Fleet Alerts */
+        /**
+         * List fleet alerts
+         * @description Monitor alerts across the whole fleet, optionally filtered by severity.
+         */
         get: operations["fleet_alerts_platform_alerts_get"];
         put?: never;
         post?: never;
@@ -759,7 +1642,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/platform/darwins/{darwin_id}/quarantine": {
+    "/platform/signing/rotate": {
         parameters: {
             query?: never;
             header?: never;
@@ -768,86 +1651,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Quarantine Darwin */
-        post: operations["quarantine_darwin_platform_darwins__darwin_id__quarantine_post"];
-        /** Unquarantine Darwin */
-        delete: operations["unquarantine_darwin_platform_darwins__darwin_id__quarantine_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/platform/wallets/{darwin_id}/policy": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Wallet Policy */
-        get: operations["get_wallet_policy_platform_wallets__darwin_id__policy_get"];
-        put?: never;
-        /** Set Wallet Policy */
-        post: operations["set_wallet_policy_platform_wallets__darwin_id__policy_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/platform/sms/verification-code": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
         /**
-         * Sms Verification Code
-         * @description Latest inbound 2FA code from the platform's Twilio inbox — the
-         *     operator (or an automation) reads it to answer an accounts.manager
-         *     'need the SMS code' escalation. Platform-operator scope: the Twilio
-         *     number is shared, so codes are not owner-readable.
+         * Rotate signing key
+         * @description Rotate the platform request-signing key, optionally with a drain window for the old key.
          */
-        get: operations["sms_verification_code_platform_sms_verification_code_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/platform/darwins/{darwin_id}/throttle": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Throttles */
-        get: operations["get_throttles_platform_darwins__darwin_id__throttle_get"];
-        put?: never;
-        /** Install Throttle */
-        post: operations["install_throttle_platform_darwins__darwin_id__throttle_post"];
-        /** Clear Throttle */
-        delete: operations["clear_throttle_platform_darwins__darwin_id__throttle_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/platform/darwins/{darwin_id}/reproduce_with_amendment": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reproduce With Amendment */
-        post: operations["reproduce_with_amendment_platform_darwins__darwin_id__reproduce_with_amendment_post"];
+        post: operations["rotate_signing_key_platform_signing_rotate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -861,7 +1669,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Signing Public Key */
+        /**
+         * Get signing public key
+         * @description The platform's current request-signing public key.
+         */
         get: operations["signing_public_key_platform_signing_public_key_get"];
         put?: never;
         post?: never;
@@ -878,7 +1689,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Fleet Audit */
+        /**
+         * Get audit log
+         * @description The hash-chained operator audit log (append-only), filterable by Darwin / action.
+         */
         get: operations["fleet_audit_platform_audit_get"];
         put?: never;
         post?: never;
@@ -896,7 +1710,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Staging Status
+         * Get staging status
          * @description Snapshot of the staging service: quota usage + recent verdicts.
          *     Used by the dashboard to show ops what mutation-evaluation
          *     pressure looks like across the fleet.
@@ -917,7 +1731,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Staging History */
+        /**
+         * Get staging history
+         * @description History of patch-staging verdicts (promotions / rejections).
+         */
         get: operations["staging_history_platform_staging_history_get"];
         put?: never;
         post?: never;
@@ -934,7 +1751,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Snapshot Endpoint */
+        /**
+         * Get fleet snapshot
+         * @description A full observability snapshot of the fleet for dashboards.
+         */
         get: operations["snapshot_endpoint_platform_snapshot_get"];
         put?: never;
         post?: never;
@@ -951,7 +1771,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Healthz */
+        /**
+         * Liveness probe
+         * @description Unauthenticated liveness check: process status, persistence backend, uptime, and Darwin count.
+         */
         get: operations["healthz_healthz_get"];
         put?: never;
         post?: never;
@@ -968,7 +1791,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Readyz */
+        /**
+         * Readiness probe
+         * @description Unauthenticated readiness check. Under HA, only the leader pod with a healthy DB returns 200; followers return 503.
+         */
         get: operations["readyz_readyz_get"];
         put?: never;
         post?: never;
@@ -985,7 +1811,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Metrics */
+        /**
+         * Prometheus metrics
+         * @description Unauthenticated Prometheus exposition of fleet, billing, throttle, vault, and LLM circuit-breaker metrics.
+         */
         get: operations["metrics_metrics_get"];
         put?: never;
         post?: never;
@@ -1019,6 +1848,43 @@ export interface components {
              */
             kill_parent_reason: string;
         };
+        /** BlockCounterpartyRequest */
+        BlockCounterpartyRequest: {
+            /** Address */
+            address: string;
+        };
+        /**
+         * DarwinFiatPayoutRequest
+         * @description Owner-approved fiat payout from a Darwin's wallet to a verified
+         *     fiat destination (doc 17 §"Darwin paying a human"). ``freelancer_id``
+         *     must resolve through the platform's freelancer registry for the
+         *     Darwin's owning user. ``escalation_id`` ties the payout back to the
+         *     approved escalation ticket that authorised it (optional but
+         *     recommended — it's how the operator audit timeline correlates the
+         *     two events).
+         */
+        DarwinFiatPayoutRequest: {
+            /** Amount Usdc */
+            amount_usdc: number;
+            /** Freelancer Id */
+            freelancer_id: string;
+            /** Escalation Id */
+            escalation_id?: string | null;
+        };
+        /**
+         * DarwinFiatRefundRequest
+         * @description Recovery for a failed fiat payout: refund the leg-1 USDC from
+         *     the omnibus address back to the Darwin's wallet.
+         */
+        DarwinFiatRefundRequest: {
+            /** Amount Usdc */
+            amount_usdc: number;
+            /**
+             * Reason
+             * @default fiat_payout_leg2_failed
+             */
+            reason: string;
+        };
         /** DisabledCategoriesRequest */
         DisabledCategoriesRequest: {
             /** Categories */
@@ -1051,6 +1917,8 @@ export interface components {
             amount_usd: number;
             /** Payment Method */
             payment_method: string;
+            /** Destination Darwin Id */
+            destination_darwin_id?: string | null;
         };
         /** FiatWithdrawRequest */
         FiatWithdrawRequest: {
@@ -1058,6 +1926,19 @@ export interface components {
             amount_usdc: number;
             /** Destination */
             destination: string;
+        };
+        /** FleetBlockCategoryRequest */
+        FleetBlockCategoryRequest: {
+            /** Category */
+            category: string;
+        };
+        /** FleetSpendLockRequest */
+        FleetSpendLockRequest: {
+            /**
+             * Locked
+             * @default true
+             */
+            locked: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1082,6 +1963,23 @@ export interface components {
             /** Interval Seconds */
             interval_seconds?: number | null;
         };
+        /** KYCStartRequest */
+        KYCStartRequest: {
+            /** Subject */
+            subject?: string | null;
+            /**
+             * Tier
+             * @default standard
+             */
+            tier: string;
+        };
+        /** KYCWebhookRequest */
+        KYCWebhookRequest: {
+            /** Subject */
+            subject: string;
+            /** Inquiry Id */
+            inquiry_id: string;
+        };
         /** KillRequest */
         KillRequest: {
             /**
@@ -1090,6 +1988,20 @@ export interface components {
              */
             reason: string;
         };
+        /**
+         * OmnibusCreditRequest
+         * @description Operator credit of a user's omnibus balance for an already-settled
+         *     deposit (testnet faucet top-up, reconciled wire) — the non-Stripe entry
+         *     to the credit a spawn's omnibus funding debits.
+         */
+        OmnibusCreditRequest: {
+            /** User Subject */
+            user_subject: string;
+            /** Amount Usdc */
+            amount_usdc: number;
+            /** Source Ref */
+            source_ref?: string | null;
+        };
         /** PauseRequest */
         PauseRequest: {
             /**
@@ -1097,6 +2009,46 @@ export interface components {
              * @default owner paused
              */
             reason: string;
+        };
+        /**
+         * PreApprovalRequest
+         * @description Owner pre-approval rule body (doc 17 §"Darwin paying a human").
+         *     The rule_id is the URL parameter — this body carries the match
+         *     criteria + lifetime. ``max_amount_usdc`` is required; the other
+         *     fields are conjunctive filters. ``max_uses`` caps how many spends
+         *     the rule may clear before becoming inert; null is unlimited.
+         */
+        PreApprovalRequest: {
+            /** Max Amount Usdc */
+            max_amount_usdc: number;
+            /** Counterparty Category */
+            counterparty_category?: string | null;
+            /** Counterparty Substring */
+            counterparty_substring?: string | null;
+            /** Expires At */
+            expires_at?: number | null;
+            /** Max Uses */
+            max_uses?: number | null;
+        };
+        /**
+         * PushSubscriptionRequest
+         * @description A W3C `PushSubscription` the PWA hands back after
+         *     :meth:`PushManager.subscribe`. ``endpoint`` + ``keys.{p256dh,auth}``
+         *     are everything the server needs to deliver a VAPID-signed, ECE-
+         *     encrypted push to the registering browser.
+         */
+        PushSubscriptionRequest: {
+            /** Endpoint */
+            endpoint: string;
+            /** P256Dh */
+            p256dh: string;
+            /** Auth */
+            auth: string;
+            /**
+             * User Agent
+             * @default
+             */
+            user_agent: string;
         };
         /** QuarantineRequest */
         QuarantineRequest: {
@@ -1107,6 +2059,33 @@ export interface components {
              * @default platform
              */
             operator: string;
+        };
+        /**
+         * RegisterFreelancerRequest
+         * @description Owner-onboarded fiat destination. ``fiat_destination`` is the
+         *     ramp-specific id (Stripe Connect account, MoonPay payout token).
+         */
+        RegisterFreelancerRequest: {
+            /** Owner Subject */
+            owner_subject: string;
+            /** Freelancer Id */
+            freelancer_id: string;
+            /** Fiat Destination */
+            fiat_destination: string;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Kyc Status
+             * @default unverified
+             */
+            kyc_status: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** RejectProposalRequest */
         RejectProposalRequest: {
@@ -1128,6 +2107,15 @@ export interface components {
             /** Max Daily Calls */
             max_daily_calls: number;
         };
+        /**
+         * RetryOmnibusFundRequest
+         * @description Operator retry of a fund_child that was skipped at spawn time
+         *     (chain hiccup, transient outage).
+         */
+        RetryOmnibusFundRequest: {
+            /** Amount Usdc */
+            amount_usdc: number;
+        };
         /** RotateSigningKeyRequest */
         RotateSigningKeyRequest: {
             /** Drain Window Seconds */
@@ -1148,6 +2136,18 @@ export interface components {
             escalation_auto: string | null;
             /** Parent Id */
             parent_id?: string | null;
+            /**
+             * Terms Accepted
+             * @description Owner accepted the kill-switch terms of service.
+             * @default false
+             */
+            terms_accepted: boolean;
+            /**
+             * Consent 18 Plus
+             * @description Owner attests they are 18 or older.
+             * @default false
+             */
+            consent_18_plus: boolean;
         };
         /** SpendLockRequest */
         SpendLockRequest: {
@@ -1656,6 +2656,161 @@ export interface operations {
             };
         };
     };
+    anatomy_darwins__darwin_id__anatomy_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lineage_darwins__darwin_id__lineage_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lineage_tree_darwins__darwin_id__lineage_tree_get: {
+        parameters: {
+            query?: {
+                max_depth?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    events_darwins__darwin_id__events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                /** @description Tail cursor: return only events with seq > since, oldest-first. Use for incremental polling and WS resync. */
+                since?: number | null;
+                /** @description Head cursor: return events with seq < cursor, newest-first. Omit to start from the head. */
+                cursor?: number | null;
+                /** @description Audit-log kind prefix filter (e.g. 'event:payment'). */
+                kind?: string | null;
+                /** @description Filter to events emitted by or about this neuron. */
+                neuron_id?: string | null;
+                /** @description LLM tier filter (payload.tier match). */
+                tier?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     respond_escalation_darwins__darwin_id__escalations__escalation_id__respond_post: {
         parameters: {
             query?: never;
@@ -1804,113 +2959,6 @@ export interface operations {
             };
         };
     };
-    anatomy_darwins__darwin_id__anatomy_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    lineage_darwins__darwin_id__lineage_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    lineage_tree_darwins__darwin_id__lineage_tree_get: {
-        parameters: {
-            query?: {
-                max_depth?: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     ledger_darwins__darwin_id__ledger_get: {
         parameters: {
             query?: {
@@ -1982,21 +3030,10 @@ export interface operations {
             };
         };
     };
-    events_darwins__darwin_id__events_get: {
+    ledger_summary_darwins__darwin_id__ledger_summary_get: {
         parameters: {
             query?: {
-                limit?: number;
-                offset?: number;
-                /** @description Tail cursor: return only events with seq > since, oldest-first. Use for incremental polling and WS resync. */
-                since?: number | null;
-                /** @description Head cursor: return events with seq < cursor, newest-first. Omit to start from the head. */
-                cursor?: number | null;
-                /** @description Audit-log kind prefix filter (e.g. 'event:payment'). */
-                kind?: string | null;
-                /** @description Filter to events emitted by or about this neuron. */
-                neuron_id?: string | null;
-                /** @description LLM tier filter (payload.tier match). */
-                tier?: string | null;
+                year?: number | null;
             };
             header?: {
                 authorization?: string | null;
@@ -2007,45 +3044,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    harvest_darwins__darwin_id__harvest_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HarvestRequest"];
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2111,6 +3109,155 @@ export interface operations {
                 authorization?: string | null;
             };
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    harvest_darwins__darwin_id__harvest_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HarvestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_harvest_rules_darwins__darwin_id__harvest_rules_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_harvest_rule_darwins__darwin_id__harvest_rules_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HarvestRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_harvest_rule_darwins__darwin_id__harvest_rules__rule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+                rule_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2215,6 +3362,117 @@ export interface operations {
         parameters: {
             query?: {
                 kind?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_throttles_platform_darwins__darwin_id__throttle_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    install_throttle_platform_darwins__darwin_id__throttle_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThrottleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_throttle_platform_darwins__darwin_id__throttle_delete: {
+        parameters: {
+            query?: {
+                tier?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -2359,18 +3617,20 @@ export interface operations {
             };
         };
     };
-    rotate_signing_key_platform_signing_rotate_post: {
+    darwin_fiat_payout_darwins__darwin_id__fiat_payment_post: {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
-            path?: never;
+            path: {
+                darwin_id: string;
+            };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RotateSigningKeyRequest"];
+                "application/json": components["schemas"]["DarwinFiatPayoutRequest"];
             };
         };
         responses: {
@@ -2382,6 +3642,900 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    darwin_fiat_refund_darwins__darwin_id__fiat_payment_refund_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DarwinFiatRefundRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kyc_start_platform_kyc_start_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KYCStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kyc_status_platform_kyc_status_get: {
+        parameters: {
+            query?: {
+                subject?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kyc_webhook_platform_kyc_webhook_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KYCWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stripe_webhook_webhooks_stripe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    moonpay_webhook_webhooks_moonpay_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    kyc_provider_webhook_webhooks_kyc_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    register_freelancer_platform_freelancers_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterFreelancerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_freelancer_platform_freelancers__owner_subject___freelancer_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                owner_subject: string;
+                freelancer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_freelancers_platform_freelancers__owner_subject__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                owner_subject: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_list_freelancers_me_freelancers_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_register_freelancer_me_freelancers_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterFreelancerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_revoke_freelancer_me_freelancers__freelancer_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                freelancer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_push_vapid_public_key_me_push_vapid_public_key_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_list_push_subscriptions_me_push_subscriptions_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_register_push_subscription_me_push_subscriptions_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushSubscriptionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_revoke_push_subscription_me_push_subscriptions_delete: {
+        parameters: {
+            query: {
+                endpoint: string;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_omnibus_fund_darwins__darwin_id__omnibus_fund_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetryOmnibusFundRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    omnibus_credit_platform_omnibus_credit_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OmnibusCreditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_pause_platform_fleet_pause_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_resume_platform_fleet_resume_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_spend_lock_platform_fleet_spend_lock_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetSpendLockRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_block_category_platform_fleet_block_category_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBlockCategoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    block_counterparty_platform_fleet_block_counterparty_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockCounterpartyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    quarantine_darwin_platform_darwins__darwin_id__quarantine_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuarantineRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unquarantine_darwin_platform_darwins__darwin_id__quarantine_delete: {
+        parameters: {
+            query?: {
+                operator?: string;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
                     };
                 };
             };
@@ -2484,186 +4638,6 @@ export interface operations {
                 "application/json": components["schemas"]["RejectProposalRequest"];
             };
         };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_harvest_rules_darwins__darwin_id__harvest_rules_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    add_harvest_rule_darwins__darwin_id__harvest_rules_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HarvestRuleRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_harvest_rule_darwins__darwin_id__harvest_rules__rule_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-                rule_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    browser_sessions_darwins__darwin_id__browser_sessions_get: {
-        parameters: {
-            query?: {
-                limit?: number | null;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    browser_stats_platform_browser_stats_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2835,6 +4809,261 @@ export interface operations {
             };
         };
     };
+    get_wallet_policy_platform_wallets__darwin_id__policy_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_wallet_policy_platform_wallets__darwin_id__policy_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WalletPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_preapproval_platform_wallets__darwin_id__preapprovals__rule_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_preapproval_platform_wallets__darwin_id__preapprovals__rule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_preapprovals_platform_wallets__darwin_id__preapprovals_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browser_sessions_darwins__darwin_id__browser_sessions_get: {
+        parameters: {
+            query?: {
+                limit?: number | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browser_stats_platform_browser_stats_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_darwin_resources_darwins__darwin_id__resources_get: {
         parameters: {
             query?: {
@@ -2941,6 +5170,258 @@ export interface operations {
             };
         };
     };
+    platform_capabilities_platform_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: boolean;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_soma_forensics_platform_darwins__darwin_id__forensics_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_soma_forensic_platform_darwins__darwin_id__forensics__snapshot_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_organism_tables_platform_darwins__darwin_id__organism_tables_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_organism_rows_platform_darwins__darwin_id__organism_tables__table__rows_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+                table: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sms_verification_code_platform_sms_verification_code_get: {
+        parameters: {
+            query?: {
+                number?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reproduce_with_amendment_platform_darwins__darwin_id__reproduce_with_amendment_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     darwin_alerts_darwins__darwin_id__alerts_get: {
         parameters: {
             query?: {
@@ -3017,240 +5498,18 @@ export interface operations {
             };
         };
     };
-    quarantine_darwin_platform_darwins__darwin_id__quarantine_post: {
+    rotate_signing_key_platform_signing_rotate_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QuarantineRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    unquarantine_darwin_platform_darwins__darwin_id__quarantine_delete: {
-        parameters: {
-            query?: {
-                operator?: string;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_wallet_policy_platform_wallets__darwin_id__policy_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    set_wallet_policy_platform_wallets__darwin_id__policy_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WalletPolicyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    sms_verification_code_platform_sms_verification_code_get: {
-        parameters: {
-            query?: {
-                number?: string | null;
-            };
             header?: {
                 authorization?: string | null;
             };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_throttles_platform_darwins__darwin_id__throttle_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    install_throttle_platform_darwins__darwin_id__throttle_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ThrottleRequest"];
+                "application/json": components["schemas"]["RotateSigningKeyRequest"];
             };
         };
         responses: {
@@ -3262,82 +5521,6 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    clear_throttle_platform_darwins__darwin_id__throttle_delete: {
-        parameters: {
-            query?: {
-                tier?: string | null;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reproduce_with_amendment_platform_darwins__darwin_id__reproduce_with_amendment_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                darwin_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AmendmentRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
                     };
                 };
             };
