@@ -37,19 +37,63 @@ const apiOrigin = (() => {
 })();
 const wsOrigin = apiOrigin.replace(/^http/, "ws");
 
+// Clerk's Frontend API origin is encoded in the publishable key
+// (`pk_(test|live)_<base64(host$)>`). When Clerk is enabled we must allow its
+// script/connect/image domains in the CSP or the widget never loads in prod.
+function clerkFapiOrigin(): string | null {
+  const pk = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  if (!pk) return null;
+  const b64 = pk.replace(/^pk_(test|live)_/, "");
+  try {
+    const host = atob(b64).replace(/\$+$/, "");
+    return host ? `https://${host}` : null;
+  } catch {
+    return null;
+  }
+}
+
+const clerkFapi = clerkFapiOrigin();
+// Clerk static assets + telemetry + dev-instance wildcard. The per-instance
+// FAPI origin (clerkFapi) is added on top so production custom domains work.
+const CLERK_SCRIPT = ["https://*.clerk.accounts.dev", "https://*.clerk.com"];
+const CLERK_CONNECT = [
+  "https://*.clerk.accounts.dev",
+  "https://*.clerk.com",
+  "https://clerk-telemetry.com",
+];
+const CLERK_IMG = ["https://img.clerk.com"];
+// Clerk's bot-protection challenge renders in a Cloudflare Turnstile iframe.
+const CLERK_FRAME = ["https://challenges.cloudflare.com"];
+
 function cspFor(nonce: string): string {
+  const clerkScript = CLERK_ENABLED
+    ? ` ${CLERK_SCRIPT.join(" ")}${clerkFapi ? ` ${clerkFapi}` : ""}`
+    : "";
   const scriptSrc = isProd
-    ? `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`
-    : "script-src 'self' 'unsafe-eval' 'unsafe-inline'";
+    ? `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${clerkScript}`
+    : `script-src 'self' 'unsafe-eval' 'unsafe-inline'${clerkScript}`;
+
+  const connect = [`'self'`, apiOrigin, wsOrigin];
+  const frame = ["'self'", "https://*.browserbase.com", "https://*.browser-use.com"];
+  const img = ["'self'", "data:", "blob:"];
+  if (CLERK_ENABLED) {
+    connect.push(...CLERK_CONNECT, ...(clerkFapi ? [clerkFapi] : []));
+    frame.push(...CLERK_FRAME);
+    img.push(...CLERK_IMG);
+  }
+
   return [
     "default-src 'self'",
-    `connect-src 'self' ${apiOrigin} ${wsOrigin}`,
-    "img-src 'self' data: blob:",
+    `connect-src ${connect.join(" ")}`,
+    `img-src ${img.join(" ")}`,
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
     scriptSrc,
-    // Browserbase + Browser Use Cloud live-takeover iframes (M2 captcha flow).
-    "frame-src 'self' https://*.browserbase.com https://*.browser-use.com",
+    // Clerk runs its crypto in a web worker (blob:); needed for sign-in.
+    "worker-src 'self' blob:",
+    // Browserbase + Browser Use Cloud live-takeover iframes (M2 captcha flow)
+    // plus Clerk's Turnstile challenge.
+    `frame-src ${frame.join(" ")}`,
     "frame-ancestors 'none'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -74,10 +118,10 @@ export default async function middleware(
   const csp = cspFor(nonce);
 
   // Pass the nonce to the renderer via the *request* CSP header so Next
-  // stamps it onto its <script> tags. (NOTE: in Clerk-enabled mode the
-  // nonce isn't threaded through Clerk's own request handling yet — when
-  // you wire Clerk for production, follow Clerk's CSP guidance, which also
-  // needs its script/connect domains in the policy.)
+  // stamps it onto its <script> tags. Clerk's own script/connect/img domains
+  // are folded into the policy by `cspFor` when CLERK_ENABLED (see the
+  // CLERK_* allowlists above); Clerk's script loads via 'strict-dynamic'
+  // from Next's nonced bootstrap.
   const requestHeaders = new Headers(req.headers);
   if (isProd) requestHeaders.set("content-security-policy", csp);
 

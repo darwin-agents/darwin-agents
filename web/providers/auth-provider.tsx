@@ -12,7 +12,12 @@ import { DevAuthProvider } from "./dev-auth-provider";
 export function AuthProvider({ children }: { children: ReactNode }) {
   if (CLERK_ENABLED) {
     return (
-      <ClerkProvider appearance={{ baseTheme: dark }}>{children}</ClerkProvider>
+      <ClerkProvider
+        appearance={{ baseTheme: dark }}
+        afterSignOutUrl="/sign-in"
+      >
+        {children}
+      </ClerkProvider>
     );
   }
   return <DevAuthProvider>{children}</DevAuthProvider>;
