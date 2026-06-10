@@ -2,28 +2,47 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Bell,
   FlaskConical,
+  Gauge,
   Inbox,
   LayoutGrid,
   Receipt,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
 import { AuthChip } from "./auth-chip";
 
-const NAV: Array<{ href: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  operatorOnly?: boolean;
+};
+
+const NAV: NavItem[] = [
   { href: "/", label: "Fleet", icon: LayoutGrid },
   { href: "/escalations", label: "Escalations", icon: Inbox },
   { href: "/freelancers", label: "Freelancers", icon: Users },
+  { href: "/operator", label: "Operator", icon: Gauge, operatorOnly: true },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/tokens", label: "Design tokens", icon: FlaskConical },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: caps } = useQuery({
+    queryKey: queryKeys.capabilities(),
+    queryFn: () => api.capabilities(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const items = NAV.filter((item) => !item.operatorOnly || caps?.is_operator);
   return (
     <aside className="hidden w-56 flex-col border-r border-[var(--color-border)] bg-[var(--color-card)] p-3 md:flex">
       <div className="flex items-center gap-2 px-2 py-3">
@@ -31,7 +50,7 @@ export function Sidebar() {
         <span className="text-sm font-semibold tracking-tight">Darwin</span>
       </div>
       <nav className="mt-2 flex flex-col gap-1">
-        {NAV.map((item) => {
+        {items.map((item) => {
           const active = pathname === item.href || pathname.startsWith(item.href + "/");
           const Icon = item.icon;
           return (
@@ -57,10 +76,6 @@ export function Sidebar() {
           <div className="flex items-center gap-1">
             <Receipt className="size-3" />
             <span>v0.1.0 · dev</span>
-          </div>
-          <div className="mt-1 flex items-center gap-1">
-            <Bell className="size-3" />
-            <span>WS poll fallback</span>
           </div>
         </div>
       </div>

@@ -9,7 +9,9 @@ import {
   CreditCard,
   Database,
   FileText,
+  Gauge,
   GitBranch,
+  GitMerge,
   Lock,
   Receipt,
   Server,
@@ -57,6 +59,7 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
         <SubNav href={`/darwins/${id}/anatomy`} icon={Activity} label="Anatomy" />
         <SubNav href={`/darwins/${id}/timeline`} icon={Clock} label="Timeline" />
         <SubNav href={`/darwins/${id}/lineage`} icon={GitBranch} label="Lineage" />
+        <SubNav href={`/darwins/${id}/proposals`} icon={GitMerge} label="Proposals" />
         <SubNav href={`/darwins/${id}/billing`} icon={Receipt} label="Billing & ledger" />
         <SubNav href={`/darwins/${id}/summary`} icon={FileText} label="Tax summary" />
         {caps?.is_operator && (
@@ -74,6 +77,9 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
         <SubNav href={`/darwins/${id}/data`} icon={Database} label="Data" />
         {caps?.forensics_viewer && (
           <SubNav href={`/darwins/${id}/forensics`} icon={Skull} label="Forensics" />
+        )}
+        {caps?.is_operator && (
+          <SubNav href={`/darwins/${id}/operator`} icon={Gauge} label="Operator controls" />
         )}
         <SubNav href={`/darwins/${id}/settings`} icon={Settings} label="Settings & controls" />
       </div>
