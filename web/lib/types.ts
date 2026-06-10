@@ -392,3 +392,150 @@ export interface PushSubscriptionRow {
 export interface RevokePushSubscriptionRequest {
   endpoint: string;
 }
+
+/* ---------------------------------------------------------------------------
+ * Proposals — neuron-mutation review (doc: evolution). Owner reads the list;
+ * operators admit / reject.
+ * ------------------------------------------------------------------------- */
+export interface ProposalNeuron {
+  name: string;
+  tags: string[];
+  version: string | null;
+  [k: string]: unknown;
+}
+
+export interface ProposalsResponse {
+  pending: ProposalNeuron[];
+  admitted: ProposalNeuron[];
+}
+
+export interface RejectProposalRequest {
+  reason: string;
+}
+
+/* ---------------------------------------------------------------------------
+ * Operator throttles — LLM tiers + resource kinds. All PLATFORM_OPERATOR.
+ * ------------------------------------------------------------------------- */
+export type LlmTier = "fast" | "reasoning" | "coding" | "image_gen" | "embedding";
+export type LlmThrottleMap = Record<LlmTier, number>;
+
+export interface ThrottleResponse {
+  throttles: LlmThrottleMap;
+}
+
+export interface SetThrottleRequest {
+  tier: LlmTier;
+  max_daily_calls: number;
+}
+
+export type ResourceKind = "sandbox" | "browser" | "egress";
+
+export interface ResourceThrottleRow {
+  darwin_id: string;
+  kind: ResourceKind;
+  max_daily_calls: number;
+  installed_at: number;
+}
+
+export interface ResourceThrottleResponse {
+  throttles: ResourceThrottleRow[];
+}
+
+export interface SetResourceThrottleRequest {
+  kind: ResourceKind;
+  max_daily_calls: number;
+}
+
+/* ---------------------------------------------------------------------------
+ * Quarantine — operator hold on a single Darwin.
+ * ------------------------------------------------------------------------- */
+export interface QuarantineRequest {
+  reason: string;
+  operator?: string;
+}
+
+/* ---------------------------------------------------------------------------
+ * Wallet spend policy — per-action / per-day / per-lifetime caps.
+ * ------------------------------------------------------------------------- */
+export interface WalletPolicy {
+  per_action_cap_usdc: number | null;
+  per_day_cap_usdc: number | null;
+  per_lifetime_cap_usdc: number | null;
+}
+
+/* ---------------------------------------------------------------------------
+ * Fleet-wide operator controls.
+ * ------------------------------------------------------------------------- */
+export interface FleetPauseResponse {
+  paused?: string[];
+  resumed?: string[];
+}
+
+export interface FleetSpendLockResponse {
+  spend_locked?: string[];
+  spend_unlocked?: string[];
+}
+
+/* ---------------------------------------------------------------------------
+ * Patch staging — sandbox eval verdicts (Path-C / amendments).
+ * ------------------------------------------------------------------------- */
+export interface StagingVerdict {
+  promote: boolean;
+  reason: string;
+  baseline_score: number;
+  candidate_score: number;
+  sandbox_cost_usdc: number;
+  sandbox_session_id: string;
+  failure_class: string;
+  rejected_path: string | null;
+  ran_in_sandbox: boolean;
+}
+
+export interface StagingStatusResponse {
+  quota: {
+    max_concurrent: number;
+    active: number;
+    total_acquired: number;
+    total_rejected: number;
+  };
+  history_size: number;
+  recent: StagingVerdict[];
+}
+
+export interface StagingHistoryResponse {
+  verdicts: StagingVerdict[];
+  total: number;
+}
+
+/* ---------------------------------------------------------------------------
+ * Signing key — platform attestation key.
+ * ------------------------------------------------------------------------- */
+export interface SigningPublicKeyResponse {
+  format: string;
+  public_key: string;
+}
+
+/* ---------------------------------------------------------------------------
+ * KYC — owner-initiated identity verification.
+ * ------------------------------------------------------------------------- */
+export interface KycVerdict {
+  subject: string;
+  status: string;
+  tier: string;
+  inquiry_id: string;
+  reason: string;
+  verified_at: number;
+  expires_at: number | null;
+  is_adult: boolean;
+}
+
+export interface KycStartRequest {
+  subject?: string | null;
+  tier?: "basic" | "standard" | "enhanced";
+}
+
+export interface KycStartResponse {
+  inquiry_id: string;
+  redirect_url: string;
+  status: string;
+}

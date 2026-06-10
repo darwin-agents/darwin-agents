@@ -46,6 +46,23 @@ import type {
   RetryOmnibusFundRequest,
   SpawnRequest,
   VaultPutRequest,
+  ProposalsResponse,
+  ThrottleResponse,
+  LlmThrottleMap,
+  SetThrottleRequest,
+  ResourceThrottleResponse,
+  ResourceThrottleRow,
+  SetResourceThrottleRequest,
+  QuarantineRequest,
+  WalletPolicy,
+  FleetPauseResponse,
+  FleetSpendLockResponse,
+  StagingStatusResponse,
+  StagingHistoryResponse,
+  SigningPublicKeyResponse,
+  KycVerdict,
+  KycStartRequest,
+  KycStartResponse,
 } from "./types";
 
 const BASE_URL =
@@ -516,6 +533,153 @@ export const api = {
 
   // Health — readyz is the dashboard's liveness probe (see ApiBanner).
   readyz: () => apiFetch<unknown>("/readyz"),
+
+  /* -------------------------------------------------------------------------
+   * Proposals — neuron-mutation review. Owner reads; operator decides.
+   * --------------------------------------------------------------------- */
+  listProposals: (id: string) =>
+    apiFetch<ProposalsResponse>(`/darwins/${id}/proposals`),
+  admitProposal: (id: string, name: string) =>
+    apiFetch<{ admitted: string }>(
+      `/platform/darwins/${id}/proposals/${encodeURIComponent(name)}/admit`,
+      { method: "POST", mutating: true },
+    ),
+  rejectProposal: (id: string, name: string, reason: string) =>
+    apiFetch<{ rejected: string }>(
+      `/platform/darwins/${id}/proposals/${encodeURIComponent(name)}/reject`,
+      { method: "POST", body: { reason }, mutating: true },
+    ),
+
+  /* -------------------------------------------------------------------------
+   * Operator: per-Darwin throttles (LLM tiers + resource kinds)
+   * --------------------------------------------------------------------- */
+  getThrottle: (id: string) =>
+    apiFetch<ThrottleResponse>(`/platform/darwins/${id}/throttle`),
+  setThrottle: (id: string, req: SetThrottleRequest) =>
+    apiFetch<{ tier: string; max_daily_calls: number; throttles: LlmThrottleMap }>(
+      `/platform/darwins/${id}/throttle`,
+      { method: "POST", body: req, mutating: true },
+    ),
+  deleteThrottle: (id: string, tier?: string) =>
+    apiFetch<ThrottleResponse>(`/platform/darwins/${id}/throttle`, {
+      method: "DELETE",
+      query: { tier },
+      mutating: true,
+    }),
+  getResourceThrottle: (id: string) =>
+    apiFetch<ResourceThrottleResponse>(
+      `/platform/darwins/${id}/resource_throttle`,
+    ),
+  setResourceThrottle: (id: string, req: SetResourceThrottleRequest) =>
+    apiFetch<ResourceThrottleRow>(`/platform/darwins/${id}/resource_throttle`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  deleteResourceThrottle: (id: string, kind?: string) =>
+    apiFetch<{ removed: ResourceThrottleRow[] }>(
+      `/platform/darwins/${id}/resource_throttle`,
+      { method: "DELETE", query: { kind }, mutating: true },
+    ),
+
+  /* -------------------------------------------------------------------------
+   * Operator: quarantine + wallet spend policy
+   * --------------------------------------------------------------------- */
+  quarantine: (id: string, req: QuarantineRequest) =>
+    apiFetch<{ status: string }>(`/platform/darwins/${id}/quarantine`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  clearQuarantine: (id: string, operator?: string) =>
+    apiFetch<{ status: string }>(`/platform/darwins/${id}/quarantine`, {
+      method: "DELETE",
+      query: { operator },
+      mutating: true,
+    }),
+  getWalletPolicy: (id: string) =>
+    apiFetch<WalletPolicy>(`/platform/wallets/${id}/policy`),
+  setWalletPolicy: (id: string, req: WalletPolicy) =>
+    apiFetch<WalletPolicy>(`/platform/wallets/${id}/policy`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+
+  /* -------------------------------------------------------------------------
+   * Operator: fleet-wide controls
+   * --------------------------------------------------------------------- */
+  fleetPause: () =>
+    apiFetch<FleetPauseResponse>("/platform/fleet/pause", {
+      method: "POST",
+      mutating: true,
+    }),
+  fleetResume: () =>
+    apiFetch<FleetPauseResponse>("/platform/fleet/resume", {
+      method: "POST",
+      mutating: true,
+    }),
+  fleetSpendLock: (locked: boolean) =>
+    apiFetch<FleetSpendLockResponse>("/platform/fleet/spend_lock", {
+      method: "POST",
+      body: { locked },
+      mutating: true,
+    }),
+  fleetBlockCategory: (category: string) =>
+    apiFetch<{ category: string; blocked_on: string[] }>(
+      "/platform/fleet/block_category",
+      { method: "POST", body: { category }, mutating: true },
+    ),
+  fleetBlockCounterparty: (address: string) =>
+    apiFetch<{ address: string; blocked: boolean }>(
+      "/platform/fleet/block_counterparty",
+      { method: "POST", body: { address }, mutating: true },
+    ),
+
+  /* -------------------------------------------------------------------------
+   * Operator: patch staging (Path-C verdicts) + signing key
+   * --------------------------------------------------------------------- */
+  stagingStatus: () =>
+    apiFetch<StagingStatusResponse>("/platform/staging/status"),
+  stagingHistory: (limit = 50) =>
+    apiFetch<StagingHistoryResponse>("/platform/staging/history", {
+      query: { limit },
+    }),
+  reproduceWithAmendment: (
+    id: string,
+    req: {
+      amendment_blob_b64: string;
+      amendment_name: string;
+      kill_parent_reason?: string;
+    },
+  ) =>
+    apiFetch<{ status: string }>(
+      `/platform/darwins/${id}/reproduce_with_amendment`,
+      { method: "POST", body: req, mutating: true },
+    ),
+  signingPublicKey: () =>
+    apiFetch<SigningPublicKeyResponse>("/platform/signing/public_key"),
+  rotateSigningKey: (drainWindowSeconds?: number) =>
+    apiFetch<{ retired_public_key_pem: string; drain_until: number }>(
+      "/platform/signing/rotate",
+      {
+        method: "POST",
+        body: { drain_window_seconds: drainWindowSeconds ?? null },
+        mutating: true,
+      },
+    ),
+
+  /* -------------------------------------------------------------------------
+   * KYC — owner-initiated identity verification
+   * --------------------------------------------------------------------- */
+  kycStatus: (subject?: string) =>
+    apiFetch<KycVerdict>("/platform/kyc/status", { query: { subject } }),
+  kycStart: (req: KycStartRequest = {}) =>
+    apiFetch<KycStartResponse>("/platform/kyc/start", {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
 
   /* -------------------------------------------------------------------------
    * Push subscriptions (doc 22 — PWA escalation companion)

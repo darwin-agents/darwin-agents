@@ -33,6 +33,18 @@ export const queryKeys = {
   // Push subscriptions — doc 22 (PWA escalation companion)
   pushSubscriptions: () => ["push", "subscriptions"] as const,
   pushVapidKey: () => ["push", "vapid-key"] as const,
+  // Proposals — neuron-mutation review
+  proposals: (id: string) => ["darwin", id, "proposals"] as const,
+  // Operator surfaces
+  throttle: (id: string) => ["darwin", id, "throttle"] as const,
+  resourceThrottle: (id: string) =>
+    ["darwin", id, "resource-throttle"] as const,
+  walletPolicy: (id: string) => ["darwin", id, "wallet-policy"] as const,
+  stagingStatus: () => ["platform", "staging", "status"] as const,
+  stagingHistory: (limit: number) =>
+    ["platform", "staging", "history", limit] as const,
+  signingKey: () => ["platform", "signing", "public-key"] as const,
+  kycStatus: (subject: string) => ["kyc", "status", subject] as const,
 };
 
 export type QueryKey = ReturnType<(typeof queryKeys)[keyof typeof queryKeys]>;
