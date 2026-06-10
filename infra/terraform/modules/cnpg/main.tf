@@ -84,6 +84,19 @@ resource "kubectl_manifest" "cluster" {
         initdb = {
           database = var.database_name
           owner    = var.owner_role
+          # The control plane connects as the owner role and writes to
+          # tables under FORCE ROW LEVEL SECURITY (audit_entries and every
+          # other darwin_id-keyed table; see persistence.py v12 migration).
+          # FORCE applies the policy even to the table owner, so the owner
+          # MUST hold BYPASSRLS or every audited mutation (spawn/kill/pause/
+          # controls/harvest) fails its audit write with a 500. Per-tenant
+          # isolation is unaffected: scoped reads SET ROLE to a restricted
+          # NOBYPASSRLS role. postInitApplicationSQL runs once, as superuser,
+          # at cluster bootstrap — so a fresh provision is correct by default
+          # rather than needing a manual `ALTER ROLE ... BYPASSRLS`.
+          postInitApplicationSQL = [
+            "ALTER ROLE \"${var.owner_role}\" BYPASSRLS",
+          ]
         }
       }
 
@@ -121,10 +134,10 @@ resource "kubectl_manifest" "scheduled_backup" {
       namespace = var.namespace
     }
     spec = {
-      schedule              = var.backup_schedule
-      immediate             = true
-      backupOwnerReference  = "self"
-      cluster               = { name = var.cluster_name }
+      schedule             = var.backup_schedule
+      immediate            = true
+      backupOwnerReference = "self"
+      cluster              = { name = var.cluster_name }
     }
   })
 
