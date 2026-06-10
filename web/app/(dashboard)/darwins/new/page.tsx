@@ -15,7 +15,8 @@ export default function SpawnPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [budget, setBudget] = useState("100");
-  const [acknowledged, setAcknowledged] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [consent18, setConsent18] = useState(false);
 
   const spawn = useMutation({
     mutationFn: () =>
@@ -24,6 +25,9 @@ export default function SpawnPage() {
         // Backend default: auto-approve owner inbox for unattended runs.
         escalation_auto: "approve",
         parent_id: null,
+        // Required consent gates (backend SpawnRequest).
+        terms_accepted: termsAccepted,
+        consent_18_plus: consent18,
       }),
     onSuccess: (status) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.darwins() });
@@ -74,14 +78,26 @@ export default function SpawnPage() {
             <input
               type="checkbox"
               className="mt-0.5 size-4 accent-[var(--color-accent)]"
-              checked={acknowledged}
-              onChange={(e) => setAcknowledged(e.target.checked)}
+              checked={termsAccepted}
+              onChange={(e) => setTermsAccepted(e.target.checked)}
               disabled={spawn.isPending}
             />
             <span>
-              I understand outcomes are non-guaranteed, the Darwin can lose its entire treasury,
-              and there is no resurrection.
+              I accept the kill-switch terms of service and understand outcomes are
+              non-guaranteed — the Darwin can lose its entire treasury, and there is
+              no resurrection.
             </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 size-4 accent-[var(--color-accent)]"
+              checked={consent18}
+              onChange={(e) => setConsent18(e.target.checked)}
+              disabled={spawn.isPending}
+            />
+            <span>I confirm I am 18 years or older.</span>
           </label>
 
           {spawn.isError && (
@@ -89,7 +105,7 @@ export default function SpawnPage() {
           )}
 
           <Button
-            disabled={!budgetValid || !acknowledged || spawn.isPending}
+            disabled={!budgetValid || !termsAccepted || !consent18 || spawn.isPending}
             onClick={() => spawn.mutate()}
             className="w-full"
           >
