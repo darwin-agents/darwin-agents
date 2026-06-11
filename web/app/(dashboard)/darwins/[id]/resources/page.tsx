@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QueryError } from "@/components/ui/query-error";
 import { formatRelative } from "@/lib/format";
 
 interface ResourceRecord {
@@ -43,7 +44,7 @@ export default function ResourcesPage({ params }: { params: Promise<{ id: string
   const queryClient = useQueryClient();
   const queryKey = ["darwin", id, "resources"] as const;
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey,
     queryFn: () => api.listResources(id),
   });
@@ -81,6 +82,8 @@ export default function ResourcesPage({ params }: { params: Promise<{ id: string
                 <Skeleton key={i} className="h-14 w-full" />
               ))}
             </div>
+          ) : isError ? (
+            <QueryError error={error} what="resources" />
           ) : active.length === 0 ? (
             <p className="px-4 pb-4 text-sm text-[var(--color-muted-foreground)]">
               No active resources. Darwin hasn&apos;t provisioned any databases, buckets, or jobs yet.
@@ -152,7 +155,7 @@ export default function ResourcesPage({ params }: { params: Promise<{ id: string
  * cached path or live exploration, cost, and latency.
  */
 function BrowserSessionsCard({ darwinId }: { darwinId: string }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["darwin", darwinId, "browser-sessions"] as const,
     queryFn: () => api.browserSessions(darwinId),
     refetchInterval: 30_000,
@@ -178,6 +181,8 @@ function BrowserSessionsCard({ darwinId }: { darwinId: string }) {
               <Skeleton key={i} className="h-12 w-full" />
             ))}
           </div>
+        ) : isError ? (
+          <QueryError error={error} what="browser sessions" />
         ) : sessions.length === 0 ? (
           <p className="px-4 pb-4 text-sm text-[var(--color-muted-foreground)]">
             No browser sessions yet. They appear once the Darwin drives a headless browser.

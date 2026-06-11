@@ -83,7 +83,8 @@ export interface EventsResponse {
 
 export interface LedgerEntry {
   seq: number;
-  ts: string;
+  // Epoch seconds from the platform (formatTimestamp handles both).
+  ts: string | number;
   type: string;
   direction: string;
   amount_usdc: number;
@@ -221,10 +222,14 @@ export interface BillingResponse {
   [k: string]: unknown;
 }
 
+/**
+ * Real shape from `Supervisor.get_owner_controls` — `spend_lock` is the
+ * wallet's `{spend_locked, reason}` dict and `reproduction_blocked` is a
+ * flat boolean (there is no nested `reproduction_block` object).
+ */
 export interface OwnerControls {
-  darwin_id: string;
-  spend_lock?: { locked: boolean; reason?: string };
-  reproduction_block?: { blocked: boolean };
+  spend_lock?: { spend_locked: boolean; reason?: string | null };
+  reproduction_blocked?: boolean;
   disabled_neurons?: string[];
   disabled_categories?: string[];
   [k: string]: unknown;

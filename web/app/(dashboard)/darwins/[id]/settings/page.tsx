@@ -9,6 +9,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QueryError } from "@/components/ui/query-error";
 import { DisabledEditors } from "@/components/darwin/disabled-editors";
 import { HarvestDialog } from "@/components/darwin/harvest-dialog";
 import { HarvestRules } from "@/components/darwin/harvest-rules";
@@ -16,7 +17,7 @@ import { HarvestRules } from "@/components/darwin/harvest-rules";
 export default function SettingsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: queryKeys.controls(id),
     queryFn: () => api.controls(id),
   });
@@ -36,8 +37,8 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
     mutationFn: () => api.forceReproduce(id),
   });
 
-  const spendLocked = !!data?.spend_lock?.locked;
-  const reproBlocked = !!data?.reproduction_block?.blocked;
+  const spendLocked = !!data?.spend_lock?.spend_locked;
+  const reproBlocked = !!data?.reproduction_blocked;
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -55,6 +56,8 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
         <CardContent className="space-y-4">
           {isLoading ? (
             <Skeleton className="h-32 w-full" />
+          ) : isError ? (
+            <QueryError error={error} what="owner controls" />
           ) : (
             <>
               <Toggle
@@ -104,6 +107,8 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
         <CardContent>
           {isLoading ? (
             <Skeleton className="h-32 w-full" />
+          ) : isError ? (
+            <QueryError error={error} what="owner controls" />
           ) : (
             <DisabledEditors
               darwinId={id}

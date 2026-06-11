@@ -25,7 +25,9 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
     queryFn: () => api.anatomy(id),
     // Stop polling once WS is connected (idempotent — refetch on focus
     // covers the brief disconnect windows during reconnect backoff).
-    refetchInterval: (q) => (q.state.data ? false : 5000),
+    // A persistent error also stops the poll: the user retries via the
+    // Refresh button instead of hammering a failing endpoint.
+    refetchInterval: (q) => (q.state.data || q.state.error ? false : 5000),
   });
 
   const [snapshot, setSnapshot] = useState<AnatomySnapshot | null>(null);
@@ -148,7 +150,19 @@ export default function AnatomyPage({ params }: { params: Promise<{ id: string }
           </div>
         </CardHeader>
         <CardContent>
-          {!snapshot ? (
+          {!snapshot && initial.isError ? (
+            <div className="flex h-96 w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed border-[var(--color-border)] text-sm">
+              <p className="text-[var(--color-alert-critical)]">
+                Couldn&apos;t load the anatomy snapshot.
+              </p>
+              <p className="max-w-md text-center text-xs text-[var(--color-muted-foreground)]">
+                {initial.error instanceof Error ? initial.error.message : "Unknown error"}
+              </p>
+              <Button variant="outline" size="sm" onClick={() => void initial.refetch()}>
+                <RefreshCw className="mr-1 size-4" /> Retry
+              </Button>
+            </div>
+          ) : !snapshot ? (
             <Skeleton className="h-96 w-full" />
           ) : (
             <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">

@@ -9,6 +9,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { QueryError } from "@/components/ui/query-error";
 import { TreasuryChart } from "@/components/darwin/treasury-chart";
 import { FiatDialog } from "@/components/darwin/fiat-dialog";
 import { formatTimestamp, formatUsdc } from "@/lib/format";
@@ -16,12 +17,17 @@ import { formatTimestamp, formatUsdc } from "@/lib/format";
 export default function BillingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
 
-  const { data: billing } = useQuery({
+  const { data: billing, isError: billingError, error: billingErr } = useQuery({
     queryKey: queryKeys.billing(id),
     queryFn: () => api.billing(id),
     refetchInterval: 60_000,
   });
-  const { data: ledger, isLoading } = useQuery({
+  const {
+    data: ledger,
+    isLoading,
+    isError: ledgerError,
+    error: ledgerErr,
+  } = useQuery({
     queryKey: queryKeys.ledger(id, 0),
     queryFn: () => api.ledger(id, { limit: 500 }),
     refetchInterval: 60_000,
@@ -38,6 +44,9 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
       >
         <ArrowLeft className="size-3" /> Back to Darwin
       </Link>
+
+      {billingError && <QueryError error={billingErr} what="billing summary" />}
+      {ledgerError && <QueryError error={ledgerErr} what="the ledger" />}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <BillingMetric label="Balance" value={formatUsdc(billing?.balance_usdc)} />
@@ -90,7 +99,9 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
           <CardTitle>Recent ledger entries</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {entries.length === 0 ? (
+          {ledgerError ? (
+            <QueryError error={ledgerErr} what="ledger entries" />
+          ) : entries.length === 0 ? (
             <p className="px-4 pb-4 text-sm text-[var(--color-muted-foreground)]">No entries.</p>
           ) : (
             <table className="w-full text-sm">
