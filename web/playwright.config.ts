@@ -10,6 +10,10 @@
  *   asserts the auth middleware redirects unauthenticated requests to
  *   `/sign-in`. Skipped automatically when `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
  *   is missing from the environment.
+ * - `live`: NO mocks — drives the real dashboard (:3000) against the real
+ *   platform (:8000) brought up by `scripts/dev-up.sh`. This is the
+ *   pre-deploy gate that catches frontend/backend drift the stubbed
+ *   projects can't see. Opt-in via E2E_LIVE=1 (`npm run test:e2e:live`).
  */
 import { defineConfig, devices } from "@playwright/test";
 
@@ -19,6 +23,8 @@ const DEV_BASE = `http://localhost:${DEV_PORT}`;
 const CLERK_BASE = `http://localhost:${CLERK_PORT}`;
 
 const HAS_CLERK = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+const LIVE = Boolean(process.env.E2E_LIVE);
+const LIVE_BASE = process.env.E2E_LIVE_WEB_URL ?? "http://localhost:3000";
 
 const DEV_TOKEN = "e2e-dev-token";
 
@@ -56,6 +62,20 @@ export default defineConfig({
         baseURL: CLERK_BASE,
       },
     },
+    ...(LIVE
+      ? [
+          {
+            name: "live",
+            testMatch: /live\/.*\.spec\.ts$/,
+            // Spawning a Darwin pod can take ~2 min on first pull.
+            timeout: 300_000,
+            use: {
+              ...devices["Desktop Chrome"],
+              baseURL: LIVE_BASE,
+            },
+          },
+        ]
+      : []),
   ],
   // `next dev` is used so the env override below takes effect (next build's
   // env inlining + .env merge is finicky in CI). The trade-off is per-route
