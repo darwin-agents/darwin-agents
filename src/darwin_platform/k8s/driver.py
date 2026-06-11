@@ -314,6 +314,27 @@ class K8sDarwinDriver:
             ) from exc
         return data if isinstance(data, dict) else {}
 
+    async def control_get(self, darwin_id: str, path: str) -> dict:
+        """Generic GET against one pod's control API (anatomy, controls,
+        ledger, …). The supervisor owns the path contract; this just routes
+        and authenticates."""
+        handle = self._require(darwin_id)
+        try:
+            data = await self._control.get(
+                self._base_url(handle), handle.control_token, path,
+            )
+        except Exception as exc:
+            raise DriverError(
+                f"orchestrator RPC GET {path!r} failed for {darwin_id!r}: {exc}"
+            ) from exc
+        return data if isinstance(data, dict) else {}
+
+    async def control_post(
+        self, darwin_id: str, path: str, body: dict | None = None,
+    ) -> dict:
+        """Generic POST against one pod's control API (owner controls, …)."""
+        return await self._post(darwin_id, path, body or {})
+
     async def list_ids(self) -> list[str]:
         return list(self._handles)
 

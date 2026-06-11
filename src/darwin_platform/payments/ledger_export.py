@@ -91,6 +91,22 @@ def _fields(movement: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def movements_to_rows(
+    movements: list[dict[str, Any]], *, seq_base: int = 0,
+) -> list[dict[str, Any]]:
+    """Flat, UI-friendly rows (seq, ts, type, direction, amount_usdc,
+    counterparty, category, memo) from raw kind-keyed wallet movements —
+    the shape the dashboard's ledger table renders. ``seq_base`` keeps seq
+    stable when flattening one page of a larger feed. Unrecognised
+    movements are skipped."""
+    rows: list[dict[str, Any]] = []
+    for i, movement in enumerate(movements or []):
+        fields = _fields(movement)
+        if fields is not None:
+            rows.append({"seq": seq_base + i, **fields})
+    return rows
+
+
 def _csv_row(seq: int, fields: dict[str, Any]) -> dict[str, Any]:
     """A :func:`_fields` dict as a CSV row (raw ts → ISO string)."""
     return {

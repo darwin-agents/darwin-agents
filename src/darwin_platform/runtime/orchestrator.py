@@ -263,6 +263,13 @@ class OrchestratorState:
         self._reproduce_requested = False
         self._reproduce_amendment: tuple[bytes, str, str | None] | None = None
         self._closed = False
+        # Owner runtime controls (doc 09). In ``--driver=k8s`` the genome
+        # runs here, so the pod owns this state; the supervisor sets it via
+        # the control API and the drive loop mirrors it into runtime.state
+        # every heartbeat (same contract as the in-process Supervisor._drive).
+        self.reproduction_blocked = False
+        self.disabled_neurons: set[str] = set()
+        self.disabled_categories: set[str] = set()
         # Death-time code fingerprint (doc 05), captured once when the genome
         # dies. The supervisor pulls it via GET /forensics before reaping the
         # pod and persists it to its own forensics store.
@@ -304,6 +311,11 @@ class OrchestratorState:
                 if self._reproduce_requested:
                     self.runtime.state.force_reproduce = True
                     self._reproduce_requested = False
+                self.runtime.state.reproduction_blocked = self.reproduction_blocked
+                self.runtime.state.disabled_neurons = sorted(self.disabled_neurons)
+                self.runtime.state.disabled_categories = sorted(
+                    self.disabled_categories
+                )
                 await self.runtime.run(max_heartbeats=1)
                 # Hot-swap the strategy if a soma patch landed this tick (doc
                 # 33) — the pod's quiescent boundary, same as the supervisor.
@@ -487,6 +499,313 @@ class OrchestratorState:
             out["metadata"]["soma_present"] = False
         return out
 
+    def anatomy(self) -> dict[str, Any]:
+        """Structural snapshot of the organism — the pod-side source for
+        ``GET /darwins/{id}/anatomy`` in k8s mode. Mirrors the shape of
+        ``Supervisor.anatomy`` exactly (the dashboard renders both). The pod
+        is single-tenant, and its genome stamps audit records with its own
+        genesis identity (independent of the supervisor handle id), so no
+        darwin_id filter is applied to the record scan."""
+        runtime = self.runtime
+        catalog = getattr(runtime, "catalog", {}) or {}
+        try:
+            records = self.stack.audit_sink.read_all()
+        except Exception:
+            records = []
+        recent = records[-1000:]  # cap the scan; heat is a rolling signal
+
+        last_dispatch: dict[str, float] = {}
+        last_error: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        active_now: set[str] = set()
+        for rec in recent:
+            kind = str(rec.get("kind", ""))
+            payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+            ts = float(rec.get("ts", 0))
+            neuron = None
+            if kind.startswith("intent:neuron."):
+                neuron = kind[len("intent:neuron.") :]
+                active_now.add(neuron)
+            elif kind == "outcome" and isinstance(payload, dict):
+                pn = payload.get("neuron")
+                if isinstance(pn, str):
+                    neuron = pn
+                    active_now.discard(neuron)
+                    if payload.get("status") in ("fail", "failed", "refused", "error"):
+                        last_error[neuron] = ts
+            elif isinstance(payload, dict) and isinstance(payload.get("neuron"), str):
+                neuron = payload["neuron"]
+            if neuron:
+                counts[neuron] = counts.get(neuron, 0) + 1
+                last_dispatch[neuron] = max(last_dispatch.get(neuron, 0.0), ts)
+
+        max_count = max(counts.values(), default=1)
+
+        st = runtime.state
+        if not st.alive:
+            orch_state = "dead"
+        elif getattr(st, "paused", False):
+            orch_state = "paused"
+        else:
+            orch_state = "running"
+
+        neurons_payload: list[dict[str, Any]] = []
+        edges_payload: list[dict[str, Any]] = []
+        heatmap_payload: dict[str, float] = {}
+        for name, n in sorted(catalog.items()):
+            category = name.split(".", 1)[0] if "." in name else name
+            is_disabled = (
+                name in self.disabled_neurons
+                or category in self.disabled_categories
+            )
+            ts_last = last_dispatch.get(name)
+            ts_err = last_error.get(name)
+            count = counts.get(name, 0)
+            heat = count / max_count if max_count else 0.0
+            heatmap_payload[name] = round(heat, 4)
+            if is_disabled:
+                status = "disabled"
+            elif name in active_now:
+                status = "active"
+            elif ts_err and (not ts_last or ts_err >= ts_last):
+                status = "error"
+            else:
+                status = "idle"
+            neurons_payload.append(
+                {
+                    "id": name,
+                    "label": name,
+                    "category": category,
+                    "version": getattr(n, "version", None),
+                    "status": status,
+                    "last_dispatch_at": ts_last,
+                    "last_error_at": ts_err,
+                    "dispatch_count_recent": count,
+                }
+            )
+            edges_payload.append(
+                {
+                    "from": "orchestrator",
+                    "to": name,
+                    "kind": "dispatch",
+                    "active": name in active_now,
+                    "weight": round(heat, 4),
+                }
+            )
+
+        manifest = getattr(getattr(runtime, "_p", None), "manifest", None)
+        generation = getattr(st, "generation", None)
+        layer_names: list[str] = []
+        if manifest is not None:
+            layer_names = [entry.name for entry in manifest.layers]
+            if generation is None:
+                generation = manifest.identity.generation
+
+        return {
+            "darwin_id": self.darwin_id,
+            "orchestrator": {
+                "id": "orchestrator",
+                "label": "Orchestrator",
+                "state": orch_state,
+                "tick": int(st.tick),
+            },
+            "neurons": neurons_payload,
+            "edges": edges_payload,
+            "heatmap": heatmap_payload,
+            "dna": {
+                "generation": generation,
+                "layers": layer_names,
+            },
+        }
+
+    def controls(self) -> dict[str, Any]:
+        """Owner-control state (doc 09) — same shape as
+        ``Supervisor.get_owner_controls``."""
+        wallet = self.stack.wallet
+        spend_lock = (
+            wallet.spend_lock()
+            if hasattr(wallet, "spend_lock")
+            else {"spend_locked": False, "reason": None}
+        )
+        return {
+            "spend_lock": spend_lock,
+            "reproduction_blocked": self.reproduction_blocked,
+            "disabled_neurons": sorted(self.disabled_neurons),
+            "disabled_categories": sorted(self.disabled_categories),
+        }
+
+    def set_spend_lock(self, locked: bool, reason: str | None) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        if not hasattr(wallet, "set_spend_lock"):
+            raise ValueError("wallet does not support spend-lock")
+        return wallet.set_spend_lock(
+            bool(locked), reason=reason if locked else None,
+        )
+
+    def set_reproduction_block(self, blocked: bool) -> dict[str, Any]:
+        self.reproduction_blocked = bool(blocked)
+        return {"reproduction_blocked": self.reproduction_blocked}
+
+    def set_disabled_neurons(self, neurons: list[str]) -> dict[str, Any]:
+        self.disabled_neurons = {
+            str(n).strip() for n in neurons if str(n).strip()
+        }
+        return {"disabled_neurons": sorted(self.disabled_neurons)}
+
+    def set_disabled_categories(self, categories: list[str]) -> dict[str, Any]:
+        self.disabled_categories = {
+            str(c).strip() for c in categories if str(c).strip()
+        }
+        return {"disabled_categories": sorted(self.disabled_categories)}
+
+    def ledger(self) -> dict[str, Any]:
+        """The wallet's full movement feed. The supervisor pages, exports
+        and summarizes — this just hands the authoritative rows over."""
+        try:
+            movements = list(self.stack.wallet.movements())
+        except Exception:
+            movements = []
+        try:
+            balance = float(self.stack.wallet.balance_usdc())
+        except Exception:
+            balance = 0.0
+        return {
+            "darwin_id": self.darwin_id,
+            "balance_usdc": balance,
+            "movements": movements,
+        }
+
+    # -- wallet policy + pre-approvals (docs 08, 17) -----------------------
+    def wallet_policy(self) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        if not hasattr(wallet, "policy"):
+            raise ValueError("wallet does not expose policy")
+        return wallet.policy()
+
+    def set_wallet_policy(
+        self,
+        *,
+        per_action_cap_usdc: float | None,
+        per_day_cap_usdc: float | None,
+        per_lifetime_cap_usdc: float | None,
+    ) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        if not hasattr(wallet, "set_policy"):
+            raise ValueError("wallet does not support platform-installed policy")
+        return wallet.set_policy(
+            per_action_cap_usdc=per_action_cap_usdc,
+            per_day_cap_usdc=per_day_cap_usdc,
+            per_lifetime_cap_usdc=per_lifetime_cap_usdc,
+        )
+
+    def list_preapprovals(self) -> list[dict[str, Any]]:
+        wallet = self.stack.wallet
+        if not hasattr(wallet, "owner_preapprovals"):
+            return []
+        return [r.model_dump() for r in wallet.owner_preapprovals()]
+
+    def set_preapproval(self, body: dict[str, Any]) -> dict[str, Any]:
+        from darwin_dna.constitution import PreApprovalRule
+
+        wallet = self.stack.wallet
+        if not hasattr(wallet, "set_preapproval"):
+            raise ValueError("wallet does not support pre-approvals")
+        rule = PreApprovalRule(
+            rule_id=str(body["rule_id"]),
+            max_amount_usdc=float(body["max_amount_usdc"]),
+            counterparty_category=body.get("counterparty_category"),
+            counterparty_substring=body.get("counterparty_substring"),
+            expires_at=body.get("expires_at"),
+            max_uses=body.get("max_uses"),
+        )
+        wallet.set_preapproval(rule)
+        return rule.model_dump()
+
+    def revoke_preapproval(self, rule_id: str) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        if not hasattr(wallet, "revoke_preapproval"):
+            raise ValueError("wallet does not support pre-approvals")
+        return {
+            "revoked": bool(wallet.revoke_preapproval(rule_id)),
+            "rule_id": rule_id,
+        }
+
+    # -- LLM tier throttle (docs 08, 09 level 2) ---------------------------
+    def throttle_llm_tier(self, tier: str, max_daily_calls: int) -> dict[str, Any]:
+        from darwin_dna.machinery.llm_router import Tier
+
+        t = Tier(tier)  # ValueError → 400 at the route
+        self.runtime.llm.set_throttle(t, int(max_daily_calls))
+        return {
+            "tier": tier,
+            "max_daily_calls": int(max_daily_calls),
+            "throttles": self.runtime.llm.throttles(),
+        }
+
+    def clear_llm_throttle(self, tier: str | None) -> dict[str, Any]:
+        from darwin_dna.machinery.llm_router import Tier
+
+        t = Tier(tier) if tier else None
+        self.runtime.llm.clear_throttle(t)
+        return {"throttles": self.runtime.llm.throttles()}
+
+    def llm_throttles(self) -> dict[str, int]:
+        return self.runtime.llm.throttles()
+
+    # -- Path-C neuron proposals (doc 04 phase 3) --------------------------
+    def list_proposals(self) -> dict[str, Any]:
+        gate = self.runtime.neuron_admission
+        if gate is None:
+            return {"pending": [], "admitted": []}
+        return {
+            "pending": [p.to_json() for p in gate.pending()],
+            "admitted": [
+                {"name": n.name,
+                 "tags": sorted(n.capability_tags),
+                 "version": n.version}
+                for n in gate.admitted().values()
+            ],
+        }
+
+    def admit_proposal(self, name: str) -> dict[str, Any]:
+        self.runtime.admit_neuron_proposal(name)  # raises on unknown/invalid
+        return {"admitted": name}
+
+    def reject_proposal(self, name: str, reason: str) -> dict[str, Any]:
+        gate = self.runtime.neuron_admission
+        if gate is None:
+            raise ValueError(
+                "Path-C is disabled; enable path_c_enabled to manage proposals"
+            )
+        gate.reject(name, reason=reason)
+        return {"rejected": name, "reason": reason}
+
+    # -- wallet legs for supervisor-driven money flows (doc 17) ------------
+    def wallet_address(self) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        address_getter = getattr(wallet, "address", None)
+        if not callable(address_getter):
+            raise ValueError("wallet has no on-chain address")
+        return {"address": str(address_getter() or "")}
+
+    def wallet_transfer_out_for_fiat_payout(
+        self, amount_usdc: float, destination: str,
+    ) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        transfer = getattr(wallet, "transfer_out_for_fiat_payout", None)
+        if not callable(transfer):
+            raise ValueError("wallet does not support fiat payout transfer")
+        transfer(float(amount_usdc), destination=str(destination))
+        return {"transferred": float(amount_usdc), "destination": str(destination)}
+
+    def wallet_credit(self, amount_usdc: float, memo: str) -> dict[str, Any]:
+        wallet = self.stack.wallet
+        crediter = getattr(wallet, "credit", None)
+        if not callable(crediter):
+            raise ValueError("wallet does not support credit")
+        crediter(float(amount_usdc), str(memo))
+        return {"credited": float(amount_usdc), "memo": str(memo)}
+
     def events_records(self) -> list[dict[str, Any]]:
         """Raw audit-log records held in this pod.
 
@@ -567,6 +886,212 @@ def _build_control_app(state: OrchestratorState, token: str):
         # The pod's death-time code fingerprint (doc 05). The supervisor pulls
         # this before reaping the pod and persists it to its forensics store.
         return state.forensics()
+
+    @app.get("/anatomy")
+    async def anatomy(_: None = Depends(_require_token)) -> dict:
+        return state.anatomy()
+
+    @app.get("/controls")
+    async def controls(_: None = Depends(_require_token)) -> dict:
+        return state.controls()
+
+    @app.get("/ledger")
+    async def ledger(_: None = Depends(_require_token)) -> dict:
+        return state.ledger()
+
+    @app.post("/controls/spend_lock")
+    async def set_spend_lock(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            return state.set_spend_lock(
+                bool(body.get("locked", False)),
+                body.get("reason"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/controls/reproduction_block")
+    async def set_reproduction_block(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        return state.set_reproduction_block(bool(body.get("blocked", False)))
+
+    @app.post("/controls/disabled_neurons")
+    async def set_disabled_neurons(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        neurons = body.get("neurons")
+        if not isinstance(neurons, list):
+            raise HTTPException(status_code=400, detail="neurons must be a list")
+        return state.set_disabled_neurons(neurons)
+
+    @app.post("/controls/disabled_categories")
+    async def set_disabled_categories(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        categories = body.get("categories")
+        if not isinstance(categories, list):
+            raise HTTPException(status_code=400, detail="categories must be a list")
+        return state.set_disabled_categories(categories)
+
+    # The control client speaks GET/POST only, so mutations that would be
+    # PUT/DELETE on the public API surface here as POST verbs.
+    @app.get("/wallet/policy")
+    async def wallet_policy(_: None = Depends(_require_token)) -> dict:
+        try:
+            return state.wallet_policy()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/wallet/policy")
+    async def set_wallet_policy(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            return state.set_wallet_policy(
+                per_action_cap_usdc=body.get("per_action_cap_usdc"),
+                per_day_cap_usdc=body.get("per_day_cap_usdc"),
+                per_lifetime_cap_usdc=body.get("per_lifetime_cap_usdc"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.get("/wallet/preapprovals")
+    async def list_preapprovals(_: None = Depends(_require_token)) -> dict:
+        return {"rules": state.list_preapprovals()}
+
+    @app.post("/wallet/preapprovals")
+    async def set_preapproval(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            return state.set_preapproval(body)
+        except (KeyError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"bad rule: {exc}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/wallet/preapprovals/revoke")
+    async def revoke_preapproval(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        rule_id = body.get("rule_id")
+        if not rule_id:
+            raise HTTPException(status_code=400, detail="rule_id is required")
+        try:
+            return state.revoke_preapproval(str(rule_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.get("/throttle")
+    async def llm_throttles(_: None = Depends(_require_token)) -> dict:
+        return {"throttles": state.llm_throttles()}
+
+    @app.post("/throttle")
+    async def throttle_llm_tier(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            return state.throttle_llm_tier(
+                str(body.get("tier", "")), int(body.get("max_daily_calls", 0)),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/throttle/clear")
+    async def clear_llm_throttle(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        tier = body.get("tier")
+        try:
+            return state.clear_llm_throttle(str(tier) if tier else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/proposals")
+    async def list_proposals(_: None = Depends(_require_token)) -> dict:
+        return state.list_proposals()
+
+    @app.post("/proposals/admit")
+    async def admit_proposal(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        name = body.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        try:
+            return state.admit_proposal(str(name))
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/proposals/reject")
+    async def reject_proposal(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        name = body.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        try:
+            return state.reject_proposal(
+                str(name), str(body.get("reason", "operator rejected")),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.get("/wallet/address")
+    async def wallet_address(_: None = Depends(_require_token)) -> dict:
+        try:
+            return state.wallet_address()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/wallet/transfer_out_for_fiat_payout")
+    async def wallet_transfer_out_for_fiat_payout(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        amount = body.get("amount_usdc")
+        destination = body.get("destination")
+        if not amount or not destination:
+            raise HTTPException(
+                status_code=400, detail="amount_usdc and destination are required",
+            )
+        try:
+            return state.wallet_transfer_out_for_fiat_payout(
+                float(amount), str(destination),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except Exception as exc:
+            # WalletError etc. — refuse loudly; the supervisor surfaces it.
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/wallet/credit")
+    async def wallet_credit(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        amount = body.get("amount_usdc")
+        if not amount:
+            raise HTTPException(status_code=400, detail="amount_usdc is required")
+        try:
+            return state.wallet_credit(
+                float(amount), str(body.get("memo", "credit")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/pause")
     async def pause(

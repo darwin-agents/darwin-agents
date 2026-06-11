@@ -154,6 +154,16 @@ class DarwinDriver(Protocol):
         driver); the supervisor applies filtering + paging on top, so this
         returns the unfiltered records for ``GET /darwins/{id}/events``."""
 
+    async def control_get(self, darwin_id: str, path: str) -> dict:
+        """Generic GET RPC against the Darwin's control API (anatomy,
+        controls, ledger, …). The supervisor owns the path contract."""
+
+    async def control_post(
+        self, darwin_id: str, path: str, body: dict | None = None,
+    ) -> dict:
+        """Generic POST RPC against the Darwin's control API (owner
+        controls, …)."""
+
 
 class DriverError(Exception):
     """Driver-side rejection. The supervisor wraps these into
