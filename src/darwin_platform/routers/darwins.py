@@ -119,6 +119,8 @@ async def status(
         return asdict(await _sup(request).status(darwin_id))
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
 
 
 # -- pause / resume / kill --------------------------------------------

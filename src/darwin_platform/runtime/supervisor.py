@@ -1540,10 +1540,21 @@ class Supervisor:
         """Build a DarwinStatus from the K8s driver's snapshot + the
         supervisor's bookkeeping. Generation + l0_version come from the
         driver via the orchestrator's snapshot endpoint (added in a
-        follow-on slice — for now those fields default)."""
+        follow-on slice — for now those fields default).
+
+        A snapshot RPC failure (pod restarting, OOM-killed container,
+        transient network) degrades to the last cached snapshot instead of
+        500ing the dashboard; with no cache yet it surfaces as a 409."""
         bookkeeping = self._k8s_handles[darwin_id]
-        snapshot = await self._k8s_driver.snapshot(darwin_id)
-        self._k8s_handles[darwin_id]["snapshot"] = snapshot
+        try:
+            snapshot = await self._k8s_driver.snapshot(darwin_id)
+            self._k8s_handles[darwin_id]["snapshot"] = snapshot
+        except Exception as exc:
+            snapshot = bookkeeping.get("snapshot")
+            if snapshot is None:
+                raise SupervisorError(
+                    f"pod snapshot unavailable for {darwin_id}: {exc}"
+                ) from exc
         return DarwinStatus(
             darwin_id=darwin_id,
             generation=0,
