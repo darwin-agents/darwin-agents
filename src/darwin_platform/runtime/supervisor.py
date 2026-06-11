@@ -1563,6 +1563,38 @@ class Supervisor:
             open_escalations=0,
         )
 
+    async def _k8s_control_get(self, darwin_id: str, path: str) -> dict[str, Any]:
+        """GET against the Darwin's pod control API, with driver errors
+        translated to SupervisorError so the HTTP layer maps them to a 409
+        (the Darwin exists; the pod call failed) rather than a 500."""
+        try:
+            return await self._k8s_driver.control_get(darwin_id, path)
+        except Exception as exc:
+            raise SupervisorError(
+                f"pod control RPC GET {path} failed for {darwin_id}: {exc}"
+            ) from exc
+
+    async def _k8s_control_post(
+        self, darwin_id: str, path: str, body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await self._k8s_driver.control_post(darwin_id, path, body)
+        except Exception as exc:
+            raise SupervisorError(
+                f"pod control RPC POST {path} failed for {darwin_id}: {exc}"
+            ) from exc
+
+    async def _k8s_ledger(self, darwin_id: str) -> tuple[list[dict[str, Any]], float]:
+        """(movements, balance) from the pod's wallet — the k8s source for
+        ledger / ledger.csv / ledger summary."""
+        data = await self._k8s_control_get(darwin_id, "/ledger")
+        movements = data.get("movements")
+        balance = data.get("balance_usdc")
+        return (
+            list(movements) if isinstance(movements, list) else [],
+            float(balance or 0.0),
+        )
+
     # -- provisioning (doc 04, 07) ----------------------------------------
     def list_resources(
         self,
@@ -1576,10 +1608,7 @@ class Supervisor:
         view)."""
         # Defense in depth: confirm the id is known to the supervisor. We
         # accept inactive darwins so /resources still works after a kill.
-        if (
-            darwin_id not in self._darwins
-            and not self._lineage_registry.has(darwin_id)
-        ):
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         return self._provisioning.list_resources(
             darwin_id, include_deprovisioned=include_deprovisioned,
@@ -1602,10 +1631,7 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"resource_id": resource_id},
         ):
-            if (
-                darwin_id not in self._darwins
-                and not self._lineage_registry.has(darwin_id)
-            ):
+            if not self._known(darwin_id):
                 raise UnknownDarwin(darwin_id)
             record = self._provisioning.deprovision(
                 darwin_id=darwin_id, resource_id=resource_id,
@@ -1630,10 +1656,7 @@ class Supervisor:
         limit: int | None = None,
     ) -> list:
         """Per-Darwin browser session log. Read-only; for the owner UI."""
-        if (
-            darwin_id not in self._darwins
-            and not self._lineage_registry.has(darwin_id)
-        ):
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         return [
             r.to_json() for r in self._browser_cache.sessions(
@@ -1660,7 +1683,7 @@ class Supervisor:
         """Register a recurring rule. Fires whenever the wallet balance
         exceeds ``trigger_balance_usdc`` and at least ``interval_seconds``
         have passed since the last fire."""
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         with span(
             "supervisor.add_harvest_rule",
@@ -1701,7 +1724,7 @@ class Supervisor:
     def remove_harvest_rule(
         self, darwin_id: str, rule_id: str, *, actor: str = "anonymous",
     ) -> HarvestRule:
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         with span(
             "supervisor.remove_harvest_rule",
@@ -1727,10 +1750,7 @@ class Supervisor:
             return rule
 
     def list_harvest_rules(self, darwin_id: str) -> list[HarvestRule]:
-        if (
-            darwin_id not in self._darwins
-            and not self._lineage_registry.has(darwin_id)
-        ):
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         return self._harvest_scheduler.list(darwin_id)
 
@@ -1746,7 +1766,7 @@ class Supervisor:
         """Install a per-Darwin daily call cap on a non-LLM resource.
         ``kind`` ∈ ``{"sandbox", "browser", "egress"}``. The LLM tier
         throttle remains the genome's :meth:`throttle_llm_tier` lever."""
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         with span(
             "supervisor.set_resource_throttle",
@@ -1775,7 +1795,7 @@ class Supervisor:
         kind: str | None = None,
         actor: str = "anonymous",
     ) -> list[ResourceThrottle]:
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         with span(
             "supervisor.clear_resource_throttle",
@@ -1797,10 +1817,7 @@ class Supervisor:
             return removed
 
     def list_resource_throttles(self, darwin_id: str) -> list[ResourceThrottle]:
-        if (
-            darwin_id not in self._darwins
-            and not self._lineage_registry.has(darwin_id)
-        ):
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         return self._throttle_service.list_for(darwin_id)
 
@@ -2374,7 +2391,7 @@ class Supervisor:
         KYC docs, credentials, payment methods). Sensitive-tier uploads
         are auto-tracked by the retention sweeper (default 90-day TTL
         from last use)."""
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         with span(
             "supervisor.vault_put",
@@ -2417,7 +2434,7 @@ class Supervisor:
         """Owner removes a stored secret. Audit-logged. Refuses with a
         clear error rather than silently no-opping on unknown keys (a
         silent no-op would hide a typo'd path from compliance review)."""
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         with span(
             "supervisor.vault_delete",
@@ -2449,7 +2466,7 @@ class Supervisor:
     ) -> list[VaultEntryRef]:
         """Read-only inventory for the owner UI. Values are never returned —
         only refs (path, sha256, size, uploaded_at, expires_at)."""
-        if darwin_id not in self._darwins:
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
         return self._vault_admin.list(darwin_id, tier=tier)
 
@@ -2691,7 +2708,8 @@ class Supervisor:
             return {**wallet_row, "ledger": ledger_row}
 
     async def billing(self, darwin_id: str) -> dict[str, Any]:
-        self._get(darwin_id)  # validate
+        if not self._known(darwin_id):
+            raise UnknownDarwin(darwin_id)
         return self._billing.summary(darwin_id)
 
     async def fleet_billing(self) -> dict[str, Any]:
@@ -2754,16 +2772,23 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"tier": tier, "max_daily_calls": max_daily_calls},
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            h.runtime.llm.set_throttle(t, max_daily_calls)
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/throttle",
+                    {"tier": tier, "max_daily_calls": int(max_daily_calls)},
+                )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                h.runtime.llm.set_throttle(t, max_daily_calls)
+                result = {"tier": tier, "max_daily_calls": int(max_daily_calls),
+                          "throttles": h.runtime.llm.throttles()}
             self._audit.record(
                 actor=actor, action="throttle_llm_tier",
                 darwin_id=darwin_id,
                 metadata={"tier": tier, "max_daily_calls": int(max_daily_calls)},
             )
-        return {"tier": tier, "max_daily_calls": int(max_daily_calls),
-                "throttles": h.runtime.llm.throttles()}
+        return result
 
     async def clear_llm_throttle(
         self,
@@ -2787,20 +2812,29 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"tier": tier},
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            h.runtime.llm.clear_throttle(t)
-            # An explicit clear also clears the auto-throttle latches so a
-            # follow-up WARN can throttle again.
-            if tier is None:
-                h.auto_throttled.clear()
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/throttle/clear", {"tier": tier},
+                )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                h.runtime.llm.clear_throttle(t)
+                # An explicit clear also clears the auto-throttle latches so a
+                # follow-up WARN can throttle again.
+                if tier is None:
+                    h.auto_throttled.clear()
+                result = {"throttles": h.runtime.llm.throttles()}
             self._audit.record(
                 actor=actor, action="clear_llm_throttle",
                 darwin_id=darwin_id, metadata={"tier": tier},
             )
-        return {"throttles": h.runtime.llm.throttles()}
+        return result
 
     async def get_llm_throttles(self, darwin_id: str) -> dict[str, int]:
+        if self._is_k8s(darwin_id):
+            data = await self._k8s_control_get(darwin_id, "/throttle")
+            return data.get("throttles") or {}
         h = self._get(darwin_id)
         return h.runtime.llm.throttles()
 
@@ -2830,18 +2864,28 @@ class Supervisor:
                 "per_lifetime_cap_usdc": per_lifetime_cap_usdc,
             },
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            wallet = h.stack.wallet
-            if not hasattr(wallet, "set_policy"):
-                raise SupervisorError(
-                    "wallet does not support platform-installed policy"
+            if self._is_k8s(darwin_id):
+                new_policy = await self._k8s_control_post(
+                    darwin_id, "/wallet/policy",
+                    {
+                        "per_action_cap_usdc": per_action_cap_usdc,
+                        "per_day_cap_usdc": per_day_cap_usdc,
+                        "per_lifetime_cap_usdc": per_lifetime_cap_usdc,
+                    },
                 )
-            new_policy = wallet.set_policy(
-                per_action_cap_usdc=per_action_cap_usdc,
-                per_day_cap_usdc=per_day_cap_usdc,
-                per_lifetime_cap_usdc=per_lifetime_cap_usdc,
-            )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                wallet = h.stack.wallet
+                if not hasattr(wallet, "set_policy"):
+                    raise SupervisorError(
+                        "wallet does not support platform-installed policy"
+                    )
+                new_policy = wallet.set_policy(
+                    per_action_cap_usdc=per_action_cap_usdc,
+                    per_day_cap_usdc=per_day_cap_usdc,
+                    per_lifetime_cap_usdc=per_lifetime_cap_usdc,
+                )
             self._audit.record(
                 actor=actor, action="set_wallet_policy",
                 darwin_id=darwin_id,
@@ -2854,6 +2898,8 @@ class Supervisor:
             return new_policy
 
     async def get_wallet_policy(self, darwin_id: str) -> dict[str, Any]:
+        if self._is_k8s(darwin_id):
+            return await self._k8s_control_get(darwin_id, "/wallet/policy")
         h = self._get(darwin_id)
         wallet = h.stack.wallet
         if not hasattr(wallet, "policy"):
@@ -2903,14 +2949,19 @@ class Supervisor:
                 "max_amount_usdc": max_amount_usdc,
             },
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            wallet = h.stack.wallet
-            if not hasattr(wallet, "set_preapproval"):
-                raise SupervisorError(
-                    "wallet does not support pre-approvals",
+            if self._is_k8s(darwin_id):
+                await self._k8s_control_post(
+                    darwin_id, "/wallet/preapprovals", rule.model_dump(),
                 )
-            wallet.set_preapproval(rule)
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                wallet = h.stack.wallet
+                if not hasattr(wallet, "set_preapproval"):
+                    raise SupervisorError(
+                        "wallet does not support pre-approvals",
+                    )
+                wallet.set_preapproval(rule)
             # Persist through so a restart restores the same rule set.
             # Best-effort: a persistence write-failure should not refuse
             # the in-memory install (audit is the loud failure surface).
@@ -2947,14 +2998,21 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"rule_id": rule_id},
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            wallet = h.stack.wallet
-            if not hasattr(wallet, "revoke_preapproval"):
-                raise SupervisorError(
-                    "wallet does not support pre-approvals",
+            if self._is_k8s(darwin_id):
+                resp = await self._k8s_control_post(
+                    darwin_id, "/wallet/preapprovals/revoke",
+                    {"rule_id": rule_id},
                 )
-            removed = bool(wallet.revoke_preapproval(rule_id))
+                removed = bool(resp.get("revoked"))
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                wallet = h.stack.wallet
+                if not hasattr(wallet, "revoke_preapproval"):
+                    raise SupervisorError(
+                        "wallet does not support pre-approvals",
+                    )
+                removed = bool(wallet.revoke_preapproval(rule_id))
             # Always attempt the persistence delete: a wallet-side miss
             # plus a stale persisted row would otherwise resurrect the
             # rule on the next spawn.
@@ -2976,6 +3034,12 @@ class Supervisor:
     async def list_preapprovals(
         self, darwin_id: str,
     ) -> list[dict[str, Any]]:
+        if self._is_k8s(darwin_id):
+            data = await self._k8s_control_get(
+                darwin_id, "/wallet/preapprovals",
+            )
+            rules = data.get("rules")
+            return list(rules) if isinstance(rules, list) else []
         h = self._get(darwin_id)
         wallet = h.stack.wallet
         if not hasattr(wallet, "owner_preapprovals"):
@@ -3012,14 +3076,20 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"locked": locked},
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            wallet = h.stack.wallet
-            if not hasattr(wallet, "set_spend_lock"):
-                raise SupervisorError("wallet does not support spend-lock")
-            result = wallet.set_spend_lock(
-                bool(locked), reason=reason if locked else None
-            )
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/controls/spend_lock",
+                    {"locked": bool(locked), "reason": reason},
+                )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                wallet = h.stack.wallet
+                if not hasattr(wallet, "set_spend_lock"):
+                    raise SupervisorError("wallet does not support spend-lock")
+                result = wallet.set_spend_lock(
+                    bool(locked), reason=reason if locked else None
+                )
             self._audit.record(
                 actor=actor,
                 action="spend_lock" if locked else "spend_unlock",
@@ -3044,14 +3114,21 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"blocked": blocked},
         ) as s:
-            h = self._get(darwin_id)
-            if h.killed:
-                raise SupervisorError(
-                    f"darwin {darwin_id} is killed; reproduction block "
-                    f"is a no-op"
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/controls/reproduction_block",
+                    {"blocked": bool(blocked)},
                 )
-            annotate_span_with_runtime(s, h.runtime)
-            h.reproduction_blocked = bool(blocked)
+            else:
+                h = self._get(darwin_id)
+                if h.killed:
+                    raise SupervisorError(
+                        f"darwin {darwin_id} is killed; reproduction block "
+                        f"is a no-op"
+                    )
+                annotate_span_with_runtime(s, h.runtime)
+                h.reproduction_blocked = bool(blocked)
+                result = {"reproduction_blocked": h.reproduction_blocked}
             self._audit.record(
                 actor=actor,
                 action=(
@@ -3061,7 +3138,7 @@ class Supervisor:
                 darwin_id=darwin_id,
                 metadata={},
             )
-            return {"reproduction_blocked": h.reproduction_blocked}
+            return result
 
     async def set_disabled_neurons(
         self,
@@ -3074,18 +3151,25 @@ class Supervisor:
         disabled neuron is dropped from dispatch selection; pass an empty
         list to re-enable everything."""
         with span("supervisor.set_disabled_neurons", darwin_id=darwin_id) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            h.disabled_neurons = {
-                str(n).strip() for n in neurons if str(n).strip()
-            }
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/controls/disabled_neurons",
+                    {"neurons": [str(n) for n in neurons]},
+                )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                h.disabled_neurons = {
+                    str(n).strip() for n in neurons if str(n).strip()
+                }
+                result = {"disabled_neurons": sorted(h.disabled_neurons)}
             self._audit.record(
                 actor=actor,
                 action="set_disabled_neurons",
                 darwin_id=darwin_id,
-                metadata={"disabled": sorted(h.disabled_neurons)},
+                metadata={"disabled": result.get("disabled_neurons", [])},
             )
-            return {"disabled_neurons": sorted(h.disabled_neurons)}
+            return result
 
     async def set_disabled_categories(
         self,
@@ -3099,18 +3183,25 @@ class Supervisor:
         with span(
             "supervisor.set_disabled_categories", darwin_id=darwin_id
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            h.disabled_categories = {
-                str(c).strip() for c in categories if str(c).strip()
-            }
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/controls/disabled_categories",
+                    {"categories": [str(c) for c in categories]},
+                )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                h.disabled_categories = {
+                    str(c).strip() for c in categories if str(c).strip()
+                }
+                result = {"disabled_categories": sorted(h.disabled_categories)}
             self._audit.record(
                 actor=actor,
                 action="set_disabled_categories",
                 darwin_id=darwin_id,
-                metadata={"disabled": sorted(h.disabled_categories)},
+                metadata={"disabled": result.get("disabled_categories", [])},
             )
-            return {"disabled_categories": sorted(h.disabled_categories)}
+            return result
 
     # -- fleet-wide incident-response levers (doc 09) ----------------------
     def _live_ids(self) -> list[str]:
@@ -3213,8 +3304,12 @@ class Supervisor:
         )
         return {"blocked": address}
 
-    def get_owner_controls(self, darwin_id: str) -> dict[str, Any]:
-        """The current owner-control state for a Darwin (doc 09)."""
+    async def get_owner_controls(self, darwin_id: str) -> dict[str, Any]:
+        """The current owner-control state for a Darwin (doc 09). In k8s
+        mode the wallet + control flags live in the pod — read them via the
+        control API."""
+        if self._is_k8s(darwin_id):
+            return await self._k8s_control_get(darwin_id, "/controls")
         h = self._get(darwin_id)
         wallet = h.stack.wallet
         spend_lock = (
@@ -3563,7 +3658,12 @@ class Supervisor:
             parent_id = self._lineage_registry.parent_of(darwin_id)
             children = self._lineage_registry.children_of(darwin_id)
             if parent_id is None and not children:
-                raise UnknownDarwin(darwin_id)
+                # Genesis k8s Darwins have no lineage edges; they're still
+                # valid subjects with an empty tree.
+                bookkeeping = self._k8s_handles.get(darwin_id)
+                if bookkeeping is None:
+                    raise UnknownDarwin(darwin_id)
+                parent_id = bookkeeping.get("parent_id")
         return {
             "darwin_id": darwin_id,
             "parent_id": parent_id,
@@ -3606,10 +3706,7 @@ class Supervisor:
         bounds the descendant recursion so a pathological cycle (which
         legitimate lineages never produce) cannot loop here either.
         """
-        if (
-            darwin_id not in self._darwins
-            and not self._lineage_registry.has(darwin_id)
-        ):
+        if not self._known(darwin_id):
             raise UnknownDarwin(darwin_id)
 
         # Self generation: from the runtime if alive, otherwise infer from
@@ -3650,9 +3747,14 @@ class Supervisor:
 
     def _is_alive(self, darwin_id: str) -> bool:
         h = self._darwins.get(darwin_id)
-        if h is None:
-            return False
-        return bool(h.runtime.state.alive) and not h.killed
+        if h is not None:
+            return bool(h.runtime.state.alive) and not h.killed
+        snap = (self._k8s_handles.get(darwin_id) or {}).get("snapshot")
+        if snap is not None:
+            return bool(getattr(snap, "alive", False)) and not bool(
+                getattr(snap, "killed", False)
+            )
+        return False
 
     def _build_descendants(
         self, darwin_id: str, *, depth: int, max_depth: int,
@@ -3680,9 +3782,19 @@ class Supervisor:
     ) -> dict[str, Any]:
         """Return movements from the per-Darwin wallet. In production the
         ledger is reconciled against the on-chain wallet; here we read the
-        wallet's authoritative movement feed directly (same shape)."""
-        h = self._get(darwin_id)
-        movements = list(h.stack.wallet.movements())
+        wallet's authoritative movement feed directly (same shape).
+
+        ``movements`` carries the raw kind-keyed wallet rows;
+        ``entries`` is the same page flattened for table rendering
+        (the dashboard's LedgerEntry shape)."""
+        from ..payments.ledger_export import movements_to_rows
+
+        if self._is_k8s(darwin_id):
+            movements, balance = await self._k8s_ledger(darwin_id)
+        else:
+            h = self._get(darwin_id)
+            movements = list(h.stack.wallet.movements())
+            balance = h.stack.wallet.balance_usdc()
         total = len(movements)
         page = movements[offset : offset + limit]
         return {
@@ -3690,8 +3802,9 @@ class Supervisor:
             "total": total,
             "offset": offset,
             "limit": limit,
-            "balance_usdc": h.stack.wallet.balance_usdc(),
+            "balance_usdc": balance,
             "movements": page,
+            "entries": movements_to_rows(page, seq_base=offset),
         }
 
     async def ledger_csv(self, darwin_id: str) -> str:
@@ -3700,8 +3813,11 @@ class Supervisor:
         accountant. Not paginated: a year-end export wants every row."""
         from ..payments.ledger_export import movements_to_csv
 
-        h = self._get(darwin_id)
-        return movements_to_csv(list(h.stack.wallet.movements()))
+        if self._is_k8s(darwin_id):
+            movements, _ = await self._k8s_ledger(darwin_id)
+        else:
+            movements = list(self._get(darwin_id).stack.wallet.movements())
+        return movements_to_csv(movements)
 
     async def ledger_summary(
         self, darwin_id: str, *, year: int | None = None,
@@ -3713,10 +3829,11 @@ class Supervisor:
         platform does not file taxes or generate statutory forms."""
         from ..payments.ledger_export import movements_to_summary
 
-        h = self._get(darwin_id)
-        return movements_to_summary(
-            list(h.stack.wallet.movements()), year=year
-        )
+        if self._is_k8s(darwin_id):
+            movements, _ = await self._k8s_ledger(darwin_id)
+        else:
+            movements = list(self._get(darwin_id).stack.wallet.movements())
+        return movements_to_summary(movements, year=year)
 
     # -- events (doc 08: GET /darwins/{id}/events) ------------------------
     async def events(
@@ -3829,7 +3946,8 @@ class Supervisor:
         has classified for this Darwin. Each row carries the ticket class,
         deadline, age, remaining seconds, and any owner response — exactly
         the shape an owner dashboard needs to render countdowns."""
-        self._get(darwin_id)  # validate id (raises UnknownDarwin)
+        if not self._known(darwin_id):
+            raise UnknownDarwin(darwin_id)
         now = self._clock()
         return [
             tk.to_dict(now)
@@ -3842,7 +3960,8 @@ class Supervisor:
         self, darwin_id: str, escalation_id: str
     ) -> dict[str, Any]:
         """One-ticket detail. 404-ish (UnknownDarwin / KeyError) on miss."""
-        self._get(darwin_id)
+        if not self._known(darwin_id):
+            raise UnknownDarwin(darwin_id)
         tk = self._router.get(escalation_id)
         if tk is None or tk.darwin_id != darwin_id:
             raise SupervisorError(f"unknown escalation: {escalation_id}")
@@ -3860,7 +3979,16 @@ class Supervisor:
         - the audit log's recent slice for dispatch heat + last-dispatch
           timestamps (no separate metrics store needed),
         - per-handle owner controls for disabled neurons / categories.
+
+        In k8s mode the organism (catalog, audit log, controls) lives in the
+        pod — pull the snapshot via the control API. The pod reports its own
+        genesis identity; rewrite to the supervisor handle id so the response
+        matches the id the caller addressed.
         """
+        if self._is_k8s(darwin_id):
+            data = await self._k8s_control_get(darwin_id, "/anatomy")
+            data["darwin_id"] = darwin_id
+            return data
         h = self._get(darwin_id)
         runtime = h.runtime
         catalog = getattr(runtime, "catalog", {}) or {}
@@ -4252,6 +4380,9 @@ class Supervisor:
             "spawned_at": spawned_at,
             "parent_id": parent_id,
             "snapshot": snapshot,
+            # Same convention as the in-process handle: the spawning actor
+            # is the owner (doc 17 money flows resolve through this).
+            "owner_subject": actor,
         }
         if parent_id:
             self._lineage_registry.add(
@@ -4312,6 +4443,10 @@ class Supervisor:
                 "spawned_at": spawned_at,
                 "parent_id": parent_id,
                 "snapshot": snapshot,
+                # Namespace annotations don't carry the owner; a re-adopted
+                # Darwin is anonymous-owned until tenancy bookkeeping is
+                # persisted (owner-scoped money flows refuse anonymous).
+                "owner_subject": "anonymous",
             }
             if parent_id:
                 try:
@@ -4338,10 +4473,33 @@ class Supervisor:
     def _is_k8s(self, darwin_id: str) -> bool:
         return self._k8s_driver is not None and darwin_id in self._k8s_handles
 
+    def _known(self, darwin_id: str) -> bool:
+        """True when this id belongs to a Darwin the supervisor governs —
+        an in-process handle, a k8s pod, or a historical id the lineage
+        registry still remembers (killed Darwins keep their read surfaces)."""
+        return (
+            darwin_id in self._darwins
+            or darwin_id in self._k8s_handles
+            or self._lineage_registry.has(darwin_id)
+        )
+
+    def known_darwin(self, darwin_id: str) -> bool:
+        """Public alias of :meth:`_known` for routers (e.g. the WS stream)
+        that only need existence, not a handle."""
+        return self._known(darwin_id)
+
     # -- internals --------------------------------------------------------
     def _get(self, darwin_id: str) -> _Handle:
         h = self._darwins.get(darwin_id)
         if h is None:
+            if darwin_id in self._k8s_handles:
+                # The Darwin exists but runs in a pod — the caller needs an
+                # in-process handle this deployment doesn't have. Surface a
+                # clear contract error instead of a misleading 404.
+                raise SupervisorError(
+                    f"darwin {darwin_id} runs under the k8s driver; this "
+                    "operation is not yet supported for pod-hosted darwins"
+                )
             raise UnknownDarwin(darwin_id)
         return h
 
@@ -5967,25 +6125,33 @@ class Supervisor:
                 "freelancer_id": freelancer_id,
             },
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            wallet = h.stack.wallet
-            transfer = getattr(wallet, "transfer_out_for_fiat_payout", None)
-            if not callable(transfer):
-                raise SupervisorError(
-                    "wallet does not support fiat payout transfer",
+            transfer = None
+            if self._is_k8s(darwin_id):
+                owner_subject = str(
+                    self._k8s_handles[darwin_id].get("owner_subject")
+                    or "anonymous"
                 )
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                wallet = h.stack.wallet
+                transfer = getattr(wallet, "transfer_out_for_fiat_payout", None)
+                if not callable(transfer):
+                    raise SupervisorError(
+                        "wallet does not support fiat payout transfer",
+                    )
+                owner_subject = h.owner_subject
             # Resolve freelancer through the owner-scoped registry. A
             # destination not registered to the Darwin's owner is refused
             # outright — the registry is the KYC gate at the platform edge.
             destination = self._freelancer_registry.lookup(
-                owner_subject=h.owner_subject,
+                owner_subject=owner_subject,
                 freelancer_id=freelancer_id,
             )
             if destination is None:
                 raise SupervisorError(
                     f"freelancer {freelancer_id!r} is not registered "
-                    f"for owner {h.owner_subject!r}",
+                    f"for owner {owner_subject!r}",
                 )
             fiat_destination = destination.fiat_destination
             try:
@@ -5996,7 +6162,13 @@ class Supervisor:
                 ) from exc
             # First leg: debit the Darwin's USDC wallet to the omnibus.
             try:
-                transfer(amount, destination=omnibus_address)
+                if transfer is not None:
+                    transfer(amount, destination=omnibus_address)
+                else:
+                    await self._k8s_control_post(
+                        darwin_id, "/wallet/transfer_out_for_fiat_payout",
+                        {"amount_usdc": amount, "destination": omnibus_address},
+                    )
             except Exception as exc:
                 raise SupervisorError(
                     f"first leg (Darwin → omnibus) failed: {exc}",
@@ -6325,25 +6497,41 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"amount_usdc": amount},
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            if h.owner_subject == "anonymous":
-                raise SupervisorError(
-                    "cannot retry fund for an anonymous-owned Darwin "
-                    "(no user_credits to attribute the debit to)",
+            if self._is_k8s(darwin_id):
+                owner_subject = str(
+                    self._k8s_handles[darwin_id].get("owner_subject")
+                    or "anonymous"
                 )
-            wallet = h.stack.wallet
-            address_getter = getattr(wallet, "address", None)
-            if not callable(address_getter):
-                raise SupervisorError(
-                    "wallet has no on-chain address — cannot fund",
+                if owner_subject == "anonymous":
+                    raise SupervisorError(
+                        "cannot retry fund for an anonymous-owned Darwin "
+                        "(no user_credits to attribute the debit to)",
+                    )
+                data = await self._k8s_control_get(
+                    darwin_id, "/wallet/address",
                 )
-            try:
-                to_address = address_getter()
-            except Exception as exc:
-                raise SupervisorError(
-                    f"wallet address unavailable: {exc}",
-                ) from exc
+                to_address = data.get("address") or ""
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                if h.owner_subject == "anonymous":
+                    raise SupervisorError(
+                        "cannot retry fund for an anonymous-owned Darwin "
+                        "(no user_credits to attribute the debit to)",
+                    )
+                owner_subject = h.owner_subject
+                wallet = h.stack.wallet
+                address_getter = getattr(wallet, "address", None)
+                if not callable(address_getter):
+                    raise SupervisorError(
+                        "wallet has no on-chain address — cannot fund",
+                    )
+                try:
+                    to_address = address_getter()
+                except Exception as exc:
+                    raise SupervisorError(
+                        f"wallet address unavailable: {exc}",
+                    ) from exc
             if not to_address:
                 raise SupervisorError("wallet address is empty")
             try:
@@ -6351,7 +6539,7 @@ class Supervisor:
                     darwin_id=darwin_id,
                     to_address=str(to_address),
                     amount_usdc=amount,
-                    user_subject=h.owner_subject,
+                    user_subject=owner_subject,
                     actor=actor,
                 )
             except Exception as exc:
@@ -6364,7 +6552,7 @@ class Supervisor:
                 darwin_id=darwin_id,
                 metadata={
                     "amount_usdc": amount,
-                    "user_subject": h.owner_subject,
+                    "user_subject": owner_subject,
                     "to_address": str(to_address),
                     "tx_hash": entry.tx_hash,
                 },
@@ -6402,20 +6590,28 @@ class Supervisor:
             darwin_id=darwin_id,
             attributes={"amount_usdc": amount},
         ) as s:
-            h = self._get(darwin_id)
-            annotate_span_with_runtime(s, h.runtime)
-            wallet = h.stack.wallet
-            address_getter = getattr(wallet, "address", None)
-            if not callable(address_getter):
-                raise SupervisorError(
-                    "wallet has no on-chain address — cannot refund",
+            crediter = None
+            if self._is_k8s(darwin_id):
+                data = await self._k8s_control_get(
+                    darwin_id, "/wallet/address",
                 )
-            try:
-                darwin_address = address_getter()
-            except Exception as exc:
-                raise SupervisorError(
-                    f"wallet address unavailable: {exc}",
-                ) from exc
+                darwin_address = data.get("address") or ""
+            else:
+                h = self._get(darwin_id)
+                annotate_span_with_runtime(s, h.runtime)
+                wallet = h.stack.wallet
+                address_getter = getattr(wallet, "address", None)
+                if not callable(address_getter):
+                    raise SupervisorError(
+                        "wallet has no on-chain address — cannot refund",
+                    )
+                try:
+                    darwin_address = address_getter()
+                except Exception as exc:
+                    raise SupervisorError(
+                        f"wallet address unavailable: {exc}",
+                    ) from exc
+                crediter = getattr(wallet, "credit", None)
             if not darwin_address:
                 raise SupervisorError("wallet address is empty")
             try:
@@ -6434,8 +6630,15 @@ class Supervisor:
             # balance_usdc reflects the inbound. Real wallets are
             # authoritative against the chain; FakeWallet's local
             # balance is the proxy in tests + sim.
-            crediter = getattr(wallet, "credit", None)
-            if callable(crediter):
+            if self._is_k8s(darwin_id):
+                try:
+                    await self._k8s_control_post(
+                        darwin_id, "/wallet/credit",
+                        {"amount_usdc": amount, "memo": "fiat_payout_refund"},
+                    )
+                except Exception:
+                    pass
+            elif callable(crediter):
                 try:
                     crediter(amount, "fiat_payout_refund")
                 except Exception:
@@ -6530,9 +6733,11 @@ class Supervisor:
         return summary
 
     # -- Path-C neuron proposal admission (doc 04 phase 3) ----------------
-    def list_neuron_proposals(self, darwin_id: str) -> dict:
+    async def list_neuron_proposals(self, darwin_id: str) -> dict:
         """Per-Darwin view of pending + admitted neuron proposals."""
         if darwin_id not in self._darwins:
+            if self._is_k8s(darwin_id):
+                return await self._k8s_control_get(darwin_id, "/proposals")
             raise UnknownDarwin(darwin_id)
         h = self._darwins[darwin_id]
         gate = h.runtime.neuron_admission
@@ -6549,10 +6754,21 @@ class Supervisor:
             ],
         }
 
-    def admit_neuron_proposal(
+    async def admit_neuron_proposal(
         self, darwin_id: str, name: str, *, actor: str = "anonymous",
     ) -> dict:
         if darwin_id not in self._darwins:
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/proposals/admit", {"name": name},
+                )
+                self._audit.record(
+                    actor=actor,
+                    action="admit_neuron_proposal",
+                    darwin_id=darwin_id,
+                    metadata={"name": name},
+                )
+                return result
             raise UnknownDarwin(darwin_id)
         h = self._darwins[darwin_id]
         try:
@@ -6567,7 +6783,7 @@ class Supervisor:
         )
         return {"admitted": name}
 
-    def reject_neuron_proposal(
+    async def reject_neuron_proposal(
         self,
         darwin_id: str,
         name: str,
@@ -6576,6 +6792,18 @@ class Supervisor:
         actor: str = "anonymous",
     ) -> dict:
         if darwin_id not in self._darwins:
+            if self._is_k8s(darwin_id):
+                result = await self._k8s_control_post(
+                    darwin_id, "/proposals/reject",
+                    {"name": name, "reason": reason},
+                )
+                self._audit.record(
+                    actor=actor,
+                    action="reject_neuron_proposal",
+                    darwin_id=darwin_id,
+                    metadata={"name": name, "reason": reason},
+                )
+                return result
             raise UnknownDarwin(darwin_id)
         h = self._darwins[darwin_id]
         if h.runtime.neuron_admission is None:
