@@ -109,7 +109,6 @@ resource "helm_release" "platform" {
     walletProvider   = var.wallet_provider
     heartbeatSeconds = var.heartbeat_seconds
     extraArgs        = var.extra_args
-    extraEnv         = var.extra_env
 
     # K8s driver mode, stripped to the local posture.
     driver = {
@@ -145,18 +144,22 @@ resource "helm_release" "platform" {
     serviceMonitor = { enabled = false }
     ingress        = { enabled = false } # fronted by the k8s-addons module instead
 
-    # DARWIN_POD_* substrate creds, sourced from the Secret above.
-    extraEnv = [
-      for k in local.pod_env_keys : {
-        name = k
-        valueFrom = {
-          secretKeyRef = {
-            name = kubernetes_secret.env.metadata[0].name
-            key  = k
+    # DARWIN_POD_* substrate creds, sourced from the Secret above, plus
+    # any caller-supplied extras (e.g. DARWIN_VAPID_*).
+    extraEnv = concat(
+      [
+        for k in local.pod_env_keys : {
+          name = k
+          valueFrom = {
+            secretKeyRef = {
+              name = kubernetes_secret.env.metadata[0].name
+              key  = k
+            }
           }
         }
-      }
-    ]
+      ],
+      var.extra_env,
+    )
   })]
 
   # The Secret must exist before the pod references it via extraEnv.

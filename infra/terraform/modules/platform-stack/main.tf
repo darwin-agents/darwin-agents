@@ -92,6 +92,7 @@ module "platform" {
   create_runtime_class = var.create_runtime_class
   runtime_handler      = var.runtime_handler
   extra_args           = var.extra_args
+  extra_env            = var.extra_env
 
   depends_on = [module.cnpg, module.vault, module.vault_prod, module.litellm]
 }

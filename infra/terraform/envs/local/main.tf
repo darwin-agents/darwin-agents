@@ -84,6 +84,14 @@ resource "kubectl_manifest" "kata_shim" {
   depends_on = [module.cluster]
 }
 
+# Web Push VAPID keypair (RFC 8292) for the local stack — generated once
+# per workspace and held in state. The supervisor derives the browser-format
+# public key from the PEM, so only the private key + subject are wired in.
+resource "tls_private_key" "vapid" {
+  algorithm   = "ECDSA"
+  ecdsa_curve = "P256"
+}
+
 module "platform_stack" {
   source = "../../modules/platform-stack"
 
@@ -116,7 +124,23 @@ module "platform_stack" {
   # Local dev convenience: expose Swagger UI (/docs), ReDoc (/redoc) and
   # /openapi.json. Off by default in the chart; this is a local-only env so
   # it's safe here. Drop --enable-docs for any internet-facing deployment.
-  extra_args = ["--cors-origin", "http://localhost:3000", "--enable-docs"]
+  # `--push-provider webpush` turns the Notifications page live; the VAPID
+  # material rides env vars (extra_env) so the PEM never hits the args line.
+  extra_args = [
+    "--cors-origin", "http://localhost:3000",
+    "--enable-docs",
+    "--push-provider", "webpush",
+  ]
+  extra_env = [
+    {
+      name  = "DARWIN_VAPID_PRIVATE_KEY"
+      value = tls_private_key.vapid.private_key_pem
+    },
+    {
+      name  = "DARWIN_VAPID_SUBJECT"
+      value = "mailto:dev@darwinagents.local"
+    },
+  ]
 
   depends_on = [module.cluster, kubectl_manifest.kata_shim]
 }

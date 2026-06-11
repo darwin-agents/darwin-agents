@@ -219,6 +219,15 @@ variable "extra_args" {
   default     = []
 }
 
+variable "extra_env" {
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  description = "Extra environment variables on the supervisor container (e.g. DARWIN_VAPID_*)."
+  default     = []
+}
+
 # -- exposure (ingress addon) ----------------------------------------------
 
 variable "exposure" {
