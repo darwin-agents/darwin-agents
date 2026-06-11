@@ -1251,13 +1251,45 @@ def _resolve_vapid_public_key(args: argparse.Namespace) -> str | None:
     """The public half of the VAPID keypair, surfaced to the PWA via
     GET /me/push-vapid-public-key. Returned even when no sink is built,
     since the dashboard may want to display "push not configured" with
-    a hint."""
+    a hint.
+
+    When no explicit public key is supplied, it is derived from the
+    private key (the browser needs the base64url-encoded uncompressed
+    P-256 point, which deployment tooling rarely has at hand even when
+    it can mint the PEM)."""
     if getattr(args, "push_provider", "none") != "webpush":
         return None
-    return (
+    explicit = (
         getattr(args, "vapid_public_key", None)
         or os.environ.get("DARWIN_VAPID_PUBLIC_KEY")
     )
+    if explicit:
+        return explicit
+    private = getattr(args, "vapid_private_key", None) or os.environ.get(
+        "DARWIN_VAPID_PRIVATE_KEY"
+    )
+    if not private:
+        return None
+    if not private.startswith("-----"):
+        try:
+            private = Path(private).expanduser().read_text()
+        except Exception:
+            return None
+    try:
+        import base64
+
+        from cryptography.hazmat.primitives import serialization
+
+        key = serialization.load_pem_private_key(
+            private.encode("utf-8"), password=None,
+        )
+        point = key.public_key().public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+        return base64.urlsafe_b64encode(point).rstrip(b"=").decode("ascii")
+    except Exception:
+        return None
 
 
 def _build_alert_sink(args: argparse.Namespace):
