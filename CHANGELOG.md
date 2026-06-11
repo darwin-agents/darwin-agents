@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(web): surface query errors and align owner controls types
+- feat(platform): proxy k8s pod reads and owner controls through supervisor
+- feat(platform): expose anatomy, ledger, events, and controls from k8s pods
 - test(web): add playwright coverage for operator surfaces
 - feat(web): add owner KYC verification card on freelancers page
 - feat(web): add proposals and operator dashboard consoles
@@ -28,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(platform): map pod RPC failures to 409 and harden k8s websocket stream
 - fix(infra): grant BYPASSRLS to CNPG owner role at bootstrap
 - fix(web): extend CSP and auth chrome for Clerk production
 
