@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(infra): add extra_env variable to darwin-platform helm module
 - feat(platform): derive VAPID public key from private key when unset
 - feat(web): surface query errors and align owner controls types
 - feat(platform): proxy k8s pod reads and owner controls through supervisor
