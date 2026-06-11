@@ -76,6 +76,8 @@ async def clear_resource_throttle(
         )
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
     return {"removed": [r.to_json() for r in removed]}
 
 
@@ -90,6 +92,8 @@ async def get_resource_throttle(
         rows = _sup(request).list_resource_throttles(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
     return {"throttles": [r.to_json() for r in rows]}
 
 
@@ -142,3 +146,5 @@ async def get_throttles(
         return {"throttles": await _sup(request).get_llm_throttles(darwin_id)}
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))

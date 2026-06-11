@@ -80,11 +80,13 @@ async def darwin_stream(websocket: WebSocket, darwin_id: str) -> None:
         return
 
     sup: Supervisor = websocket.app.state.supervisor
-    try:
-        sup._get(darwin_id)  # type: ignore[attr-defined]
-    except UnknownDarwin:
+    if not sup.known_darwin(darwin_id):
         await websocket.close(code=4404, reason="unknown darwin")
         return
+    # Pod-hosted Darwins are served over control RPCs, not in-memory reads —
+    # poll less aggressively so the stream doesn't hammer the pod.
+    is_k8s = sup._is_k8s(darwin_id)  # noqa: SLF001
+    poll_scale = 5 if is_k8s else 1
 
     await websocket.accept()
 
@@ -164,42 +166,71 @@ async def darwin_stream(websocket: WebSocket, darwin_id: str) -> None:
                 state["applied"] = False
 
             # 1. New events since last cursor.
-            if "timeline" in channels:
+            if "timeline" in channels and tick % poll_scale == 0:
                 try:
-                    recs = h_sink_read(sup, darwin_id)
+                    if is_k8s:
+                        # Pod-hosted: the audit log lives in the pod; the
+                        # supervisor's events() proxies + filters it.
+                        resp = await sup.events(
+                            darwin_id, since=max(since_seq, -1), limit=1000,
+                        )
+                        recs = list(resp.get("events") or [])
+                        if since_seq < 0 and recs:
+                            # Don't replay history — start from the live head.
+                            since_seq = int(recs[-1].get("seq", -1))
+                            recs = []
+                        new_events = recs  # since-mode is already filtered
+                    else:
+                        recs = h_sink_read(sup, darwin_id)
+                        if since_seq < 0 and recs:
+                            # Don't replay history — start from the live head.
+                            since_seq = int(recs[-1].get("seq", -1))
+                        new_events = [
+                            r for r in recs if int(r.get("seq", -1)) > since_seq
+                        ]
                 except UnknownDarwin:
                     await _send({"type": "error", "code": "gone", "detail": "darwin removed"})
                     await websocket.close(code=4410)
                     return
-                if since_seq < 0 and recs:
-                    # Don't replay history — start from the live head.
-                    since_seq = int(recs[-1].get("seq", -1))
-                new_events = [r for r in recs if int(r.get("seq", -1)) > since_seq]
+                except Exception:
+                    # Transient pod RPC failure — keep the socket, retry on
+                    # the next poll.
+                    new_events = []
                 for ev in new_events:
                     if not await _send({"type": "timeline.event", "payload": ev}):
                         return
                     since_seq = max(since_seq, int(ev.get("seq", since_seq)))
 
-            # 2. Status diff (every 2 ticks ~ 400ms).
-            if "status" in channels and tick % 2 == 0:
-                status_obj = asdict(await sup.status(darwin_id))
-                if status_obj != last_status:
+            # 2. Status diff (every 2 ticks ~ 400ms; scaled for k8s).
+            if "status" in channels and tick % (2 * poll_scale) == 0:
+                try:
+                    status_obj = asdict(await sup.status(darwin_id))
+                except Exception:
+                    status_obj = None
+                if status_obj is not None and status_obj != last_status:
                     last_status = status_obj
                     if not await _send({"type": "status", "payload": status_obj}):
                         return
 
-            # 3. Anatomy diff (every 5 ticks ~ 1s).
-            if "anatomy" in channels and tick % 5 == 0:
-                anatomy = await sup.anatomy(darwin_id)
-                h = _stable_hash(anatomy)
-                if h != last_anatomy_hash:
-                    last_anatomy_hash = h
-                    if not await _send({"type": "anatomy.patch", "payload": anatomy}):
-                        return
+            # 3. Anatomy diff (every 5 ticks ~ 1s; scaled for k8s).
+            if "anatomy" in channels and tick % (5 * poll_scale) == 0:
+                try:
+                    anatomy = await sup.anatomy(darwin_id)
+                except Exception:
+                    anatomy = None
+                if anatomy is not None:
+                    h = _stable_hash(anatomy)
+                    if h != last_anatomy_hash:
+                        last_anatomy_hash = h
+                        if not await _send({"type": "anatomy.patch", "payload": anatomy}):
+                            return
 
             # 4. New escalations.
-            if "escalations" in channels and tick % 3 == 0:
-                tickets = await sup.open_escalations(darwin_id)
+            if "escalations" in channels and tick % (3 * poll_scale) == 0:
+                try:
+                    tickets = await sup.open_escalations(darwin_id)
+                except Exception:
+                    tickets = []
                 for tk in tickets:
                     tid = str(tk.get("ticket_id"))
                     if tid and tid not in seen_ticket_ids:

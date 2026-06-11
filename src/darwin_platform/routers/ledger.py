@@ -17,7 +17,7 @@ from fastapi import (
     Request,
 )
 
-from ..runtime.supervisor import UnknownDarwin
+from ..runtime.supervisor import SupervisorError, UnknownDarwin
 from ..security.auth import (
     OWNER,
     PLATFORM_OPERATOR,
@@ -48,6 +48,8 @@ async def ledger(
         return await _sup(request).ledger(darwin_id, limit=limit, offset=offset)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @router.get("/darwins/{darwin_id}/ledger.csv")
@@ -67,6 +69,8 @@ async def ledger_csv(
         csv_text = await _sup(request).ledger_csv(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
     return Response(
         content=csv_text,
         media_type="text/csv",
@@ -93,6 +97,8 @@ async def ledger_summary(
         return await _sup(request).ledger_summary(darwin_id, year=year)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @router.get("/darwins/{darwin_id}/billing")

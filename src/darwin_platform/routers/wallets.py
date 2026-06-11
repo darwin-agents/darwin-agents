@@ -136,3 +136,5 @@ async def list_preapprovals(
         return await _sup(request).list_preapprovals(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))

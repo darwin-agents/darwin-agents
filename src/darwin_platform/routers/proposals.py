@@ -47,9 +47,11 @@ async def list_neuron_proposals(
     _require_scope(ctx, OWNER)
     _require_owns(ctx, darwin_id)
     try:
-        return _sup(request).list_neuron_proposals(darwin_id)
+        return await _sup(request).list_neuron_proposals(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @router.post("/platform/darwins/{darwin_id}/proposals/{name}/admit")
@@ -61,7 +63,7 @@ async def admit_neuron_proposal(
 ) -> dict[str, Any]:
     _require_scope(ctx, PLATFORM_OPERATOR)
     try:
-        return _sup(request).admit_neuron_proposal(
+        return await _sup(request).admit_neuron_proposal(
             darwin_id,
             name,
             actor=_actor(ctx),
@@ -82,7 +84,7 @@ async def reject_neuron_proposal(
 ) -> dict[str, Any]:
     _require_scope(ctx, PLATFORM_OPERATOR)
     try:
-        return _sup(request).reject_neuron_proposal(
+        return await _sup(request).reject_neuron_proposal(
             darwin_id,
             name,
             reason=req.reason,
@@ -90,3 +92,5 @@ async def reject_neuron_proposal(
         )
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))

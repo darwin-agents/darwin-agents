@@ -217,9 +217,8 @@ async def test_supervisor_spend_lock_round_trip(supervisor: Supervisor):
     h.stack.wallet.debit(0.1, "llm")  # no raise
 
     await supervisor.set_spend_lock(status.darwin_id, locked=False)
-    assert supervisor.get_owner_controls(
-        status.darwin_id
-    )["spend_lock"]["spend_locked"] is False
+    controls = await supervisor.get_owner_controls(status.darwin_id)
+    assert controls["spend_lock"]["spend_locked"] is False
 
 
 async def test_supervisor_reproduction_block_bridges_to_genome(
@@ -231,9 +230,8 @@ async def test_supervisor_reproduction_block_bridges_to_genome(
 
     await supervisor.set_reproduction_block(status.darwin_id, blocked=True)
     await _wait_until(lambda: h.runtime.state.reproduction_blocked is True)
-    assert supervisor.get_owner_controls(
-        status.darwin_id
-    )["reproduction_blocked"] is True
+    controls = await supervisor.get_owner_controls(status.darwin_id)
+    assert controls["reproduction_blocked"] is True
 
     await supervisor.set_reproduction_block(status.darwin_id, blocked=False)
     await _wait_until(lambda: h.runtime.state.reproduction_blocked is False)
@@ -259,7 +257,7 @@ async def test_supervisor_disabled_lists_bridge_to_genome(
     await _wait_until(
         lambda: h.runtime.state.disabled_categories == ["trading.crypto"]
     )
-    controls = supervisor.get_owner_controls(status.darwin_id)
+    controls = await supervisor.get_owner_controls(status.darwin_id)
     assert controls["disabled_neurons"] == ["ads.manager", "content.publisher"]
     assert controls["disabled_categories"] == ["trading.crypto"]
 

@@ -286,9 +286,11 @@ async def get_owner_controls(
     _require_scope(ctx, OWNER)
     _require_owns(ctx, darwin_id)
     try:
-        return _sup(request).get_owner_controls(darwin_id)
+        return await _sup(request).get_owner_controls(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
 
 
 # -- anatomy snapshot (doc 05 / frontend 05) --------------------------
@@ -306,6 +308,8 @@ async def anatomy(
         return await _sup(request).anatomy(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
 
 
 # -- lineage / ledger / events ----------------------------------------
