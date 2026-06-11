@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): derive VAPID public key from private key when unset
 - feat(web): surface query errors and align owner controls types
 - feat(platform): proxy k8s pod reads and owner controls through supervisor
 - feat(platform): expose anatomy, ledger, events, and controls from k8s pods
