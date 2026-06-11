@@ -96,6 +96,15 @@ variable "extra_args" {
   default     = []
 }
 
+variable "extra_env" {
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  description = "Additional environment variables on the supervisor container (chart `extraEnv`). Useful for DARWIN_VAPID_* / provider keys without forking the module."
+  default     = []
+}
+
 variable "orchestrator_image" {
   type        = string
   description = "Image the K8s driver uses for per-Darwin orchestrator pods (forwarded via --k8s-orchestrator-image). Defaults to the same image as the supervisor so a `docker build -t darwin-platform:dev .` covers both."

@@ -109,6 +109,7 @@ resource "helm_release" "platform" {
     walletProvider   = var.wallet_provider
     heartbeatSeconds = var.heartbeat_seconds
     extraArgs        = var.extra_args
+    extraEnv         = var.extra_env
 
     # K8s driver mode, stripped to the local posture.
     driver = {
