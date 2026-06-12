@@ -83,7 +83,7 @@ test("fleet lists the darwin and tabs render real data", async ({ page }) => {
   const failures = await arm(page);
 
   await visit(page, "/");
-  await expect(page.getByText("Fleet")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fleet" })).toBeVisible();
   await expect(page.getByText(darwinId.slice(0, 8)).first()).toBeVisible();
 
   // Summary — header + treasury strip render from real status/ledger.
@@ -143,13 +143,15 @@ test("global surfaces are live", async ({ page }) => {
   const failures = await arm(page);
 
   await visit(page, "/escalations");
-  await expect(page.getByText("Escalations")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Escalations" })).toBeVisible();
 
   await visit(page, "/operator");
-  await expect(page.getByText("Operator console")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Operator console" }),
+  ).toBeVisible();
 
   await visit(page, "/freelancers");
-  await expect(page.getByText("Freelancers")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Freelancers" })).toBeVisible();
 
   // Notifications — VAPID is configured in the local stack, so the page
   // must offer the enable flow (not the "platform wasn't started with
