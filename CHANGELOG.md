@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): inject money manifest in k8s pods and tune audit boot
 - feat(web): add money rails card to operator console
 - feat(platform): expose money capabilities manifest to planner and API
 - feat(platform): add JsonlAuditSink for durable orchestrator pod audit
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- refactor(platform): extract shared money_capabilities detection module
 - refactor(web): route harvest through api client with idempotency key
 
 ### Fixed
