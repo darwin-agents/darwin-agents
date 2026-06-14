@@ -64,20 +64,42 @@ def _hash_record(seq: int, prev_hash: str, ts: float, kind: str, payload: dict) 
     ).hexdigest()
 
 
+def _reduce_level(src):
+    """One Merkle reduction pass: pair consecutive hashes from ``src`` (any
+    iterable) and yield each parent; a lonely final node is promoted by
+    duplicating it. Streamed — only one hash is buffered at a time."""
+    prev = None
+    have = False
+    for h in src:
+        if not have:
+            prev, have = h, True
+        else:
+            yield hashlib.sha256((prev + h).encode()).hexdigest()
+            have = False
+    if have:
+        yield hashlib.sha256((prev + prev).encode()).hexdigest()
+
+
+def _merkle_root_stream(leaves) -> str:
+    """Merkle root over a (possibly large / one-shot) iterable of leaf
+    hashes, computed level-by-level so a full level is never materialised
+    beyond what one reduction pass buffers. Produces the byte-for-byte same
+    root as the classic list form below (verified across sizes in
+    ``test_audit_logger``), so the published/anchored root value is
+    unchanged — this only bounds memory for an immortal chain."""
+    level = list(leaves)
+    if not level:
+        return GENESIS_HASH
+    while len(level) > 1:
+        level = list(_reduce_level(level))
+    return level[0]
+
+
 def _merkle_root(leaves: list[str]) -> str:
     """Standard binary Merkle root over record hashes. Lonely nodes are
-    promoted (duplicated) — the conventional, well-understood scheme (P9)."""
-    if not leaves:
-        return GENESIS_HASH
-    level = list(leaves)
-    while len(level) > 1:
-        if len(level) % 2:
-            level.append(level[-1])
-        level = [
-            hashlib.sha256((level[i] + level[i + 1]).encode()).hexdigest()
-            for i in range(0, len(level), 2)
-        ]
-    return level[0]
+    promoted (duplicated) — the conventional, well-understood scheme (P9).
+    Thin wrapper over :func:`_merkle_root_stream` so both forms agree."""
+    return _merkle_root_stream(leaves)
 
 
 class AuditLogger:
@@ -93,11 +115,6 @@ class AuditLogger:
         self._darwin_id = darwin_id
         self._sink = sink
         self._lock = threading.Lock()
-        # Rebuild chain head from durable storage, verifying as we go. A
-        # crash-restart must resume the *same* chain, not fork a new one.
-        records = self._verify_chain(sink.read_all())
-        self._seq = records[-1]["seq"] + 1 if records else 0
-        self._head = records[-1]["hash"] if records else GENESIS_HASH
         # Ground-truth tally (doc 10). reflect reconciles the genome's
         # in-memory ``successful_dispatches`` against what the durable
         # log actually recorded. Counting it by re-scanning the chain
@@ -110,8 +127,32 @@ class AuditLogger:
         self._open_neuron_intents: set[str] = set()
         self._dispatch_ok = 0
         self._dispatch_fail = 0
-        for rec in records:
-            self._tally_record(rec)
+        # Rebuild chain head from durable storage, verifying + tallying as we
+        # go. Streamed (never the whole chain in RAM) so boot is flat even for
+        # a long-lived pod whose durable sink holds millions of records. A
+        # crash-restart resumes the *same* chain, not a fork.
+        last_seq, last_head, count = self._scan_chain(
+            self._iter_records(), on_record=self._tally_record,
+        )
+        self._seq = last_seq + 1 if count else 0
+        self._head = last_head
+
+    def _iter_records(self):
+        """Iterate the durable chain oldest-first WITHOUT materialising it.
+        Prefers the sink's streaming cursor; falls back to ``read_all`` for
+        sinks (e.g. the in-memory test fake) that only offer the list form."""
+        sink = self._sink
+        it = getattr(sink, "iter_records", None)
+        if callable(it):
+            return it()
+        return iter(sink.read_all())
+
+    def _chain_len(self) -> int:
+        sink = self._sink
+        counter = getattr(sink, "count", None)
+        if callable(counter):
+            return int(counter())
+        return len(sink.read_all())
 
     def _tally_record(self, rec: dict[str, Any]) -> None:
         """Fold one committed record into the ground-truth tally. Called
@@ -144,8 +185,14 @@ class AuditLogger:
 
     # -- chain integrity ---------------------------------------------------
     @staticmethod
-    def _verify_chain(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _scan_chain(records, *, on_record=None) -> tuple[int, str, int]:
+        """Stream the chain, verifying linkage/seq/hash as we go. The durable
+        sink holds the chain from genesis, so ``seq`` must be contiguous from
+        0 and each ``prev_hash`` must link to the prior record. Returns
+        ``(last_seq, last_hash, count)``; calls ``on_record(rec)`` per record
+        (for the boot-time tally rebuild). Never holds the full chain."""
         prev = GENESIS_HASH
+        i = -1
         for i, rec in enumerate(records):
             if rec.get("seq") != i:
                 raise AuditError(f"audit seq gap/dup at position {i}: {rec.get('seq')}")
@@ -157,13 +204,23 @@ class AuditLogger:
             if rec.get("hash") != expected:
                 raise AuditError(f"audit record {i} hash mismatch (tampered)")
             prev = rec["hash"]
+            if on_record is not None:
+                on_record(rec)
+        count = i + 1
+        return (i, prev if count else GENESIS_HASH, count)
+
+    @classmethod
+    def _verify_chain(cls, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Back-compat list form (tests / external callers): verify and return
+        the records. The hot paths use :meth:`_scan_chain` streaming."""
+        cls._scan_chain(iter(records))
         return records
 
     def verify(self) -> None:
         """Re-verify the whole chain from durable storage. Used at boot and
-        before any reconciliation."""
+        before any reconciliation. Streamed — flat memory regardless of length."""
         with self._lock:
-            self._verify_chain(self._sink.read_all())
+            self._scan_chain(self._iter_records())
 
     def read_records(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         """Read the durable chain (newest-last). Used by the reflect node's
@@ -172,12 +229,16 @@ class AuditLogger:
 
         The records are returned defensively-copied so a caller cannot
         mutate committed history. ``limit=None`` returns the full chain;
-        a numeric limit returns the last N records."""
+        a numeric limit returns the last N records (streamed from the sink's
+        tail cursor when available, so a bounded read stays bounded even on a
+        millions-long durable chain)."""
         with self._lock:
-            rows = self._sink.read_all()
-        if limit is not None and limit > 0:
-            rows = rows[-int(limit):]
-        return rows
+            if limit is not None and limit > 0:
+                tail = getattr(self._sink, "read_tail", None)
+                if callable(tail):
+                    return tail(int(limit))
+                return self._sink.read_all()[-int(limit):]
+            return self._sink.read_all()
 
     # -- write-before-act --------------------------------------------------
     def _commit(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -239,10 +300,10 @@ class AuditLogger:
         dangling intent — this surfaces those so the operator reconciles them
         on restart (rather than the dangling payment going unnoticed)."""
         with self._lock:
-            rows = self._sink.read_all()
+            it = self._iter_records()
         closed: set[str] = set()
         intents: dict[str, dict[str, Any]] = {}
-        for r in rows:
+        for r in it:
             kind = str(r.get("kind", ""))
             if kind.startswith("intent:"):
                 iid = f"{r['seq']}:{r['hash'][:16]}"
@@ -254,14 +315,22 @@ class AuditLogger:
         return [rec for iid, rec in intents.items() if iid not in closed]
 
     # -- tamper-evidence anchoring -----------------------------------------
-    def _snapshot(self) -> tuple[list[str], int]:
-        with self._lock:
-            hashes = [r["hash"] for r in self._sink.read_all()]
-        return hashes, len(hashes)
+    def _merkle_root_upto(self, upto: int | None) -> str:
+        """Merkle root over the first ``upto`` record hashes (or all when
+        ``None``). Delegates to the sink's bounded-memory implementation when
+        it offers one (the disk sink spills reduction levels to disk); else
+        computes it in-process for the small in-memory fake."""
+        sink_merkle = getattr(self._sink, "merkle_root", None)
+        if callable(sink_merkle):
+            return sink_merkle(upto=upto)
+        hashes = [r["hash"] for r in self._sink.read_all()]
+        if upto is not None:
+            hashes = hashes[:upto]
+        return _merkle_root(hashes)
 
     def merkle_root(self) -> str:
-        hashes, _ = self._snapshot()
-        return _merkle_root(hashes)
+        with self._lock:
+            return self._merkle_root_upto(None)
 
     def anchor(self, store: MerkleAnchorStore, day: str | None = None) -> str:
         """Publish the day's Merkle root to the platform and reconcile against
@@ -279,8 +348,9 @@ class AuditLogger:
         import json
 
         day = day or time.strftime("%Y-%m-%d", time.gmtime())
-        hashes, n = self._snapshot()
-        root = _merkle_root(hashes)
+        with self._lock:
+            n = self._chain_len()
+            root = self._merkle_root_upto(None)
 
         raw = store.get_root(self._darwin_id, day)
         if raw is not None:
@@ -297,7 +367,12 @@ class AuditLogger:
                 # Legitimate iff the prefix the old root covered still hashes
                 # to the old root. Append-only growth always satisfies this;
                 # any rewrite of already-witnessed history fails it.
-                if not (0 <= old_n <= n and _merkle_root(hashes[:old_n]) == old_root):
+                with self._lock:
+                    prefix_ok = (
+                        0 <= old_n <= n
+                        and self._merkle_root_upto(old_n) == old_root
+                    )
+                if not prefix_ok:
                     raise AuditError(
                         f"Merkle anchor divergence for {day}: previously "
                         f"witnessed checkpoint (n={old_n}) no longer "
