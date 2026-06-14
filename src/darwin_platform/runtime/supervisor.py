@@ -2161,71 +2161,27 @@ class Supervisor:
         reflects construction only; the HTTP layer adds the operator-scope
         check. Fed to each Darwin's planner (via ``Platform.money_capabilities``)
         so the genome reasons over rails that are actually available, and
-        surfaced read-only on the operator console."""
-        from ..payments.sanctions import (
-            AllowAllScreener,
-            CachedScreener,
-            ChainalysisScreener,
-            LocalDenylistScreener,
-            TRMScreener,
-        )
-        from ..security.kyc import (
-            OnfidoKYCProvider,
-            PersonaKYCProvider,
+        surfaced read-only on the operator console. The per-rail detection +
+        manifest shape are shared with the k8s orchestrator pod via
+        :mod:`..payments.money_capabilities` so the two paths can't drift."""
+        from ..payments.money_capabilities import (
+            assemble_money_capabilities,
+            detect_fiat,
+            detect_kyc,
+            detect_sanctions,
         )
 
-        # -- wallet -------------------------------------------------------
-        wallet_live = self._wallet_factory is not None
-        wallet_provider = self._wallet_provider if wallet_live else "none"
-
-        # -- fiat ramp ----------------------------------------------------
-        if self._fiat_ramp is None:
-            fiat = {"provider": "none", "live": False}
-        else:
-            name = getattr(self._fiat_ramp, "name", "stub")
-            fiat = {"provider": name, "live": name in ("stripe", "moonpay")}
-
-        # -- sanctions screener (real providers may be cache-wrapped) -----
-        screener = self._sanctions
-        if isinstance(screener, CachedScreener):
-            screener = screener._inner
-        if screener is None:
-            sanctions = {"provider": "none", "live": False}
-        elif isinstance(screener, ChainalysisScreener):
-            sanctions = {"provider": "chainalysis", "live": True}
-        elif isinstance(screener, TRMScreener):
-            sanctions = {"provider": "trm", "live": True}
-        elif isinstance(screener, (LocalDenylistScreener, AllowAllScreener)):
-            sanctions = {"provider": "local", "live": False}
-        else:
-            sanctions = {"provider": "unknown", "live": False}
-
-        # -- KYC (variant lives on the provider object) -------------------
-        if self._kyc_service is None:
-            kyc = {"provider": "none", "live": False}
-        else:
-            provider = getattr(self._kyc_service, "provider", None)
-            if isinstance(provider, PersonaKYCProvider):
-                kyc = {"provider": "persona", "live": True}
-            elif isinstance(provider, OnfidoKYCProvider):
-                kyc = {"provider": "onfido", "live": True}
-            else:
-                kyc = {"provider": "stub", "live": False}
-
-        return {
-            "network": self._network,
-            "mainnet": "mainnet" in self._network,
-            "wallet": {
-                "provider": wallet_provider,
-                "live": wallet_live,
-                "chains": list(self._chain_networks),
-            },
-            "fiat": fiat,
-            "sanctions": sanctions,
-            "kyc": kyc,
-            "omnibus": {"enabled": self._omnibus_wallet is not None},
-            "x402": {"live": self._x402_factory is not None},
-        }
+        return assemble_money_capabilities(
+            network=self._network,
+            wallet_provider=self._wallet_provider,
+            wallet_live=self._wallet_factory is not None,
+            chains=list(self._chain_networks),
+            fiat=detect_fiat(self._fiat_ramp),
+            sanctions=detect_sanctions(self._sanctions),
+            kyc=detect_kyc(self._kyc_service),
+            omnibus_enabled=self._omnibus_wallet is not None,
+            x402_live=self._x402_factory is not None,
+        )
 
     # -- organism data browser (doc 08) -----------------------------------
     def organism_reader_for(self, darwin_id: str):
