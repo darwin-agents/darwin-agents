@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(web): add money rails card to operator console
+- feat(platform): expose money capabilities manifest to planner and API
+- feat(platform): add JsonlAuditSink for durable orchestrator pod audit
 - test(web): target page headings in live playwright assertions
 - test(web): add live playwright gate against real dev stack
 - feat(infra): enable webpush VAPID in local terraform stack
@@ -36,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(dna): bound ledger window with O(1) treasury balance
+- fix(dna): stream audit chain boot and Merkle for bounded memory
 - fix(platform): degrade k8s status to cached snapshot on pod RPC failure
 - fix(platform): map pod RPC failures to 409 and harden k8s websocket stream
 - fix(infra): grant BYPASSRLS to CNPG owner role at bootstrap
