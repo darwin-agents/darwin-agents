@@ -7,6 +7,7 @@
 export const queryKeys = {
   health: () => ["health"] as const,
   capabilities: () => ["platform", "capabilities"] as const,
+  moneyCapabilities: () => ["platform", "money-capabilities"] as const,
   darwins: () => ["darwins"] as const,
   darwin: (id: string) => ["darwin", id] as const,
   events: (id: string, page = 0, filters?: Record<string, unknown>) =>

@@ -195,6 +195,26 @@ export interface PlatformCapabilities {
 }
 
 /**
+ * Which money rails this deployment actually has wired, from
+ * `GET /platform/money/capabilities`. `live` distinguishes a real adapter from
+ * a stub/offline fallback (env may be set but the adapter still fake). Same
+ * manifest the supervisor feeds each Darwin's planner. Read-only / informational.
+ */
+export interface MoneyCapabilities {
+  network: string; // e.g. "base-mainnet" | "base-sepolia"
+  mainnet: boolean;
+  wallet: { provider: string; live: boolean; chains: string[] };
+  fiat: { provider: string; live: boolean };
+  sanctions: { provider: string; live: boolean };
+  kyc: { provider: string; live: boolean };
+  omnibus: { enabled: boolean };
+  x402: { live: boolean };
+  // Operator scope of the caller (folded in server-side, like PlatformCapabilities).
+  is_operator: boolean;
+  [k: string]: unknown;
+}
+
+/**
  * Operator data browser onto a Darwin's organism (business) database, read
  * through the SELECT-only dashboard role (`adapters.organism_reader`).
  */

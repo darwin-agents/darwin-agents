@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OperatorOnly } from "@/components/layout/operator-only";
+import { MoneyCapabilitiesCard } from "@/components/operator/money-capabilities";
 import { formatRelative } from "@/lib/format";
 
 export default function FleetOperatorPage() {
@@ -59,6 +60,7 @@ export default function FleetOperatorPage() {
         </p>
       </header>
 
+      <MoneyCapabilitiesCard />
       <FleetControlsCard />
       <StagingCard />
       <SigningCard />

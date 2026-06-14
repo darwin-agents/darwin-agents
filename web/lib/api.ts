@@ -31,6 +31,7 @@ import type {
   LedgerSummary,
   OrganismRowsResponse,
   OrganismTablesResponse,
+  MoneyCapabilities,
   PlatformCapabilities,
   PushSubscriptionRequest,
   PushSubscriptionRow,
@@ -505,6 +506,13 @@ export const api = {
   // this so they're hidden when the deployment (or token) can't serve them.
   capabilities: () =>
     apiFetch<PlatformCapabilities>("/platform/capabilities"),
+
+  // Money rails — which payment rails this deployment has wired (wallet/
+  // network/fiat/sanctions/kyc/omnibus/x402), each with a live-vs-fallback
+  // flag. Same manifest fed to each Darwin's planner; rendered on the operator
+  // console.
+  moneyCapabilities: () =>
+    apiFetch<MoneyCapabilities>("/platform/money/capabilities"),
 
   // Organism (business) DB — read through the SELECT-only dashboard role.
   organismTables: (id: string) =>
