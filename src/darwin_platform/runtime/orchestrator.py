@@ -806,17 +806,28 @@ class OrchestratorState:
         crediter(float(amount_usdc), str(memo))
         return {"credited": float(amount_usdc), "memo": str(memo)}
 
+    # The timeline only ever shows recent activity, and an immortal pod's
+    # durable chain is millions of records — never serialise the whole thing
+    # over the control API. Hand back a bounded tail; the supervisor pages
+    # within it by seq/cursor.
+    EVENTS_TAIL = 5_000
+
     def events_records(self) -> list[dict[str, Any]]:
-        """Raw audit-log records held in this pod.
+        """Recent audit-log records held in this pod (bounded tail).
 
         In ``--driver=k8s`` the Darwin runs here, so its hash-chained audit
         log lives in this pod's ``audit_sink`` — not in the supervisor. The
         supervisor fetches these via the control API and applies all
-        filtering/paging itself (single source of truth), so we just hand
-        over the records.
+        filtering/paging itself; we return the most recent ``EVENTS_TAIL``
+        records (streamed from the sink's tail cursor when it has one) so the
+        response stays bounded for a long-lived pod.
         """
+        sink = self.stack.audit_sink
         try:
-            return self.stack.audit_sink.read_all()
+            tail = getattr(sink, "read_tail", None)
+            if callable(tail):
+                return tail(self.EVENTS_TAIL)
+            return sink.read_all()[-self.EVENTS_TAIL:]
         except Exception:
             return []
 
@@ -1191,6 +1202,18 @@ def build_parser() -> argparse.ArgumentParser:
             "not just the signed layer fingerprint. Omitted = simulated."
         ),
     )
+    p.add_argument(
+        "--audit-dir", default="/var/lib/darwin/audit", type=Path,
+        help=(
+            "Directory for this pod's durable hash-chained audit log "
+            "(JSON-lines on the node-backed volume, NOT the container memory "
+            "limit). Defaults to a writable path on the pod root FS. The "
+            "genome appends every intent/outcome here; keeping it on disk "
+            "instead of the in-memory test sink is what bounds the pod's "
+            "memory over an immortal life. Set to 'none' to force the legacy "
+            "in-memory sink (bounded sims/tests only)."
+        ),
+    )
     p.add_argument("--heartbeat-seconds", default=0.005, type=float)
     p.add_argument("--host", default="0.0.0.0",
                    help="Bind address for the control API.")
@@ -1266,6 +1289,27 @@ def main(argv: list[str] | None = None) -> int:
         clock=clock,
     )
     _apply_real_adapters(stack, args, clock, darwin_id=args.darwin_id)
+
+    # Durable disk-backed audit sink (the prod ``AuditSink`` is "an append-only
+    # Postgres table"; the in-memory fake pins the genome's entire hash-chained
+    # history in RAM — the pod leak). Must be set BEFORE ``platform()`` captures
+    # it. Records live on the node-backed volume, off the container memory
+    # limit; the per-heartbeat path only appends, and the chain is streamed on
+    # the rare full-scan paths (boot verify, daily Merkle anchor).
+    audit_dir = getattr(args, "audit_dir", None)
+    if audit_dir is not None and str(audit_dir).lower() != "none":
+        try:
+            from .audit_sink import JsonlAuditSink
+
+            stack.audit_sink = JsonlAuditSink(
+                Path(audit_dir) / f"{args.darwin_id}.jsonl",
+            )
+        except Exception as exc:  # pragma: no cover - never block boot on this
+            print(
+                f"warning: disk audit sink at {audit_dir} unavailable "
+                f"({exc}); falling back to in-memory sink",
+                file=sys.stderr,
+            )
 
     from darwin_dna.evolution import boot
     pod_platform = stack.platform()
