@@ -144,6 +144,12 @@ class DarwinPodConfig:
     # same backend (cdp / local-vault / web3). Default 'cdp' matches the
     # supervisor CLI default.
     wallet_provider: str = "cdp"
+    # Platform-mediated money rails (fiat / sanctions / KYC / omnibus) as a
+    # JSON blob, forwarded from the supervisor so the pod's planner reasons
+    # over the full money picture (these rails run in the supervisor, never
+    # in-pod, so the pod's own vantage would otherwise report ``none``).
+    # Emitted as DARWIN_PLATFORM_MONEY_RAILS; empty string → not forwarded.
+    platform_money_rails: str = ""
 
 
 def namespace_name(prefix: str, darwin_id: str) -> str:
@@ -472,6 +478,14 @@ def build_deployment(
                     "key": ORGANISM_DB_DSN_SECRET_KEY,
                 },
             },
+        })
+    # Platform-mediated money rails (fiat / sanctions / KYC / omnibus). The
+    # orchestrator folds these into its money-capabilities manifest so the
+    # pod's planner sees the same rails the operator endpoint reports.
+    if config.platform_money_rails:
+        env.append({
+            "name": "DARWIN_PLATFORM_MONEY_RAILS",
+            "value": config.platform_money_rails,
         })
     env.extend(list(config.extra_env))
 

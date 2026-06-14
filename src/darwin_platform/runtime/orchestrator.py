@@ -39,6 +39,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -184,14 +185,31 @@ def _apply_real_adapters(
     # Money-capabilities manifest for this pod. Wallet + x402 are pod-local
     # truth (did we wire a real factory?); network/chains come from the
     # supervisor-forwarded flags. fiat/sanctions/kyc/omnibus are platform-
-    # mediated and not run in-pod, so they report "none" here — the in-pod
-    # planner only ever transacts via the wallet + x402 rails anyway.
+    # mediated and NOT run in-pod — but the supervisor forwards their resolved
+    # shapes via DARWIN_PLATFORM_MONEY_RAILS so the pod's planner sees the FULL
+    # money picture (matching the operator endpoint). Absent env → the rails
+    # report "none" (in-process spawn, tests, or an older supervisor).
     from ..payments.money_capabilities import (
         assemble_money_capabilities,
         detect_fiat,
         detect_kyc,
         detect_sanctions,
     )
+
+    forwarded: dict[str, Any] = {}
+    raw_rails = os.environ.get("DARWIN_PLATFORM_MONEY_RAILS")
+    if raw_rails:
+        try:
+            loaded = json.loads(raw_rails)
+            if isinstance(loaded, dict):
+                forwarded = loaded
+        except (ValueError, TypeError):
+            forwarded = {}
+
+    fiat = forwarded.get("fiat") or detect_fiat(None)
+    sanctions = forwarded.get("sanctions") or detect_sanctions(None)
+    kyc = forwarded.get("kyc") or detect_kyc(None)
+    omnibus_enabled = bool((forwarded.get("omnibus") or {}).get("enabled", False))
 
     chains = [
         c.strip() for c in (args.chain_networks or "base").split(",") if c.strip()
@@ -205,10 +223,10 @@ def _apply_real_adapters(
         wallet_provider=args.wallet_provider,
         wallet_live="wallet_factory" in factories,
         chains=chains,
-        fiat=detect_fiat(None),
-        sanctions=detect_sanctions(None),
-        kyc=detect_kyc(None),
-        omnibus_enabled=False,
+        fiat=fiat,
+        sanctions=sanctions,
+        kyc=kyc,
+        omnibus_enabled=omnibus_enabled,
         x402_live="x402_factory" in factories,
     )
 

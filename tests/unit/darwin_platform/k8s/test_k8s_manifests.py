@@ -60,6 +60,32 @@ def test_no_virtual_key_env_when_disabled():
     assert all(e["name"] != "DARWIN_LITELLM_MASTER_KEY" for e in env)
 
 
+def test_platform_money_rails_emitted_as_env_when_set():
+    """The supervisor's forwarded platform money rails reach the pod as
+    DARWIN_PLATFORM_MONEY_RAILS so the orchestrator can fold them into its
+    money-capabilities manifest."""
+    rails = '{"fiat": {"provider": "stripe", "live": true}}'
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(platform_money_rails=rails),
+        opening_usdc=1.0, escalation_auto="approve",
+    )
+    by_name = {
+        e["name"]: e
+        for e in d["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert by_name["DARWIN_PLATFORM_MONEY_RAILS"]["value"] == rails
+
+
+def test_no_platform_money_rails_env_by_default():
+    d = build_deployment(
+        darwin_id="abc123", namespace="darwin-abc123",
+        config=DarwinPodConfig(), opening_usdc=1.0, escalation_auto="approve",
+    )
+    names = {e["name"] for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "DARWIN_PLATFORM_MONEY_RAILS" not in names
+
+
 def test_build_bundle_seals_virtual_key_into_secret_and_env():
     bundle = build_bundle(
         darwin_id="abc123", namespace_prefix="darwin-", opening_usdc=1.0,

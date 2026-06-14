@@ -148,3 +148,60 @@ def test_apply_real_adapters_no_wallet_reports_wallet_not_live(monkeypatch):
     }
     assert manifest["network"] == "base-sepolia"
     assert manifest["x402"] == {"live": False}
+
+
+def test_apply_real_adapters_forwards_platform_money_rails(monkeypatch):
+    """When the supervisor forwards DARWIN_PLATFORM_MONEY_RAILS, the pod folds
+    those platform-mediated rails (fiat/sanctions/kyc/omnibus) into its manifest
+    so the planner sees the full picture — while wallet/x402/network stay
+    pod-local truth."""
+    import json
+
+    from darwin_fakes import FakeStack
+    from darwin_platform import __main__ as cli_main
+
+    monkeypatch.setattr(
+        cli_main, "_build_real_factories",
+        lambda _args: {"wallet_factory": lambda _id, _clk, _vault: object()},
+    )
+    monkeypatch.setenv(
+        "DARWIN_PLATFORM_MONEY_RAILS",
+        json.dumps({
+            "fiat": {"provider": "stripe", "live": True},
+            "sanctions": {"provider": "chainalysis", "live": True},
+            "kyc": {"provider": "persona", "live": True},
+            "omnibus": {"enabled": True},
+        }),
+    )
+    args = _fake_args()
+    args.wallet_provider = "cdp"
+
+    stack = FakeStack(opening_usdc=100.0, clock=lambda: 0.0)
+    manifest = orchestrator._apply_real_adapters(  # noqa: SLF001
+        stack, args, lambda: 0.0, darwin_id="darwin-abc",
+    )
+
+    assert manifest["fiat"] == {"provider": "stripe", "live": True}
+    assert manifest["sanctions"] == {"provider": "chainalysis", "live": True}
+    assert manifest["kyc"] == {"provider": "persona", "live": True}
+    assert manifest["omnibus"] == {"enabled": True}
+    # Wallet rail stays pod-local truth (a real factory was wired).
+    assert manifest["wallet"]["live"] is True
+
+
+def test_apply_real_adapters_ignores_malformed_money_rails(monkeypatch):
+    """A malformed DARWIN_PLATFORM_MONEY_RAILS must not crash boot — the pod
+    falls back to the pod-local "none" vantage."""
+    from darwin_fakes import FakeStack
+    from darwin_platform import __main__ as cli_main
+
+    monkeypatch.setattr(cli_main, "_build_real_factories", lambda _args: {})
+    monkeypatch.setenv("DARWIN_PLATFORM_MONEY_RAILS", "{not valid json")
+    args = _fake_args()
+
+    stack = FakeStack(opening_usdc=100.0, clock=lambda: 0.0)
+    manifest = orchestrator._apply_real_adapters(  # noqa: SLF001
+        stack, args, lambda: 0.0, darwin_id="darwin-abc",
+    )
+    assert manifest["fiat"] == {"provider": "none", "live": False}
+    assert manifest["omnibus"] == {"enabled": False}

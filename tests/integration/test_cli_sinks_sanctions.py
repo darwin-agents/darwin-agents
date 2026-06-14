@@ -10,6 +10,7 @@ from darwin_platform.__main__ import (
     _build_alert_sink,
     _build_notification_sink,
     _build_sanctions,
+    _platform_money_rails,
     build_parser,
 )
 from darwin_platform.payments.sanctions import (
@@ -78,6 +79,73 @@ def test_build_sanctions_picks_up_env_var(monkeypatch):
     monkeypatch.setenv("DARWIN_SANCTIONS_API_KEY", "env-key")
     s = _build_sanctions(_ns(sanctions_provider="chainalysis"))
     assert isinstance(s, CachedScreener)
+
+
+# ---------------------------------------------------------------------------
+# _platform_money_rails
+# ---------------------------------------------------------------------------
+
+def _rails_ns(**kw):
+    """A Namespace covering every flag _platform_money_rails reads."""
+    defaults = dict(
+        fiat_provider="none", stripe_api_key=None, moonpay_api_key=None,
+        sanctions_provider="local", sanctions_api_key=None,
+        sanctions_denylist=None, sanctions_list_file=None,
+        kyc_provider="none",
+        kyc_persona_api_key=None, kyc_persona_template_id=None,
+        kyc_onfido_api_token=None, kyc_onfido_workflow_id=None,
+        enable_omnibus=False,
+    )
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+def test_platform_money_rails_all_none_by_default():
+    rails = _platform_money_rails(_rails_ns())
+    assert rails == {
+        "fiat": {"provider": "none", "live": False},
+        "sanctions": {"provider": "none", "live": False},
+        "kyc": {"provider": "none", "live": False},
+        "omnibus": {"enabled": False},
+    }
+
+
+def test_platform_money_rails_live_providers():
+    rails = _platform_money_rails(_rails_ns(
+        fiat_provider="stripe", stripe_api_key="sk",
+        sanctions_provider="chainalysis", sanctions_api_key="k",
+        kyc_provider="persona",
+        kyc_persona_api_key="pk", kyc_persona_template_id="tmpl",
+        enable_omnibus=True,
+    ))
+    assert rails["fiat"] == {"provider": "stripe", "live": True}
+    assert rails["sanctions"] == {"provider": "chainalysis", "live": True}
+    assert rails["kyc"] == {"provider": "persona", "live": True}
+    assert rails["omnibus"] == {"enabled": True}
+
+
+def test_platform_money_rails_provider_set_but_key_missing_not_live():
+    """Provider chosen but the required credential absent → reported but not
+    live (mirrors the _build_* predicates; the supervisor exits before spawning
+    pods, but the manifest must never claim a live rail without its key)."""
+    rails = _platform_money_rails(_rails_ns(
+        fiat_provider="stripe", stripe_api_key=None,
+        kyc_provider="persona", kyc_persona_api_key="pk",
+        kyc_persona_template_id=None,
+    ))
+    assert rails["fiat"] == {"provider": "stripe", "live": False}
+    assert rails["kyc"] == {"provider": "persona", "live": False}
+
+
+def test_platform_money_rails_local_sanctions_from_denylist():
+    rails = _platform_money_rails(_rails_ns(sanctions_denylist="/tmp/deny.json"))
+    assert rails["sanctions"] == {"provider": "local", "live": False}
+
+
+def test_platform_money_rails_picks_up_env_keys(monkeypatch):
+    monkeypatch.setenv("STRIPE_API_KEY", "env-sk")
+    rails = _platform_money_rails(_rails_ns(fiat_provider="stripe"))
+    assert rails["fiat"] == {"provider": "stripe", "live": True}
 
 
 # ---------------------------------------------------------------------------

@@ -1391,6 +1391,90 @@ def _build_namespace_provisioner(args: argparse.Namespace, k8s_driver):
     )
 
 
+def _platform_money_rails(args: argparse.Namespace) -> dict[str, Any]:
+    """Resolve the platform-mediated money rails (fiat / sanctions / KYC /
+    omnibus) from CLI flags so the K8s driver can forward them onto each
+    Darwin pod (``DARWIN_PLATFORM_MONEY_RAILS``). The pod runs these rails in
+    the supervisor, not in-pod, so its own vantage reports ``none`` — this lets
+    the pod's planner see the FULL picture the operator endpoint shows.
+
+    Derived from ``args`` ALONE (not the constructed service objects): this runs
+    inside :func:`_build_k8s_driver`, which executes BEFORE
+    :func:`_build_platform_services` builds the fiat/KYC handles. The predicates
+    here therefore mirror those builders' ``provider`` + required-key checks
+    exactly, and the returned dicts match the shapes
+    :mod:`darwin_platform.payments.money_capabilities` ``detect_*`` produce."""
+    # -- fiat (mirrors _build_platform_services' fiat block) -------------
+    fiat_provider = getattr(args, "fiat_provider", "none") or "none"
+    if fiat_provider == "stripe":
+        fiat_live = bool(
+            getattr(args, "stripe_api_key", None)
+            or os.environ.get("STRIPE_API_KEY")
+        )
+    elif fiat_provider == "moonpay":
+        fiat_live = bool(
+            getattr(args, "moonpay_api_key", None)
+            or os.environ.get("MOONPAY_API_KEY")
+        )
+    else:
+        fiat_live = False
+    fiat = {"provider": fiat_provider, "live": fiat_live}
+
+    # -- sanctions (mirrors _build_sanctions) ---------------------------
+    s_provider = getattr(args, "sanctions_provider", None) or "local"
+    s_api_key = getattr(args, "sanctions_api_key", None) or os.environ.get(
+        "DARWIN_SANCTIONS_API_KEY"
+    )
+    if s_provider == "chainalysis" and s_api_key:
+        sanctions = {"provider": "chainalysis", "live": True}
+    elif s_provider == "trm" and s_api_key:
+        sanctions = {"provider": "trm", "live": True}
+    elif getattr(args, "sanctions_denylist", None) or getattr(
+        args, "sanctions_list_file", None
+    ):
+        sanctions = {"provider": "local", "live": False}
+    else:
+        sanctions = {"provider": "none", "live": False}
+
+    # -- KYC (mirrors _build_platform_services' KYC block) --------------
+    kyc_provider = getattr(args, "kyc_provider", "none") or "none"
+    if kyc_provider == "persona":
+        kyc_live = bool(
+            (
+                getattr(args, "kyc_persona_api_key", None)
+                or os.environ.get("DARWIN_KYC_PERSONA_API_KEY")
+            )
+            and (
+                getattr(args, "kyc_persona_template_id", None)
+                or os.environ.get("DARWIN_KYC_PERSONA_TEMPLATE_ID")
+            )
+        )
+        kyc = {"provider": "persona", "live": kyc_live}
+    elif kyc_provider == "onfido":
+        kyc_live = bool(
+            (
+                getattr(args, "kyc_onfido_api_token", None)
+                or os.environ.get("ONFIDO_API_TOKEN")
+            )
+            and (
+                getattr(args, "kyc_onfido_workflow_id", None)
+                or os.environ.get("ONFIDO_WORKFLOW_ID")
+            )
+        )
+        kyc = {"provider": "onfido", "live": kyc_live}
+    elif kyc_provider == "stub":
+        kyc = {"provider": "stub", "live": False}
+    else:
+        kyc = {"provider": "none", "live": False}
+
+    return {
+        "fiat": fiat,
+        "sanctions": sanctions,
+        "kyc": kyc,
+        "omnibus": {"enabled": bool(getattr(args, "enable_omnibus", False))},
+    }
+
+
 def _build_k8s_driver(args: argparse.Namespace):
     """Build a :class:`darwin_platform.k8s.K8sDarwinDriver` when
     ``--driver=k8s`` is set; otherwise ``None`` (the supervisor uses
@@ -1457,6 +1541,11 @@ def _build_k8s_driver(args: argparse.Namespace):
         # per-Darwin pod. Without this, the pod default ("cdp") is used
         # regardless of what the operator started the supervisor with.
         wallet_provider=getattr(args, "wallet_provider", None) or "cdp",
+        # Forward the platform-mediated rails (fiat / sanctions / KYC /
+        # omnibus) so each pod's planner reasons over the FULL money picture
+        # the operator endpoint shows — not just the pod-local wallet + x402
+        # rails. The orchestrator reads this from DARWIN_PLATFORM_MONEY_RAILS.
+        platform_money_rails=json.dumps(_platform_money_rails(args)),
         extra_env=tuple(pod_extra_env),
         runtime_class_name=getattr(args, "k8s_runtime_class", None) or "kata",
         # Empty string means "skip the LanceDB sidecar entirely" — the
