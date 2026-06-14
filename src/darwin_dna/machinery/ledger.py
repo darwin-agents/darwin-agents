@@ -23,6 +23,7 @@ reproduction transfer debits equity and credits treasury (asset down).
 from __future__ import annotations
 
 import hashlib
+from collections import deque
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -30,6 +31,15 @@ from pydantic import BaseModel, Field
 from .._canonical import canonical_bytes
 
 GENESIS_HASH = "0" * 64
+
+# How many recent entries the in-memory window retains. The ledger is a
+# *derived* structure (the wallet movement feed + audit chain are the durable
+# record), and balance is an O(1) running total — so an immortal genome must
+# not pin every entry it ever posts in RAM. The retained window is what
+# ``verify()``/``entries`` inspect; it is generous enough that any sim or test
+# sees its whole short history, while a long-lived pod stays flat. Tunable per
+# instance for tests that want to assert windowing directly.
+DEFAULT_LEDGER_WINDOW = 10_000
 TREASURY = "treasury"
 FUNDING_EXTERNAL = "funding:external"
 EQUITY_REPRODUCTION = "equity:reproduction"
@@ -79,13 +89,20 @@ class Ledger:
     authoritative movement feed at boot (the wallet/audit are durable; the
     ledger is derived and reconciled, never the source of truth for balance)."""
 
-    def __init__(self, darwin_id: str):
+    def __init__(self, darwin_id: str, *, window: int = DEFAULT_LEDGER_WINDOW):
         self._darwin_id = darwin_id
-        self._entries: list[LedgerEntry] = []
+        # Bounded ring of the most-recent entries. The full chain is derived
+        # (replayable from the wallet feed) and the durable record is the
+        # audit log + wallet; pinning every entry forever is the pod leak.
+        self._entries: deque[LedgerEntry] = deque(maxlen=max(1, int(window)))
         self._seq = 0
         self._head = GENESIS_HASH
         self._seeded = False
         self._cursor = 0  # how many wallet movements have been journaled
+        # O(1) running treasury balance, updated on every post — so
+        # ``treasury_balance()`` stays exact even after old entries fall out
+        # of the window (it was an O(n)-per-heartbeat re-sum before).
+        self._treasury = 0.0
 
     # -- posting -----------------------------------------------------------
     def _post(
@@ -104,6 +121,10 @@ class Ledger:
             action_id=action_id, prev_hash=self._head, hash=h,
         )
         self._entries.append(e)
+        if debit == TREASURY:
+            self._treasury += amount
+        if credit == TREASURY:
+            self._treasury -= amount
         self._seq += 1
         self._head = h
         return e
@@ -158,25 +179,29 @@ class Ledger:
 
     # -- balances + integrity ---------------------------------------------
     def treasury_balance(self) -> float:
-        bal = 0.0
-        for e in self._entries:
-            if e.debit == TREASURY:
-                bal += e.amount_usdc
-            if e.credit == TREASURY:
-                bal -= e.amount_usdc
-        return round(bal, 9)
+        # O(1) running total (maintained in ``_post``), so this is exact even
+        # after old entries fall out of the bounded window.
+        return round(self._treasury, 9)
 
     def verify(self) -> None:
-        prev = GENESIS_HASH
-        for i, e in enumerate(self._entries):
-            if e.seq != i or e.prev_hash != prev:
-                raise LedgerError(f"ledger chain broken at seq {i}")
+        """Re-verify the retained entry window: each entry's stored hash must
+        recompute, ``seq`` must be contiguous, and ``prev_hash`` must link to
+        the previous retained entry. The window may begin at a non-zero seq
+        (older entries pruned), so linkage is checked relative to the window's
+        first entry rather than against GENESIS — the audit chain + wallet feed
+        are the durable full-history record this is derived from."""
+        entries = list(self._entries)
+        for i, e in enumerate(entries):
             expect = _hash(e.seq, e.prev_hash, e.ts, e.debit, e.credit,
                            e.amount_usdc, e.category, e.counterparty,
                            e.action_id)
             if e.hash != expect:
-                raise LedgerError(f"ledger entry {i} hash mismatch (tampered)")
-            prev = e.hash
+                raise LedgerError(f"ledger entry seq {e.seq} hash mismatch (tampered)")
+            if i == 0:
+                continue
+            prevs = entries[i - 1]
+            if e.seq != prevs.seq + 1 or e.prev_hash != prevs.hash:
+                raise LedgerError(f"ledger chain broken at seq {e.seq}")
 
     def reconcile(self, wallet_balance: float, tolerance: float) -> float:
         """Return the drift; raise :class:`LedgerError` if it exceeds

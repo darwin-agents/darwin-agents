@@ -17,6 +17,29 @@ from darwin_dna.machinery.ledger import Ledger, LedgerError
 from darwin_fakes import make_platform
 
 
+def test_entry_window_is_bounded_balance_stays_exact():
+    """An immortal genome must not pin every ledger entry in RAM. The entry
+    window is bounded; the running treasury balance stays exact regardless,
+    and ``verify()`` still validates the retained window."""
+    led = Ledger("d", window=50)
+    led.seed_opening(100.0, ts=0.0)
+    # journal_new takes the cumulative wallet feed (it tracks its own cursor),
+    # mirroring how the genome calls it with wallet.movements() each beat.
+    movs: list = []
+    for i in range(500):
+        movs.append({"credit": {"from": "rev", "amount_usdc": 1.0, "ts": float(i)}})
+        led.journal_new(movs, now=float(i))
+    # Window capped, but balance is the O(1) running total over ALL posts.
+    assert len(led.entries) == 50
+    assert led.treasury_balance() == pytest.approx(100.0 + 500.0)
+    # The retained window is a valid, linked, untampered chain segment: the
+    # most-recent 50 entries, with contiguous seq (501 posts total: the
+    # opening seed at seq 0 then 500 credits, so the window is seq 451..500).
+    led.verify()
+    seqs = [e.seq for e in led.entries]
+    assert seqs == list(range(451, 501))
+
+
 def test_double_entry_balance_and_hash_chain():
     led = Ledger("d")
     led.seed_opening(100.0, ts=1.0)
