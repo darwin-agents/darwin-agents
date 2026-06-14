@@ -64,6 +64,24 @@ async def platform_capabilities(
     }
 
 
+# -- money rails (operator console: which payment rails are live) ------
+@router.get("/platform/money/capabilities")
+async def money_capabilities(
+    request: Request,
+    ctx: AuthContext = Depends(get_auth),
+) -> dict[str, Any]:
+    # Which money rails this deployment actually has wired (wallet provider +
+    # network, fiat ramp, sanctions, KYC, omnibus, x402), each with a `live`
+    # flag distinguishing a real adapter from a stub/offline fallback. This is
+    # the same manifest fed to each Darwin's planner, surfaced for the operator
+    # console. Reflects construction only; any authenticated token may read it,
+    # and we fold in the caller's operator scope so the UI can gate the
+    # operator-only money consoles (fiat deposit/withdraw) the same way
+    # /platform/capabilities does.
+    rails = _sup(request).money_capabilities()
+    return {**rails, "is_operator": ctx.has_scope(PLATFORM_OPERATOR)}
+
+
 # -- post-mortem soma forensics (doc 05) -------------------------------
 @router.get("/platform/darwins/{darwin_id}/forensics")
 async def list_soma_forensics(

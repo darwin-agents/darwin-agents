@@ -95,6 +95,12 @@ class OrchestratorContext:
     # None → positions valued at cost basis rather than zero.
     holdings: Any = None  # machinery.Holdings
     price_oracle: Any = None  # machinery.PriceOracle
+    # Money-capabilities manifest (doc: money rails). Set by the evolution loop
+    # from ``Platform.money_capabilities``; the plan node folds it into the
+    # reasoning request so the LLM knows which payment rails are live (e.g. not
+    # to attempt a fiat/withdraw leg when ``fiat.live`` is False). Optional —
+    # None means the planner simply omits the manifest from its prompt.
+    money_capabilities: Any = None
 
 
 # The graph topology, exactly the doc's diagram. Each entry:

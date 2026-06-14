@@ -195,6 +195,26 @@ async def test_platform_capabilities(client) -> None:
     assert caps["is_operator"] is True
 
 
+async def test_money_capabilities_endpoint(client) -> None:
+    """The money-rails manifest endpoint. A default in-process supervisor has
+    no real money adapters wired, so every rail reports a fallback provider and
+    live=False; the caller's operator scope is folded in like /capabilities."""
+    c, _sup = client
+    r = await c.get("/platform/money/capabilities")
+    assert r.status_code == 200, r.text
+    rails = r.json()
+    assert rails["network"] == "base-sepolia"
+    assert rails["mainnet"] is False
+    assert rails["wallet"]["live"] is False
+    assert rails["fiat"]["live"] is False
+    assert rails["sanctions"]["live"] is False
+    assert rails["kyc"]["live"] is False
+    assert rails["omnibus"]["enabled"] is False
+    assert rails["x402"]["live"] is False
+    # No-auth test client carries every scope.
+    assert rails["is_operator"] is True
+
+
 async def test_organism_data_browser_routes(client) -> None:
     """The operator organism data browser (docs 08, 22): tables + a bounded,
     read-only page of rows, through the SELECT-only reader. An unprovisioned

@@ -128,6 +128,15 @@ async def run(state, ctx):
                     "lessons": lessons[:32],
                     "prior_outcomes": prior_outcomes,
                     "untrusted_observations": state.world_observations[-5:],
+                    # Which payment rails are actually live this deployment, so
+                    # the planner doesn't pursue a rail that will fail (e.g. a
+                    # fiat/withdraw leg when fiat.live is False). Omitted when
+                    # the platform injected no manifest.
+                    **(
+                        {"money_capabilities": ctx.money_capabilities}
+                        if getattr(ctx, "money_capabilities", None) is not None
+                        else {}
+                    ),
                 },
             )
         except LLMBudgetExhausted as exc:

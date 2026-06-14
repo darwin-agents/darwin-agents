@@ -408,6 +408,15 @@ class Supervisor:
         billing_policy: BillingPolicy | None = None,
         llm_transport_factory: Callable[..., Any] | None = None,
         wallet_factory: Callable[..., Any] | None = None,
+        # Provider/network descriptors for the money-capabilities manifest.
+        # These are the choice STRINGS the CLI resolved (--wallet-provider,
+        # --network, --chain-networks); the constructed wallet-factory closure
+        # bakes them in but doesn't expose them, so we carry them explicitly so
+        # ``money_capabilities()`` can report the live rail + network without
+        # re-deriving from an opaque closure.
+        wallet_provider: str = "none",
+        network: str = "base-sepolia",
+        chain_networks: tuple[str, ...] | None = None,
         vault_factory: Callable[[], Any] | None = None,
         browser_factory: Callable[[Any], Any] | None = None,
         x402_factory: Callable[[Any], Any] | None = None,
@@ -745,6 +754,10 @@ class Supervisor:
         #   replay path; nests inside CachedBrowserSubstrate as the cheap
         #   half. None keeps the default modeled-cost replay.)
         self._wallet_factory: Callable[..., Any] | None = wallet_factory
+        # Descriptors for the money-capabilities manifest (see ctor docstring).
+        self._wallet_provider = wallet_provider
+        self._network = network
+        self._chain_networks: tuple[str, ...] = tuple(chain_networks or ("base",))
         self._vault_factory: Callable[[], Any] | None = vault_factory
         self._browser_factory: Callable[[Any], Any] | None = browser_factory
         self._x402_factory: Callable[[Any], Any] | None = x402_factory
@@ -1367,6 +1380,10 @@ class Supervisor:
             # between heartbeats itself with asyncio.sleep, so the event loop
             # never blocks on time.sleep even with many Darwins on one loop.
             _platform = stack.platform()
+            # Money-capabilities manifest: which payment rails are actually
+            # live, so the planner reasons over real availability instead of
+            # discovering gaps by trial. Deployment-wide + read-only.
+            _platform.money_capabilities = self.money_capabilities()
             # Inject the platform-side content-safety classifier (doc 10) so
             # publishing neurons run a real filter, not just the deterministic
             # substring backstop. No-op when unconfigured.
@@ -2134,6 +2151,80 @@ class Supervisor:
             "tenant_namespaces": self._namespace_provisioner is not None,
             "soma_forensics": self._soma_root is not None,
             "k8s": self._k8s_driver is not None,
+        }
+
+    def money_capabilities(self) -> dict[str, Any]:
+        """Which money rails this deployment actually has, derived from the
+        wired adapters (not from env — env may be set but the adapter still
+        a fake/stub). ``live`` means a *real* adapter is in place, not a
+        fake/stub/offline-denylist. Like :meth:`platform_capabilities`, this
+        reflects construction only; the HTTP layer adds the operator-scope
+        check. Fed to each Darwin's planner (via ``Platform.money_capabilities``)
+        so the genome reasons over rails that are actually available, and
+        surfaced read-only on the operator console."""
+        from ..payments.sanctions import (
+            AllowAllScreener,
+            CachedScreener,
+            ChainalysisScreener,
+            LocalDenylistScreener,
+            TRMScreener,
+        )
+        from ..security.kyc import (
+            OnfidoKYCProvider,
+            PersonaKYCProvider,
+        )
+
+        # -- wallet -------------------------------------------------------
+        wallet_live = self._wallet_factory is not None
+        wallet_provider = self._wallet_provider if wallet_live else "none"
+
+        # -- fiat ramp ----------------------------------------------------
+        if self._fiat_ramp is None:
+            fiat = {"provider": "none", "live": False}
+        else:
+            name = getattr(self._fiat_ramp, "name", "stub")
+            fiat = {"provider": name, "live": name in ("stripe", "moonpay")}
+
+        # -- sanctions screener (real providers may be cache-wrapped) -----
+        screener = self._sanctions
+        if isinstance(screener, CachedScreener):
+            screener = screener._inner
+        if screener is None:
+            sanctions = {"provider": "none", "live": False}
+        elif isinstance(screener, ChainalysisScreener):
+            sanctions = {"provider": "chainalysis", "live": True}
+        elif isinstance(screener, TRMScreener):
+            sanctions = {"provider": "trm", "live": True}
+        elif isinstance(screener, (LocalDenylistScreener, AllowAllScreener)):
+            sanctions = {"provider": "local", "live": False}
+        else:
+            sanctions = {"provider": "unknown", "live": False}
+
+        # -- KYC (variant lives on the provider object) -------------------
+        if self._kyc_service is None:
+            kyc = {"provider": "none", "live": False}
+        else:
+            provider = getattr(self._kyc_service, "provider", None)
+            if isinstance(provider, PersonaKYCProvider):
+                kyc = {"provider": "persona", "live": True}
+            elif isinstance(provider, OnfidoKYCProvider):
+                kyc = {"provider": "onfido", "live": True}
+            else:
+                kyc = {"provider": "stub", "live": False}
+
+        return {
+            "network": self._network,
+            "mainnet": "mainnet" in self._network,
+            "wallet": {
+                "provider": wallet_provider,
+                "live": wallet_live,
+                "chains": list(self._chain_networks),
+            },
+            "fiat": fiat,
+            "sanctions": sanctions,
+            "kyc": kyc,
+            "omnibus": {"enabled": self._omnibus_wallet is not None},
+            "x402": {"live": self._x402_factory is not None},
         }
 
     # -- organism data browser (doc 08) -----------------------------------
@@ -7216,6 +7307,9 @@ class Supervisor:
                     opening_usdc=float(record["budget_usdc"]),
                     clock=self._clock,
                 )
+                # Children inherit the deployment's money-rail manifest so
+                # their planner is aware of live payment rails from birth.
+                child_platform.money_capabilities = self.money_capabilities()
                 if self._content_classifier is not None:
                     child_platform.content_classifier = self._content_classifier
                 if self._price_oracle is not None:

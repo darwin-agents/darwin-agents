@@ -1613,6 +1613,19 @@ def _serve(args: argparse.Namespace) -> int:
     supervisor_kwargs: dict[str, Any] = {}
     if args.heartbeat_seconds is not None:
         supervisor_kwargs["heartbeat_seconds"] = float(args.heartbeat_seconds)
+    # Provider/network descriptors for the money-capabilities manifest. The
+    # wallet-factory closures bake these in but don't expose them, so carry
+    # the resolved choice strings explicitly (see Supervisor.money_capabilities).
+    supervisor_kwargs["wallet_provider"] = (
+        getattr(args, "wallet_provider", None) or "cdp"
+    )
+    supervisor_kwargs["network"] = (
+        "base-mainnet" if _is_mainnet(args) else "base-sepolia"
+    )
+    supervisor_kwargs["chain_networks"] = tuple(
+        c.strip() for c in (getattr(args, "chain_networks", None) or "base").split(",")
+        if c.strip()
+    )
     # Opt-in real soma self-modification + death-time forensics (docs 03/21/05).
     # Default unset → apply_mutation stays simulated and no soma snapshots are
     # captured (today's behavior); operators turn it on per deployment.

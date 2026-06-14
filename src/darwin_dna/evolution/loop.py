@@ -82,6 +82,7 @@ class Platform:
         sandbox=None,
         episodic_memory=None,
         content_classifier=None,
+        money_capabilities=None,
     ):
         self.manifest = manifest
         self.layer_blobs = layer_blobs
@@ -128,6 +129,12 @@ class Platform:
         # ContentSafetyGate runs a real classifier instead of only its
         # deterministic substring backstop. Optional — None keeps the backstop.
         self.content_classifier = content_classifier
+        # Money-capabilities manifest (which payment rails are actually live:
+        # wallet provider + network, fiat ramp, sanctions, KYC, omnibus, x402).
+        # Born-with-it deployment fact the supervisor injects post-construction;
+        # the planner reads it so the genome reasons over real rail availability
+        # instead of discovering gaps by trial. None → planner sees no manifest.
+        self.money_capabilities = money_capabilities
 
 
 class DarwinRuntime:
@@ -298,6 +305,10 @@ class DarwinRuntime:
         # no oracle by default → net worth == cash (unchanged).
         ctx.holdings = self.holdings
         ctx.price_oracle = self.price_oracle
+        # Money-rail manifest (which payment rails are live) so the plan node
+        # can tell the LLM what it can actually transact with. getattr keeps
+        # older Platform instances (no field) working — manifest stays None.
+        ctx.money_capabilities = getattr(self._p, "money_capabilities", None)
         # Path-C plumbing on the context so the orchestrator nodes can
         # submit + admit neuron proposals without reaching past the
         # context bundle into the runtime (doc 04 phase 3).

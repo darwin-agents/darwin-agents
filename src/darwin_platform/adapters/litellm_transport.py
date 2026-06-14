@@ -614,6 +614,10 @@ class LiteLLMTransport:
                 "lessons",
                 "prior_outcomes",
                 "untrusted_observations",
+                # Live payment-rail manifest (wallet/network/fiat/sanctions/
+                # kyc/omnibus/x402). Whitelisted so the planner LLM sees what
+                # it can actually transact with; dropped silently otherwise.
+                "money_capabilities",
             )
             if k in request
         }
