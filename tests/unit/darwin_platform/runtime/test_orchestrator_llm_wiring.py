@@ -90,3 +90,61 @@ def test_apply_real_adapters_no_llm_factory_leaves_stack_llm(monkeypatch):
     )
     # No real factory → the deterministic FakeLLM stays in place.
     assert stack.llm is original_llm
+
+
+def test_apply_real_adapters_returns_pod_money_manifest(monkeypatch):
+    """The pod reports its own money rails: wallet + x402 from the factories it
+    wired, network/chains from the forwarded flags. Platform-mediated rails
+    (fiat/sanctions/kyc/omnibus) are not run in-pod, so they report none."""
+    from darwin_fakes import FakeStack
+    from darwin_platform import __main__ as cli_main
+
+    monkeypatch.setattr(
+        cli_main, "_build_real_factories",
+        lambda _args: {
+            "wallet_factory": lambda _id, _clk, _vault: object(),
+            "x402_factory": lambda _wallet: object(),
+        },
+    )
+    args = _fake_args()
+    args.wallet_provider = "cdp"
+    args.cdp_mainnet = True
+    args.chain_networks = "base,solana"
+
+    stack = FakeStack(opening_usdc=100.0, clock=lambda: 0.0)
+    manifest = orchestrator._apply_real_adapters(  # noqa: SLF001
+        stack, args, lambda: 0.0, darwin_id="darwin-abc",
+    )
+
+    assert manifest["network"] == "base-mainnet"
+    assert manifest["mainnet"] is True
+    assert manifest["wallet"] == {
+        "provider": "cdp", "live": True, "chains": ["base", "solana"],
+    }
+    assert manifest["x402"] == {"live": True}
+    # Platform-mediated rails are not wired in-pod.
+    assert manifest["fiat"] == {"provider": "none", "live": False}
+    assert manifest["sanctions"] == {"provider": "none", "live": False}
+    assert manifest["kyc"] == {"provider": "none", "live": False}
+    assert manifest["omnibus"] == {"enabled": False}
+
+
+def test_apply_real_adapters_no_wallet_reports_wallet_not_live(monkeypatch):
+    """No wallet factory → wallet rail collapses to none/not-live even though a
+    provider string was forwarded."""
+    from darwin_fakes import FakeStack
+    from darwin_platform import __main__ as cli_main
+
+    monkeypatch.setattr(cli_main, "_build_real_factories", lambda _args: {})
+    args = _fake_args()
+    args.wallet_provider = "cdp"
+
+    stack = FakeStack(opening_usdc=100.0, clock=lambda: 0.0)
+    manifest = orchestrator._apply_real_adapters(  # noqa: SLF001
+        stack, args, lambda: 0.0, darwin_id="darwin-abc",
+    )
+    assert manifest["wallet"] == {
+        "provider": "none", "live": False, "chains": ["base"],
+    }
+    assert manifest["network"] == "base-sepolia"
+    assert manifest["x402"] == {"live": False}

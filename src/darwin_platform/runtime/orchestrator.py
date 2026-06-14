@@ -111,10 +111,18 @@ def _build_stack(
 
 def _apply_real_adapters(
     stack, args, clock: Callable[[], float], *, darwin_id: str,
-) -> None:
+) -> dict[str, Any]:
     """Mirror of darwin_platform.__main__._build_real_factories, applied
     directly to a FakeStack. Each adapter is only swapped in when its
-    required flag/env is present; otherwise the fake stays."""
+    required flag/env is present; otherwise the fake stays.
+
+    Returns the money-capabilities manifest for this pod (which payment rails
+    it actually wired), so the caller can inject it onto the platform before
+    boot — the pod's planner then reasons over live rails exactly like the
+    in-process supervisor path. The wallet + x402 rails are pod-local truth;
+    fiat / sanctions / KYC / omnibus are platform-mediated (enforced in the
+    supervisor pod, never run here), so they report ``none`` from the pod's
+    own vantage."""
     # We intentionally avoid importing __main__ to keep startup light;
     # the env var fallback set is the same. (Note: __main__ lives at the
     # darwin_platform package root, not under runtime/ — relative import
@@ -172,6 +180,37 @@ def _apply_real_adapters(
         stack.x402_client = factories["x402_factory"](stack.wallet)
     if "sandbox_factory" in factories:
         stack.sandbox = factories["sandbox_factory"](stack.wallet)
+
+    # Money-capabilities manifest for this pod. Wallet + x402 are pod-local
+    # truth (did we wire a real factory?); network/chains come from the
+    # supervisor-forwarded flags. fiat/sanctions/kyc/omnibus are platform-
+    # mediated and not run in-pod, so they report "none" here — the in-pod
+    # planner only ever transacts via the wallet + x402 rails anyway.
+    from ..payments.money_capabilities import (
+        assemble_money_capabilities,
+        detect_fiat,
+        detect_kyc,
+        detect_sanctions,
+    )
+
+    chains = [
+        c.strip() for c in (args.chain_networks or "base").split(",") if c.strip()
+    ]
+    return assemble_money_capabilities(
+        network=(
+            "base-mainnet"
+            if getattr(args, "cdp_mainnet", False)
+            else "base-sepolia"
+        ),
+        wallet_provider=args.wallet_provider,
+        wallet_live="wallet_factory" in factories,
+        chains=chains,
+        fiat=detect_fiat(None),
+        sanctions=detect_sanctions(None),
+        kyc=detect_kyc(None),
+        omnibus_enabled=False,
+        x402_live="x402_factory" in factories,
+    )
 
 
 def _load_pod_soma_strategy(platform, soma_root, darwin_id: str) -> None:
@@ -1203,15 +1242,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--audit-dir", default="/var/lib/darwin/audit", type=Path,
+        "--audit-dir", default="/data/darwin-audit", type=Path,
         help=(
             "Directory for this pod's durable hash-chained audit log "
-            "(JSON-lines on the node-backed volume, NOT the container memory "
-            "limit). Defaults to a writable path on the pod root FS. The "
-            "genome appends every intent/outcome here; keeping it on disk "
-            "instead of the in-memory test sink is what bounds the pod's "
-            "memory over an immortal life. Set to 'none' to force the legacy "
-            "in-memory sink (bounded sims/tests only)."
+            "(JSON-lines on disk, NOT the container memory limit). Default "
+            "``/data`` is chowned to the pod's uid in the image, so it is "
+            "writable and node-disk-backed (the container overlay), not "
+            "tmpfs. The genome appends every intent/outcome here; keeping it "
+            "on disk instead of the in-memory test sink is what bounds the "
+            "pod's memory over an immortal life. Set to 'none' to force the "
+            "legacy in-memory sink (bounded sims/tests only)."
         ),
     )
     p.add_argument("--heartbeat-seconds", default=0.005, type=float)
@@ -1288,7 +1328,9 @@ def main(argv: list[str] | None = None) -> int:
         layer_names=layer_names,
         clock=clock,
     )
-    _apply_real_adapters(stack, args, clock, darwin_id=args.darwin_id)
+    money_capabilities = _apply_real_adapters(
+        stack, args, clock, darwin_id=args.darwin_id,
+    )
 
     # Durable disk-backed audit sink (the prod ``AuditSink`` is "an append-only
     # Postgres table"; the in-memory fake pins the genome's entire hash-chained
@@ -1298,21 +1340,25 @@ def main(argv: list[str] | None = None) -> int:
     # the rare full-scan paths (boot verify, daily Merkle anchor).
     audit_dir = getattr(args, "audit_dir", None)
     if audit_dir is not None and str(audit_dir).lower() != "none":
-        try:
-            from .audit_sink import JsonlAuditSink
+        from .audit_sink import JsonlAuditSink
 
-            stack.audit_sink = JsonlAuditSink(
-                Path(audit_dir) / f"{args.darwin_id}.jsonl",
-            )
-        except Exception as exc:  # pragma: no cover - never block boot on this
+        audit_path = Path(audit_dir) / f"{args.darwin_id}.jsonl"
+        try:
+            stack.audit_sink = JsonlAuditSink(audit_path)
+            print(f"audit: durable disk sink at {audit_path}", file=sys.stderr)
+        except Exception as exc:  # never block boot — fall back loudly
             print(
-                f"warning: disk audit sink at {audit_dir} unavailable "
-                f"({exc}); falling back to in-memory sink",
+                f"warning: disk audit sink at {audit_path} unavailable "
+                f"({exc}); falling back to in-memory sink (memory will grow "
+                f"with the audit chain)",
                 file=sys.stderr,
             )
 
     from darwin_dna.evolution import boot
     pod_platform = stack.platform()
+    # Money-rails manifest so this pod's planner reasons over the rails it
+    # actually has (wallet + x402), mirroring the in-process supervisor path.
+    pod_platform.money_capabilities = money_capabilities
     # Soma activation (doc 33): inject this Darwin's evolved soma strategy on
     # the platform BEFORE boot binds it, so a restarted/respawned pod RUNS its
     # promoted self-modifications (the soma tree is PVC-persisted). No-op +
