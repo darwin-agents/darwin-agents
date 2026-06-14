@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(platform): forward platform money rails to k8s pod planner manifest
 - feat(platform): inject money manifest in k8s pods and tune audit boot
 - feat(web): add money rails card to operator console
 - feat(platform): expose money capabilities manifest to planner and API
