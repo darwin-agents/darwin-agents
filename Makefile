@@ -180,9 +180,11 @@ test-simulation: install-all ## Simulation path (same as test-slow)
 test-slow: install-all ## Simulation marker only (CI slow workflow)
 	$(UV) run pytest -m slow -v
 
-test-postgres: install-all ## Postgres persistence tests (needs Postgres on :5432)
+test-postgres: install-all ## Postgres persistence + RLS + leader-election tests (needs Postgres on :5432)
 	DARWIN_POSTGRES_TEST_DSN="$(POSTGRES_DSN)" \
-		$(UV) run pytest tests/unit/darwin_platform/runtime/test_persistence_postgres.py -v
+		$(UV) run pytest -v tests/unit/darwin_platform/runtime/test_persistence_postgres.py \
+		tests/unit/darwin_platform/runtime/test_persistence_rls.py \
+		tests/unit/darwin_platform/runtime/test_leadership.py
 
 # --- Lint / format ------------------------------------------------------------
 

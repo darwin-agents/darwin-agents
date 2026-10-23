@@ -88,4 +88,8 @@ jobs:
       - name: Run postgres-backed tests
         env:
           DARWIN_POSTGRES_TEST_DSN: postgresql://darwin:test@127.0.0.1:5432/darwin
-        run: uv run pytest tests/unit/darwin_platform/runtime/test_persistence_postgres.py -v
+        run: >-
+          uv run pytest -v
+          tests/unit/darwin_platform/runtime/test_persistence_postgres.py
+          tests/unit/darwin_platform/runtime/test_persistence_rls.py
+          tests/unit/darwin_platform/runtime/test_leadership.py
