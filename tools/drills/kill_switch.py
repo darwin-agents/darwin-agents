@@ -46,7 +46,10 @@ def run_drill(
 ) -> int:
     client = _client(url, token)
 
-    spawn = client.post("/darwins", json={"opening_usdc": opening_usdc})
+    spawn = client.post(
+        "/darwins",
+        json={"opening_usdc": opening_usdc, "escalation_auto": "approve"},
+    )
     spawn.raise_for_status()
     darwin_id = spawn.json()["darwin_id"]
     print(f"[drill] spawned {darwin_id}")

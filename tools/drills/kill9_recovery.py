@@ -174,7 +174,10 @@ def run_drill(args: argparse.Namespace) -> int:
             _log("FAIL: supervisor never became healthy")
             return 1
 
-        spawn = client.post("/darwins", json={"opening_usdc": args.opening_usdc})
+        spawn = client.post(
+            "/darwins",
+            json={"opening_usdc": args.opening_usdc, "escalation_auto": "approve"},
+        )
         spawn.raise_for_status()
         darwin_id = spawn.json()["darwin_id"]
         _log(f"spawned {darwin_id}; warming up {args.warmup_seconds}s "
