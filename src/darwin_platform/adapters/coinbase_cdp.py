@@ -285,9 +285,12 @@ class _RealCdpAccount:
     def transfer_usdc(
         self, *, to: str, amount_usdc: float, memo: str
     ) -> Any:
+        # The SDK takes integer atomic units (10_000 == 0.01 USDC); a float
+        # here was read as that many atomic units.
+        atomic = int(round(float(amount_usdc) * 10 ** self._USDC_DECIMALS))
         return self._bridge.run(
             self._account.transfer(
-                to=to, amount=amount_usdc, token="usdc",
+                to=to, amount=atomic, token="usdc",
                 network=self._network,
             )
         )
@@ -335,6 +338,9 @@ def build_cdp_chain_client(
             "pip install 'darwin-dna[cdp]'"
         ) from exc
 
+    # Our network names → the SDK's. CDP calls Base mainnet "base"; passing
+    # "base-mainnet" made every USDC lookup resolve to the literal "usdc".
+    sdk_network = {"base-mainnet": "base"}.get(network, network)
     bridge = _AsyncBridge()
     client = CdpClient(
         api_key_id=api_key_id,
@@ -347,7 +353,7 @@ def build_cdp_chain_client(
         )
     )
     real = _RealCdpAccount(
-        client=client, account=account, network=network, bridge=bridge,
+        client=client, account=account, network=sdk_network, bridge=bridge,
     )
     return CdpChainClient(
         account=real, network=network, spend_policy=spend_policy,
