@@ -1,6 +1,6 @@
 # Darwin — Engineering Backlog
 
-Audit of `docs/engineering/01–31` against the codebase. Last updated **2026-06-01**.
+Audit of `docs/engineering/01–34` against the codebase. Last updated **2026-10-24** (header, doc numbering and links; the counts and per-doc scoreboard below are from the 2026-06-01 audit).
 
 **~513 specified features DONE · ~69 PARTIAL · ~35 MISSING.** The Python core is
 end-to-end and substantive — zero `NotImplementedError`/bare-`pass` stubs in
@@ -236,7 +236,7 @@ sink is hydrated from the persistent store on Supervisor boot and a
 410-purge deletes the row, so subscriptions survive restart. +22 backend
 tests (sink + persistence + HTTP) + 3 web vitest tests for the
 base64url helper. Native Expo/RN remains open as a future iteration —
-see `memory/project_mobile_pwa.md` for the rationale. Docs 19, 22.
+Web Push avoids the FCM project + APNs certificate setup. Docs 19, 22.
 - **Terraform IaC — done cloud-agnostic** *(2026-05-31)*. Doc 22 names
 EKS / Aurora / AWS-Vault explicitly; we replaced each with a
 self-hostable equivalent so the same modules run on a laptop (kind),
@@ -466,8 +466,7 @@ own namespace via the downward API now.
 Doc 22 names the mobile companion as "Expo / React Native (or progressive
 web app)". The PWA branch ships everything the headline feature needs —
 notify-on-escalation + respond inline — without spinning up a parallel
-mobile codebase. Native Expo/RN deferred (see
-`memory/project_mobile_pwa.md`).
+mobile codebase. Native Expo/RN deferred.
 
 **Backend — `WebPushNotificationSink` + persistence**
 - New `src/darwin_platform/escalations/notification_webpush.py`:
@@ -963,7 +962,7 @@ operator-facing README.
 | 27 configuration-reference           | 13   | 0       | 0       |
 | 28 cross-cutting-contracts           | 19   | 0       | 0       |
 | 29 incident-postmortem-template      | 5    | 0       | 1       |
-| 30 evolution-tuning-guide            | 11   | 3       | 0       |
+| 34 evolution-tuning-guide            | 11   | 3       | 0       |
 | 31 browser-use                       | —    | —       | —       | research note (2026-05-25), not a feature spec
 
 

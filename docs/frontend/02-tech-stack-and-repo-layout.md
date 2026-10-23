@@ -10,72 +10,51 @@ Aligned with [`../engineering/11-tech-stack-at-a-glance.md`](../engineering/11-t
 | Language | **TypeScript** (strict) | Shared types generated from OpenAPI where possible |
 | Styling | **Tailwind CSS** + **shadcn/ui** | Radix primitives; copy-paste components, no heavy MUI-style runtime |
 | Charts | **Recharts** | Treasury, fitness, spend velocity — routine time series |
-| Custom viz | **d3** + **@xyflow/react** (React Flow) | Lineage tree (d3); Anatomy graph (React Flow force or layered layout) |
+| Custom viz | Hand-rolled **SVG** | Anatomy canvas in `components/anatomy/anatomy-canvas.tsx`; lineage is a list view. d3 / React Flow were planned but not adopted |
 | Data fetching | **TanStack Query** | Server state, polling, cache invalidation on mutation |
-| Forms | **react-hook-form** + **zod** | Escalation responses, harvest rules, spawn wizard |
+| Forms | Controlled React state | react-hook-form was planned but is not a dependency; `zod` is installed but not yet imported |
 | Realtime | Native **WebSocket** (browser) | Thin wrapper in `lib/ws.ts`; reconnect with backoff |
 | Auth (prod) | **Clerk** | Wired on backend (`security/clerk.py`); RS256 JWTs verified against the issuer's JWKS |
-| Mobile | **Expo** (React Native) | Milestone M4; shares types and API client with `web/` |
+| Mobile | **PWA** (W3C Web Push + VAPID) | Milestone M4, folded into `web/`: `public/manifest.webmanifest`, `public/sw.js`, `/notifications` opt-in page; no separate Expo app |
 
 ## Deployment targets
 
 - **Phase 0–1:** Vercel preview or `next dev` against local FastAPI (`darwin-platform serve`).
-- **Phase 2:** Vercel or container on EKS behind Cloudflare — same artifact; env-specific `NEXT_PUBLIC_API_BASE_URL`.
+- **Phase 2:** Vercel in production (`infra/README.md`); env-specific `NEXT_PUBLIC_API_BASE_URL`. Locally it runs under Compose (`darwin-web`, :3000) or `make web-dev`.
 
 No Darwin code runs in the frontend bundle. Environment variables are only platform URLs, auth keys, and feature flags — never Darwin vault secrets or wallet keys.
 
-## Repository layout (planned)
+## Repository layout
 
 ```
-web/                              # Next.js dashboard (new)
+web/
   app/
-    (auth)/                       # Clerk callback routes
+    layout.tsx · globals.css
+    sign-in/[[...rest]]/ · sign-up/[[...rest]]/   # Clerk
+    privacy/ · terms/
     (dashboard)/
-      page.tsx                    # Fleet home — Darwin list
-      darwins/
-        new/page.tsx              # Spawn wizard
-        [id]/
-          page.tsx                # Per-Darwin shell: Anatomy + Timeline + side panels
-          timeline/page.tsx       # Full-width Timeline (optional deep link)
-          anatomy/page.tsx        # Full-width Anatomy
-          vault/page.tsx
-          data/[[...table]]/page.tsx
-          lineage/page.tsx
-          billing/page.tsx
-          settings/page.tsx
-      escalations/page.tsx        # Cross-Darwin inbox
-    layout.tsx
-    globals.css
-  components/
-    anatomy/                      # Canvas, nodes, edges, minimap
-    timeline/                     # Virtualized feed, event cards
-    darwin/                       # Status badges, treasury strip, controls
-    ui/                           # shadcn
-  lib/
-    api.ts                        # Typed fetch wrapper + generated types
-    ws.ts                         # WebSocket client
-    auth.ts                       # Session → platform bearer token
-    format.ts                     # Money, duration, relative time
-  openapi/                        # Generated from FastAPI (optional script in Makefile)
-  public/
-  package.json
-  tsconfig.json
-  next.config.ts
-  tailwind.config.ts
-
-mobile/                           # Expo escalation app (Phase 2)
-  app/
-  src/
-    api.ts                        # Re-export or symlink shared client patterns
-    notifications.ts              # FCM registration
-  app.json
+      page.tsx                    # Fleet home
+      darwins/new/                # Spawn wizard
+      darwins/[id]/               # Per-Darwin shell + tabs:
+        anatomy/ timeline/ summary/ lineage/ billing/ payments/
+        preapprovals/ vault/ data/ resources/ proposals/
+        forensics/ operator/ settings/
+      escalations/ freelancers/ notifications/ onboarding/ operator/ tokens/
+  components/  anatomy/ darwin/ layout/ operator/ pwa/ timeline/ ui/
+  lib/         api.ts · api.generated.ts · ws.ts · auth.ts · auth-mode.ts
+               push.ts · push-sync.ts · queryKeys.ts · types.ts · format.ts
+  providers/   auth-provider · dev-auth-provider · query-provider
+  public/      manifest.webmanifest · sw.js · icons/
+  playwright/  clerk/ · dev-token/ · live/   (E2E)
+  test/        Vitest setup
+  middleware.ts · next.config.ts · tailwind.config.ts · package.json
 ```
 
-The Python monorepo stays under `src/`. `web/` and `mobile/` are sibling packages; CI runs `pnpm lint`, `pnpm test`, and `pnpm build` in `web/` independently of `pytest`.
+The Python monorepo stays under `src/`. CI runs `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` and Playwright in `web/` (`.github/workflows/web.yml`) independently of `pytest`. There is no `mobile/` package — the escalation companion is the PWA above.
 
 ## Package manager
 
-Use **pnpm** workspaces if we later extract `packages/api-client` shared by web and mobile; until mobile exists, a single `web/package.json` is enough.
+Use **pnpm**. A single `web/package.json` is enough; extract a shared `packages/api-client` only if a second client appears.
 
 ## Visual language
 
@@ -90,8 +69,8 @@ Use **pnpm** workspaces if we later extract `packages/api-client` shared by web 
 # Terminal 1 — platform API
 darwin-platform serve --host 0.0.0.0 --port 8000
 
-# Terminal 2 — dashboard (once web/ exists)
-cd web && pnpm dev
+# Terminal 2 — dashboard
+cd web && pnpm dev     # or: make web-dev
 ```
 
-`NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` and a dev bearer token from platform seed auth (until Clerk lands). See [`08-auth-session-and-security.md`](08-auth-session-and-security.md).
+`NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` plus either a dev bearer token (pasted in the UI or `NEXT_PUBLIC_DEV_BEARER_TOKEN`, from `--auth-tokens`) or Clerk keys (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`). See [`08-auth-session-and-security.md`](08-auth-session-and-security.md).

@@ -1,5 +1,7 @@
 # Roadmap and phases
 
+> **Status (2026-10):** Phases 0–2 are code complete (tags v0.0.1–v0.0.6 plus later work on `main`). What remains for the Phase 0–2 exit criteria is operator-run: the 24h and 7-day soaks, drills, pen-test and external audit — see [`../engineering/32-pre-mainnet-gates.md`](../engineering/32-pre-mainnet-gates.md). Several Phase 3 items have already landed; they are marked inline below.
+
 The build is split into four phases. Each has a definition of done and a kill criterion. We do not advance to phase N+1 until phase N's success criteria are met, and we are willing to abandon the project if a phase's kill criterion fires.
 
 This is opinionated. We have a finite runway and an unproven core hypothesis ("an agent with skin in the game evolves usefully"). We test the hypothesis early and stop spending if it doesn't survive contact with reality.
@@ -66,7 +68,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 **The reproduction event:**
 
 - Lesson distillation pass (structured lessons, not arbitrary code; see [`../engineering/06-evolution-and-reproduction.md`](../engineering/06-evolution-and-reproduction.md))
-- DNA layer signing service (platform-side, HSM-backed in prod; AWS KMS in this phase)
+- DNA layer signing service (platform-side, HSM-backed in prod; AWS KMS in this phase) — *as built: Vault Transit (`--signing-vault-transit-key`), required in production*
 - Child Darwin spawn — new wallet, new vault namespace, new event log, fresh soma + N+1 DNA layers
 - Lineage tree storage and basic visualization
 
@@ -105,7 +107,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 
 **Multi-tenancy hardening:**
 
-- Vault Enterprise (or HCP Vault) with one namespace per Darwin
+- Vault Enterprise (or HCP Vault) with one namespace per Darwin — *as built: OSS Vault with a per-Darwin path-scoped policy + AppRole (`src/darwin_platform/adapters/vault_namespace.py`)*
 - Per-Darwin Postgres schemas with RLS; eventual move to per-Darwin DBs for organism data
 - Per-Darwin Kubernetes namespaces with NetworkPolicies
 - The egress proxy with audit logging and blocklist enforcement
@@ -114,7 +116,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 **The full payment stack:**
 
 - Stripe for fiat deposits (cards, ACH, SEPA)
-- KYC integration (Persona or Onfido — final pick by phase 2 kickoff)
+- KYC integration (Persona or Onfido — final pick by phase 2 kickoff) — *as built: both, selected with `--kyc-provider`*
 - Real Coinbase Agentic Wallet provisioning per Darwin (mainnet)
 - Per-Darwin x402 flows for paying the platform's LiteLLM, E2B, browser infra
 - Sanctions screening (Chainalysis or TRM)
@@ -126,7 +128,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 - The **Timeline** canvas — chronological feed
 - The Vault view — bidirectional, with provenance
 - The Data browser — read-only window into the Darwin's databases
-- Escalation inbox with mobile push notifications (Expo / React Native, mobile MVP)
+- Escalation inbox with mobile push notifications — *as built: an installable PWA with W3C Web Push instead of an Expo / React Native app*
 - Lineage tree visualization
 
 **The supervisor in earnest:**
@@ -139,8 +141,8 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 
 **Operational maturity:**
 
-- Honeycomb tracing across the platform and Darwin telemetry
-- Audit log with daily Merkle anchoring to a public chain
+- Honeycomb tracing across the platform and Darwin telemetry — *as built: OpenTelemetry → collector + Jaeger; Honeycomb not adopted*
+- Audit log with daily Merkle anchoring to a public chain — *as built: the publisher ships; `--enable-merkle-anchor` still wires an in-memory backend, so on-chain publication is open*
 - Runbooks for the top 10 incident types we can foresee
 - On-call rotation, paging
 - Backup and disaster recovery for Postgres, Vault, S3
@@ -175,17 +177,17 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 
 **Capability expansion:**
 
-- `ads.manager` neuron with hard caps and mandatory owner pre-approval per campaign
-- `support.responder` neuron for the user's own community/inbox
+- `ads.manager` neuron with hard caps and mandatory owner pre-approval per campaign — *the neuron ships in Layer 0 (campaign create / pause / budget-set); its spend goes through the same treasury policy*
+- `support.responder` neuron for the user's own community/inbox — *shipped in Layer 0*
 - Multimodal neurons: `content.image_creator`, `content.video_producer` (now that LiteLLM image/video gen is in play)
 - More strategy archetypes in Layer 0 (or in a Layer 0.1 update for new Darwins)
-- `trading.operator` neuron — live financial/crypto market trading and prediction/betting-market positions, bounded by the Darwin's treasury hard caps and the kill switch
+- `trading.operator` neuron — live financial/crypto market trading and prediction/betting-market positions, bounded by the Darwin's treasury hard caps and the kill switch — *shipped in Layer 0*
 
 **Architecture experiments:**
 
-- Cross-lineage learning prototype — anonymous lesson contribution to a curated pool, opt-in per user
+- Cross-lineage learning prototype — anonymous lesson contribution to a curated pool, opt-in per user — *mechanism built (`CrossPollinationArchive`), not enabled by `serve`*
 - Variation injection at reproduction (forced randomness magnitude calibration)
-- Compaction pass for deep lineages (gen 20+)
+- Compaction pass for deep lineages (gen 20+) — *shipped (`reproduction.layer_compaction` past `generation_soft_cap`)*
 - Owner-mediated mutation suggestions (do humans add value here, or do they degrade lineage fitness?)
 
 **Scale infrastructure:**
@@ -198,7 +200,7 @@ See [`../engineering/18-layer-zero-build-plan.md`](../engineering/18-layer-zero-
 **Phase-3 things we deliberately defer:**
 
 - Sexual reproduction across Darwins
-- Path C neuron generation (Darwins writing entirely new neuron classes)
+- Path C neuron generation (Darwins writing entirely new neuron classes) — *built but off by default (`path_c_enabled = False`, operator admission required)*
 
 ### Success looks like (phase 3 — qualitative)
 
