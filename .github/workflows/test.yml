@@ -12,11 +12,13 @@ on:
   pull_request:
     branches: [main, "release/**"]
   workflow_dispatch: {}
+  # build.yml calls this so no image is published from a red commit.
+  workflow_call: {}
 
 concurrency:
   # New pushes to the same branch supersede in-flight runs to keep the
   # queue tight; a finished run on the latest commit is what matters.
-  group: test-${{ github.ref }}
+  group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
