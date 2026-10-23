@@ -7,7 +7,6 @@ alert AND installs an auto-throttle on the offending resource.
 
 from __future__ import annotations
 
-import pytest
 
 from darwin_platform.__main__ import _build_platform_services, build_parser
 from darwin_platform.observability.resource_anomaly import ResourceAnomalyDetector

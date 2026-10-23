@@ -74,6 +74,11 @@ TAGS: list[dict[str, str]] = [
         ),
     },
     {
+        "name": "Store",
+        "description": "x402 storefront: anyone buys a Darwin's paid report "
+        "in USDC, paid straight to the Darwin's own wallet.",
+    },
+    {
         "name": "Harvest",
         "description": (
             "Move profit out of a Darwin's wallet — one-off harvests and "
@@ -311,7 +316,27 @@ ENDPOINTS: dict[tuple[str, str], tuple[str, str | None]] = {
         "Platform-wide billing rollup: total revenue (markup + harvest fees) "
         "across the fleet.",
     ),
+    # Store (x402)
+    ("GET", "/store/{darwin_id}"): (
+        "Storefront offer",
+        "What this Darwin sells, its USDC price, and the x402 payment "
+        "requirements (paid straight to the Darwin's own wallet). Public.",
+    ),
+    ("POST", "/store/{darwin_id}/report"): (
+        "Buy a report",
+        "x402 v2: without a PAYMENT-SIGNATURE header returns 402 + "
+        "PAYMENT-REQUIRED; with a valid payment the Darwin writes the "
+        "report, the payment settles, and the report is returned with "
+        "PAYMENT-RESPONSE. A report that can't be produced is never charged. "
+        "Public — the payment is the authorization.",
+    ),
     # Harvest
+    ("PUT", "/darwins/{darwin_id}/payout-address"): (
+        "Set payout address",
+        "Where this Darwin's harvests and closing sweep go: a checksummed, "
+        "sanctions-screened USDC address. In production it is the only "
+        "allowed destination, usable 24h after it was set.",
+    ),
     ("POST", "/darwins/{darwin_id}/harvest"): (
         "Harvest profit",
         "Move a fixed amount of USDC from this Darwin's wallet to a destination "
@@ -546,6 +571,12 @@ ENDPOINTS: dict[tuple[str, str], tuple[str, str | None]] = {
         "Get platform capabilities",
         "Which adapters / features are live (real vs fake): wallet, LLM, "
         "sandbox, browser, KYC, fiat, etc.",
+    ),
+    ("GET", "/platform/money/capabilities"): (
+        "Get money rails",
+        "Which payment rails this deployment has wired (wallet provider + "
+        "network, fiat ramp, sanctions, KYC, omnibus, x402), each with a "
+        "`live` flag, plus the caller's operator scope.",
     ),
     ("GET", "/platform/darwins/{darwin_id}/forensics"): (
         "List pod forensics",

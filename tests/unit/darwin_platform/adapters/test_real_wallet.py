@@ -157,7 +157,10 @@ def test_debit_logs_metered_kind_for_billing_attribution():
     metered = [mv for mv in w.movements()
                if "debit" in mv and mv["debit"]["kind"] == "metered"]
     assert len(metered) == 1
-    assert metered[0]["debit"]["to"] == "platform.gateway"
+    # Accrued for the next settlement, not sent on-chain per call.
+    assert metered[0]["debit"]["to"] == "platform.fee"
+    assert chain.transfers == []
+    assert w.balance_usdc() == pytest.approx(99.90)
 
 
 # -- credit (incoming revenue) -------------------------------------------
@@ -182,16 +185,17 @@ def test_credit_refuses_negative():
 
 
 # -- harvest -------------------------------------------------------------
-def test_harvest_to_owner_runs_two_transfers_and_logs_both():
+def test_harvest_to_owner_runs_one_transfer_and_accrues_the_fee():
     chain = _StubChain(balance=200.0)
     w = RealWallet(chain, clock=_vclock())
     out = w.harvest_to_owner(
         destination="bank://owner", net_usdc=80.0, fee_usdc=20.0,
     )
     assert out["gross_usdc"] == pytest.approx(100.0)
-    assert chain.balance == pytest.approx(100.0)
-    # Two transfers landed on the chain.
-    assert [t["to"] for t in chain.transfers] == ["bank://owner", "platform.fee"]
+    # One transfer (net → owner); the fee rides the next settlement.
+    assert [t["to"] for t in chain.transfers] == ["bank://owner"]
+    assert chain.balance == pytest.approx(120.0)
+    assert w.balance_usdc() == pytest.approx(100.0)
     harvest_rows = [mv["harvest"] for mv in w.movements() if "harvest" in mv]
     kinds = {r["kind"] for r in harvest_rows}
     assert kinds == {"owner_net", "platform_fee"}

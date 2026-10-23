@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Flag } from "lucide-react";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelative, shortId } from "@/lib/format";
@@ -13,7 +14,7 @@ import type { EscalationTicket } from "@/lib/types";
 export default function EscalationsPage() {
   // Single aggregate fetch — backend already sorts by deadline.
   const { data, isLoading } = useQuery({
-    queryKey: ["escalations", "fleet"] as const,
+    queryKey: queryKeys.fleetEscalations(),
     queryFn: () => api.fleetEscalations(),
     refetchInterval: 30_000,
   });
@@ -64,9 +65,7 @@ export default function EscalationsPage() {
                     <Flag className="size-4 text-[var(--color-alert-pause)]" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 text-sm">
-                        <span className="font-medium">
-                          {ticket.ticket_class ?? "ticket"}
-                        </span>
+                        <span className="font-medium">{ticket.ticket_class ?? "ticket"}</span>
                         {ticket.neuron && (
                           <span className="mono text-xs text-[var(--color-muted-foreground)]">
                             {ticket.neuron}

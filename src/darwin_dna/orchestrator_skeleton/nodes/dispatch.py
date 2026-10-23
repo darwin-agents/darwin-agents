@@ -31,6 +31,22 @@ def _select(catalog, required_tags, recency):
     return candidates[0]
 
 
+def _resolve_order(ctx, task, *, ok: bool, output: dict | None = None,
+                   reason: str = "") -> None:
+    """A dispatched paid order (``task.payload['order_id']``) is completed or
+    failed on every outcome — never left pending, or the strategy would
+    re-run (and re-pay for) it every heartbeat. The storefront settles the
+    buyer's payment only for a completed order."""
+    order_id = task.payload.get("order_id")
+    orders = getattr(ctx, "orders", None)
+    if not order_id or orders is None:
+        return
+    if ok:
+        orders.complete(order_id, {"text": (output or {}).get("text", "")})
+    else:
+        orders.fail(order_id, reason or "failed")
+
+
 async def run(state, ctx):
     p = state.plan
     if p.get("action") != "dispatch" or not p.get("task"):
@@ -138,6 +154,7 @@ async def run(state, ctx):
             neuron=neuron.name, outcome="escalated",
             error_code=esc.blocker.kind, ts=float(ctx.clock()),
         )
+        _resolve_order(ctx, task, ok=False, reason=f"escalated:{esc.blocker.kind}")
         state.route = "reflect"
         return state
     except NeuronError as exc:
@@ -155,6 +172,7 @@ async def run(state, ctx):
             neuron=neuron.name, outcome="failed",
             error_code=exc.error_code, ts=float(ctx.clock()),
         )
+        _resolve_order(ctx, task, ok=False, reason=exc.error_code)
         state.route = "reflect"
         return state
     except Exception as exc:  # a neuron blowing up must not kill the organism
@@ -173,6 +191,7 @@ async def run(state, ctx):
             error_code="neuron_crashed",
             ts=float(ctx.clock()),
         )
+        _resolve_order(ctx, task, ok=False, reason="neuron_crashed")
         state.route = "reflect"
         return state
 
@@ -230,6 +249,8 @@ async def run(state, ctx):
         outcome, code = "ok", None
     else:
         outcome, code = "failed", (result.error_code or "unknown_error")
+    _resolve_order(ctx, task, ok=outcome == "ok", output=result.output,
+                   reason=f"{outcome}:{code}")
     ctx.episodic.record(
         tick=state.tick,
         signature=_sig(neuron.name, task),

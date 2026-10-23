@@ -7,6 +7,7 @@ from ._base import (
     StrategySpec,
 )
 from .content_affiliate import ContentAffiliateStrategy, founding_strategy
+from .paid_report import PaidReportStrategy
 
 __all__ = [
     "Strategy",
@@ -14,5 +15,6 @@ __all__ = [
     "StrategyObservation",
     "StrategySpec",
     "ContentAffiliateStrategy",
+    "PaidReportStrategy",
     "founding_strategy",
 ]

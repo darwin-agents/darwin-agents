@@ -18,6 +18,7 @@ from fastapi import (
 
 from ..security.auth import (
     OWNER,
+    PLATFORM_OPERATOR,
     AuthContext,
 )
 
@@ -36,6 +37,15 @@ router = APIRouter(tags=["KYC"])
 
 
 # -- KYC (doc 05 / 22) -------------------------------------------------
+def _subject(ctx: AuthContext, requested: str | None) -> str:
+    """Owners act on their own identity only; operators may name a subject."""
+    if requested and requested != _actor(ctx):
+        if not ctx.has_scope(PLATFORM_OPERATOR):
+            raise HTTPException(403, "only operators may act on another subject")
+        return requested
+    return _actor(ctx)
+
+
 def _kyc(request: Request):
     svc = _sup(request).kyc_service
     if svc is None:
@@ -55,7 +65,7 @@ async def kyc_start(
     from ..security.kyc import KYCError, KYCTier
 
     svc = _kyc(request)
-    subject = req.subject or _actor(ctx)
+    subject = _subject(ctx, req.subject)
     try:
         return svc.start_inquiry(
             subject=subject,
@@ -75,7 +85,7 @@ async def kyc_status(
     """Current cached KYC verdict for the subject (default: the caller)."""
     _require_scope(ctx, OWNER)
     svc = _kyc(request)
-    return svc.status_for(subject or _actor(ctx)).to_json()
+    return svc.status_for(_subject(ctx, subject)).to_json()
 
 
 @router.post("/platform/kyc/webhook")
@@ -87,10 +97,15 @@ async def kyc_webhook(
     """Provider callback / poll-consumption: refresh + cache the verdict
     for an inquiry so the gate sees the latest status."""
     _require_scope(ctx, OWNER)
+    from ..security.kyc import KYCError
+
     svc = _kyc(request)
-    verdict = svc.refresh_status(
-        subject=req.subject,
-        inquiry_id=req.inquiry_id,
-        actor=_actor(ctx),
-    )
+    try:
+        verdict = svc.refresh_status(
+            subject=_subject(ctx, req.subject),
+            inquiry_id=req.inquiry_id,
+            actor=_actor(ctx),
+        )
+    except KYCError as exc:
+        raise HTTPException(403, str(exc))
     return verdict.to_json()

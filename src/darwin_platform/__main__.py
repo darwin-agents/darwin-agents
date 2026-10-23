@@ -53,6 +53,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 def _is_mainnet(args: argparse.Namespace) -> bool:
@@ -90,71 +91,52 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     """
     factories: dict = {}
 
-    # -- wallet provider: cdp (default), local-vault, or web3 --------------
-    # CDP is a complete wallet — when selected it provides wallet_factory
-    # and the multi-chain web3 block below is skipped. The argparse layer
-    # defaults to "cdp"; the "web3" fallback here is for internal callers
+    # -- wallet provider: watch, cdp, local-vault, or web3 -----------------
+    # watch / CDP are complete wallets — when selected they provide
+    # wallet_factory and the multi-chain web3 block below is skipped. The
+    # argparse layer defaults to unset; the "web3" fallback here is for internal callers
     # (orchestrator pod, tests) that build a Namespace by hand and keep the
     # legacy shared-key behaviour. Don't change this fallback without also
     # giving the orchestrator a --wallet-provider flag to forward.
     wallet_provider = getattr(args, "wallet_provider", "web3")
-    if wallet_provider == "cdp":
-        cdp_id = getattr(args, "cdp_api_key_id", None) or os.environ.get(
-            "CDP_API_KEY_ID"
+    if wallet_provider == "watch":
+        address = getattr(args, "wallet_address", None) or os.environ.get(
+            "DARWIN_WALLET_ADDRESS"
         )
-        cdp_secret = getattr(
-            args, "cdp_api_key_secret", None
-        ) or os.environ.get("CDP_API_KEY_SECRET")
-        cdp_wallet_secret = getattr(
-            args, "cdp_wallet_secret", None
-        ) or os.environ.get("CDP_WALLET_SECRET")
-        if not (cdp_id and cdp_secret):
+        if not address:
             print(
-                "--wallet-provider cdp requires --cdp-api-key-id + "
-                "--cdp-api-key-secret (or the CDP_API_KEY_ID / "
-                "CDP_API_KEY_SECRET env vars)",
+                "--wallet-provider watch requires --wallet-address "
+                "(or DARWIN_WALLET_ADDRESS)",
                 file=sys.stderr,
             )
             sys.exit(2)
-        cdp_network = (
-            "base-mainnet" if _is_mainnet(args) else "base-sepolia"
-        )
-        cdp_per_tx = getattr(args, "cdp_per_tx_usdc", None)
-        cdp_per_day = getattr(args, "cdp_per_day_usdc", None)
+        watch_network = "base-mainnet" if _is_mainnet(args) else "base-sepolia"
 
-        def _cdp_wallet_factory(
-            darwin_id, clock, vault, *, _id=cdp_id, _secret=cdp_secret,
-            _ws=cdp_wallet_secret, _net=cdp_network,
-            _per_tx=cdp_per_tx, _per_day=cdp_per_day,
-        ):
-            # vault is unused — CDP holds the key in its TEE; nothing to seal.
-            from .adapters.coinbase_cdp import (
-                CdpSpendPolicy,
-                build_cdp_chain_client,
+        def _watch_wallet_factory(darwin_id, clock, vault, *, _addr=address):
+            from .adapters.wallet import RealWallet, WatchOnlyChain
+
+            extras = _base_wallet_extras(args, darwin_id, _addr)
+            return RealWallet(
+                chain=WatchOnlyChain(extras["reader"]), clock=clock,
+                network=watch_network, **extras,
             )
+
+        factories["wallet_factory"] = _watch_wallet_factory
+    if wallet_provider == "cdp":
+        make_chain = _cdp_chain_factory(args)
+        cdp_network = "base-mainnet" if _is_mainnet(args) else "base-sepolia"
+
+        def _cdp_wallet_factory(darwin_id, clock, vault, *, _net=cdp_network):
+            # vault is unused — CDP holds the key in its TEE; nothing to seal.
             from .adapters.wallet import RealWallet
 
-            # Independent wallet-level spend cap (doc 24) — defense-in-depth
-            # below the in-process treasury policy so a platform bug can't
-            # drain the real CDP account.
-            policy = None
-            if _per_tx is not None or _per_day is not None:
-                policy = CdpSpendPolicy(
-                    per_tx_usdc=_per_tx, per_day_usdc=_per_day, clock=clock,
-                )
-            # Per-Darwin CDP account: each spawn gets its own TEE-held wallet.
-            # ``get_or_create_account`` is idempotent on the name, so resume
-            # re-binds to the same on-chain account.
-            chain = build_cdp_chain_client(
-                api_key_id=_id, api_key_secret=_secret,
-                wallet_secret=_ws, network=_net, spend_policy=policy,
-                account_name=f"darwin-{darwin_id}",
-            )
+            chain = make_chain(darwin_id, clock)
             return RealWallet(
                 chain=chain, clock=clock, network=_net,
                 # Gate the ledger credit on an on-chain confirmation when
                 # moving real funds (doc 30). Testnet stays fire-and-forget.
                 wait_for_confirmation=(_net == "base-mainnet"),
+                **_base_wallet_extras(args, darwin_id, chain.address()),
             )
 
         factories["wallet_factory"] = _cdp_wallet_factory
@@ -186,10 +168,10 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # by --network / --cdp-mainnet via _is_mainnet(), never guessed from an RPC
     # URL substring (which silently missed mainnet endpoints like 1rpc.io/base
     # or base.llamarpc.com). The testnet-config-pointed-at-mainnet-RPC mismatch
-    # is caught separately by _assert_mainnet_safe() at boot.
+    # is caught separately by _assert_production_ready() at boot.
     is_mainnet = _is_mainnet(args)
     base_network = "base-mainnet" if is_mainnet else "base-sepolia"
-    if wallet_provider not in ("cdp", "local-vault") and enabled_count > 0:
+    if wallet_provider not in ("cdp", "local-vault", "watch") and enabled_count > 0:
         # Mainnet refusal: a single fleet-shared key is a testnet-only
         # shortcut. On mainnet the operator must opt into cdp (TEE-held key)
         # or local-vault (per-Darwin minted key sealed in the per-Darwin vault).
@@ -280,10 +262,17 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 )
             else:
                 chain = next(iter(clients.values()))
+            # The chain-derived feed tracks Base USDC; multi-chain wallets
+            # keep the legacy local feed (Solana/Stellar are not v1 rails).
+            extras = (
+                _base_wallet_extras(args, darwin_id, chain.address())
+                if len(clients) == 1 and _have_base else {}
+            )
             return RealWallet(
                 chain=chain, clock=clock,
                 network=_base_network,
                 wait_for_confirmation=_is_mainnet,
+                **extras,
             )
         factories["wallet_factory"] = _wallet_factory
 
@@ -396,10 +385,15 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 )
             else:
                 chain_client = next(iter(clients.values()))
+            extras = (
+                _base_wallet_extras(args, darwin_id, chain_client.address())
+                if _chains == ("base",) else {}
+            )
             return RealWallet(
                 chain=chain_client, clock=clock,
                 network=_base_network,
                 wait_for_confirmation=_is_mainnet,
+                **extras,
             )
 
         factories["wallet_factory"] = _local_vault_wallet_factory
@@ -1499,62 +1493,28 @@ def _build_k8s_driver(args: argparse.Namespace):
         or os.environ.get("POD_NAMESPACE")
         or "default"
     )
-    # Substrate config forwarded onto each per-Darwin pod via env. The
-    # supervisor itself can't host these substrates in --driver=k8s mode
-    # (the real-factory preflight refuses), so the operator stashes the
-    # connection details under DARWIN_POD_* env vars on the supervisor
-    # pod and the K8s driver hands them off to spawned orchestrators.
-    # Each entry maps "what the supervisor pod sees" → "what the
-    # orchestrator's _build_real_factories looks for".
-    # Per-Darwin LiteLLM virtual keys (doc 13): when enabled, the supervisor
-    # mints one key per pod and injects it as DARWIN_LITELLM_MASTER_KEY via the
-    # per-Darwin Secret (build_deployment, secretKeyRef). Forwarding the shared
-    # fleet master key here too would collide on that env name AND defeat the
-    # isolation, so omit it — pods never see the fleet master key.
-    _vk_enabled = getattr(args, "litellm_virtual_keys", False) or (
-        os.environ.get("DARWIN_LITELLM_VIRTUAL_KEYS", "").lower()
-        in ("1", "true", "yes")
+    # LiteLLM's in-cluster namespace + port, from its service URL
+    # (http://<svc>.<ns>.svc.cluster.local:<port>), for the egress pinhole.
+    llm = urlparse(_pod_substrate(args).get("litellm_url") or "")
+    llm_host = (llm.hostname or "").split(".")
+    llm_namespace = llm_host[1] if len(llm_host) > 2 and llm_host[2] == "svc" else ""
+    egress_proxy = getattr(args, "egress_proxy_url", None) or os.environ.get(
+        "DARWIN_EGRESS_PROXY_URL"
     )
-    _tenant_ns = getattr(args, "tenant_namespaces", False)
-    pod_extra_env: list[dict[str, Any]] = []
-    for supervisor_key, pod_key in (
-        ("DARWIN_POD_LITELLM_URL", "DARWIN_LITELLM_URL"),
-        ("DARWIN_POD_LITELLM_KEY", "DARWIN_LITELLM_MASTER_KEY"),
-        ("DARWIN_POD_VAULT_ADDR", "DARWIN_VAULT_URL"),
-        ("DARWIN_POD_VAULT_TOKEN", "DARWIN_VAULT_TOKEN"),
-    ):
-        if _vk_enabled and pod_key == "DARWIN_LITELLM_MASTER_KEY":
-            continue  # per-pod virtual key supplies this via secretKeyRef
-        if _tenant_ns and pod_key == "DARWIN_VAULT_TOKEN":
-            # With tenant namespaces the pod authenticates via its own per-Darwin
-            # AppRole (injected through the Secret); never hand it the shared
-            # fleet root token (doc 22 — the pod must hold no cross-tenant cred).
-            continue
-        value = os.environ.get(supervisor_key)
-        if value:
-            pod_extra_env.append({"name": pod_key, "value": value})
-
     pod_config = DarwinPodConfig(
         orchestrator_image=orchestrator_image,
         supervisor_namespace=supervisor_namespace,
-        # Forward the supervisor's --wallet-provider choice to every
-        # per-Darwin pod. Without this, the pod default ("cdp") is used
-        # regardless of what the operator started the supervisor with.
-        wallet_provider=getattr(args, "wallet_provider", None) or "cdp",
+        heartbeat_seconds=float(getattr(args, "heartbeat_seconds", None) or 5.0),
+        llm_namespace=llm_namespace,
+        llm_port=llm.port or 4000,
         # Forward the platform-mediated rails (fiat / sanctions / KYC /
         # omnibus) so each pod's planner reasons over the FULL money picture
         # the operator endpoint shows — not just the pod-local wallet + x402
         # rails. The orchestrator reads this from DARWIN_PLATFORM_MONEY_RAILS.
         platform_money_rails=json.dumps(_platform_money_rails(args)),
-        extra_env=tuple(pod_extra_env),
         runtime_class_name=getattr(args, "k8s_runtime_class", None) or "kata",
-        # Empty string means "skip the LanceDB sidecar entirely" — the
-        # orchestrator falls back to the deterministic in-memory
-        # EpisodicMemory. Use `getattr(default=...)` not `or` so an
-        # explicit "" reaches the manifest builder unchanged.
-        lancedb_image=getattr(args, "k8s_lancedb_image", "lancedb/lancedb:latest"),
-        lancedb_storage_size=getattr(args, "k8s_lancedb_storage_size", None) or "1Gi",
-        lancedb_storage_class=getattr(args, "k8s_lancedb_storage_class", None) or None,
+        data_storage_size=getattr(args, "k8s_data_storage_size", None) or "1Gi",
+        data_storage_class=getattr(args, "k8s_data_storage_class", None) or None,
         # Soma PVC sizing (docs 03/21/05). Empty string → ephemeral emptyDir
         # (no provisioner). Use getattr(default=...) not `or` so an explicit
         # "" reaches the manifest builder unchanged.
@@ -1563,8 +1523,11 @@ def _build_k8s_driver(args: argparse.Namespace):
         orchestrator_memory_limit=(
             getattr(args, "k8s_orchestrator_memory", None) or "2Gi"
         ),
+        # Route pod egress through the proxy only when one is configured;
+        # otherwise pods get direct public HTTPS (see build_network_policy).
         platform_data_namespace=(
-            getattr(args, "k8s_egress_proxy_namespace", None) or "platform-data"
+            (getattr(args, "k8s_egress_proxy_namespace", None) or "platform-data")
+            if egress_proxy else ""
         ),
         postgres_namespace=postgres_ns,
         postgres_pod_label_key=pg_key,
@@ -1583,25 +1546,268 @@ def _build_k8s_driver(args: argparse.Namespace):
     )
 
 
-def _assert_mainnet_safe(args: argparse.Namespace) -> None:
-    """Refuse to boot against mainnet with demo-grade money-safety config.
+def _cdp_chain_factory(args: argparse.Namespace):
+    """``(darwin_id, clock) -> CdpChainClient``: each Darwin's own CDP account
+    (TEE-held key), get-or-created by name so a resume re-binds to the same
+    on-chain account. Exits 2 without CDP API credentials."""
+    cdp_id = getattr(args, "cdp_api_key_id", None) or os.environ.get("CDP_API_KEY_ID")
+    cdp_secret = getattr(args, "cdp_api_key_secret", None) or os.environ.get(
+        "CDP_API_KEY_SECRET"
+    )
+    cdp_wallet_secret = getattr(args, "cdp_wallet_secret", None) or os.environ.get(
+        "CDP_WALLET_SECRET"
+    )
+    if not (cdp_id and cdp_secret):
+        print(
+            "--wallet-provider cdp requires --cdp-api-key-id + "
+            "--cdp-api-key-secret (or the CDP_API_KEY_ID / "
+            "CDP_API_KEY_SECRET env vars)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    network = "base-mainnet" if _is_mainnet(args) else "base-sepolia"
+    per_tx = getattr(args, "cdp_per_tx_usdc", None)
+    per_day = getattr(args, "cdp_per_day_usdc", None)
 
-    Mirrors the web3 shared-key mainnet refusal: moving REAL funds demands a
-    live sanctions screener (an offline denylist can't catch a freshly-listed
-    address), and the credit-minting faucet endpoint must be off. Testnet is
-    unaffected. The network is the explicit --network / --cdp-mainnet flag
-    (see :func:`_is_mainnet`), and we also refuse a network/RPC mismatch so a
-    testnet-configured boot can't be pointed at a mainnet RPC by accident."""
+    def make(darwin_id: str, clock):
+        from .adapters.coinbase_cdp import CdpSpendPolicy, build_cdp_chain_client
+
+        # Independent wallet-level spend cap (doc 24) — defense-in-depth
+        # below the in-process treasury policy so a platform bug can't
+        # drain the real CDP account.
+        policy = None
+        if per_tx is not None or per_day is not None:
+            policy = CdpSpendPolicy(
+                per_tx_usdc=per_tx, per_day_usdc=per_day, clock=clock,
+            )
+        return build_cdp_chain_client(
+            api_key_id=cdp_id, api_key_secret=cdp_secret,
+            wallet_secret=cdp_wallet_secret, network=network,
+            spend_policy=policy, account_name=f"darwin-{darwin_id}",
+        )
+
+    return make
+
+
+# Supervisor settings each pod's own ``serve`` parse needs to build its
+# substrate: (dest, env fallback, legacy DARWIN_POD_* env). Deliberately
+# absent: CDP / signing keys (pods never sign; the supervisor executes every
+# transfer) and the shared Vault token (a pod only reaches Vault as its own
+# AppRole, see _pod_substrate).
+_POD_SUBSTRATE = (
+    ("network", None, None),
+    ("env", "DARWIN_ENV", None),
+    ("rpc_url", "DARWIN_RPC_URL", None),
+    ("usdc_contract", None, None),
+    ("platform_fee_address", "DARWIN_PLATFORM_FEE_ADDRESS", None),
+    ("litellm_url", "DARWIN_LITELLM_URL", "DARWIN_POD_LITELLM_URL"),
+    ("litellm_markup_rate", None, None),
+    ("browser_provider", None, None),
+    ("browserbase_url", "BROWSERBASE_URL", None),
+    ("browserbase_api_key", "BROWSERBASE_API_KEY", None),
+    ("browserbase_live_view_url", "BROWSERBASE_LIVE_VIEW_URL", None),
+    ("browser_use_api_key", "BROWSER_USE_API_KEY", None),
+    ("browser_use_model", None, None),
+    ("browser_use_max_cost_usdc", None, None),
+    ("e2b_api_key", "E2B_API_KEY", None),
+    ("store_price_usdc", "DARWIN_STORE_PRICE_USDC", None),
+)
+
+
+def _pod_substrate(args: argparse.Namespace) -> dict[str, Any]:
+    """The settings forwarded to every pod (sealed in its control Secret)."""
+    sub: dict[str, Any] = {}
+    for dest, env, legacy in _POD_SUBSTRATE:
+        val = getattr(args, dest, None)
+        if val is None and env:
+            val = os.environ.get(env) or (os.environ.get(legacy) if legacy else None)
+        if val is not None:
+            sub[dest] = val
+    # Without per-Darwin virtual keys the pod needs the shared LiteLLM key
+    # (dev only; with them, the pod's own key arrives via its Secret).
+    virtual_keys = getattr(args, "litellm_virtual_keys", False) or (
+        os.environ.get("DARWIN_LITELLM_VIRTUAL_KEYS", "").lower() in ("1", "true", "yes")
+    )
+    if not virtual_keys:
+        key = (
+            getattr(args, "litellm_master_key", None)
+            or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
+            or os.environ.get("DARWIN_POD_LITELLM_KEY")
+        )
+        if key:
+            sub["litellm_master_key"] = key
+    # Vault only as the pod's own AppRole (tenant namespaces seal it into the
+    # Secret); never the shared fleet token.
+    if getattr(args, "tenant_namespaces", False):
+        url = (
+            getattr(args, "vault_url", None) or os.environ.get("DARWIN_VAULT_URL")
+            or os.environ.get("DARWIN_POD_VAULT_ADDR")
+        )
+        if url:
+            sub["vault_url"] = url
+    return sub
+
+
+def _build_store(args: argparse.Namespace) -> dict[str, Any]:
+    """The x402 storefront: a price (every Darwin sells a report for it) and
+    a facilitator — x402.org on testnet, Coinbase's (CDP-key auth) on
+    mainnet. ``{}`` when no price is set."""
+    price = getattr(args, "store_price_usdc", None) or os.environ.get(
+        "DARWIN_STORE_PRICE_USDC"
+    )
+    if not price:
+        return {}
+    from .adapters.x402_facilitator import Facilitator
+
+    url = getattr(args, "x402_facilitator_url", None) or os.environ.get(
+        "DARWIN_X402_FACILITATOR_URL"
+    )
+    auth = None
+    if _is_mainnet(args) and not url:
+        from cdp.x402 import create_cdp_auth_headers
+
+        key_id = getattr(args, "cdp_api_key_id", None) or os.environ.get("CDP_API_KEY_ID")
+        secret = getattr(args, "cdp_api_key_secret", None) or os.environ.get(
+            "CDP_API_KEY_SECRET"
+        )
+        if not (key_id and secret):
+            print("the mainnet x402 facilitator needs CDP API keys", file=sys.stderr)
+            sys.exit(2)
+        url = "https://api.cdp.coinbase.com/platform/v2/x402"
+        auth = create_cdp_auth_headers(key_id, secret)
+    return {
+        "store_price_usdc": float(price),
+        "x402_facilitator": Facilitator(url or "https://x402.org/facilitator", auth_headers=auth),
+    }
+
+
+def _base_wallet_extras(
+    args: argparse.Namespace, darwin_id: str, address: str,
+) -> dict[str, Any]:
+    """RealWallet kwargs for a Base-USDC wallet: a same-block reader (so
+    inbound revenue / deposits are booked instead of reading as drift), the
+    platform fee address metering settles to, and the per-Darwin durable
+    feed + accrual log."""
+    from web3 import Web3
+
+    from .adapters.web3_chain import USDC_BASE_MAINNET, USDC_BASE_SEPOLIA, UsdcReader
+
+    mainnet = _is_mainnet(args)
+    # ponytail: public Base RPCs are rate-limited; set --rpc-url for real load.
+    rpc = (
+        getattr(args, "rpc_url", None) or os.environ.get("DARWIN_RPC_URL")
+        or ("https://mainnet.base.org" if mainnet else "https://sepolia.base.org")
+    )
+    usdc = getattr(args, "usdc_contract", None) or (
+        USDC_BASE_MAINNET if mainnet else USDC_BASE_SEPOLIA
+    )
+    state_dir = getattr(args, "wallet_state_dir", None) or os.environ.get(
+        "DARWIN_WALLET_STATE_DIR"
+    )
+    if state_dir:
+        Path(state_dir).mkdir(parents=True, exist_ok=True)
+    return {
+        "reader": UsdcReader(
+            Web3(Web3.HTTPProvider(rpc)),
+            usdc_contract=Web3.to_checksum_address(usdc),
+            address=Web3.to_checksum_address(address),
+        ),
+        "fee_address": getattr(args, "platform_fee_address", None)
+        or os.environ.get("DARWIN_PLATFORM_FEE_ADDRESS"),
+        "state_path": (
+            Path(state_dir) / f"{darwin_id}.wallet.jsonl" if state_dir else None
+        ),
+    }
+
+
+def _production_problems(args: argparse.Namespace) -> list[str]:
+    """Everything a production (or mainnet) boot still lacks; ``[]`` means
+    ready. One list, so an operator fixes the whole config in one pass."""
+    def val(dest: str, env: str | None = None):
+        return getattr(args, dest, None) or (os.environ.get(env) if env else None)
+
+    def on(dest: str, env: str) -> bool:
+        return bool(getattr(args, dest, False)) or (
+            os.environ.get(env, "").lower() in ("1", "true", "yes")
+        )
+
+    problems: list[str] = []
+    if _is_mainnet(args) and getattr(args, "env", "dev") not in ("production", "prod"):
+        problems.append("--network mainnet requires --env production")
+    if not (val("clerk_issuer", "CLERK_ISSUER") or val("clerk_jwks_url", "CLERK_JWKS_URL")):
+        problems.append(
+            "auth: set --clerk-issuer / --clerk-jwks-url (with no auth every "
+            "caller is a platform operator)"
+        )
+    if getattr(args, "auth_tokens", None):
+        problems.append("auth: --auth-tokens (static bearer tokens) is dev-only; use Clerk")
+    origins = list(getattr(args, "cors_origins", None) or [])
+    if not origins or "*" in origins:
+        problems.append("--cors-origin must name the dashboard origin(s), never '*'")
+    if getattr(args, "kyc_provider", "none") not in ("persona", "onfido"):
+        problems.append("--kyc-provider persona|onfido required")
+    if getattr(args, "sanctions_provider", "local") not in ("chainalysis", "trm") or not val(
+        "sanctions_api_key", "DARWIN_SANCTIONS_API_KEY"
+    ):
+        problems.append(
+            "live sanctions screening required: --sanctions-provider "
+            "chainalysis|trm + --sanctions-api-key (an offline list can't catch "
+            "a freshly-listed address)"
+        )
+    if not val("litellm_url", "DARWIN_LITELLM_URL"):
+        problems.append("--litellm-url required")
+    if not on("litellm_virtual_keys", "DARWIN_LITELLM_VIRTUAL_KEYS"):
+        problems.append("--litellm-virtual-keys required (per-Darwin spend isolation)")
+    if not val("signing_vault_transit_key"):
+        problems.append(
+            "--signing-vault-transit-key required (a per-process key cannot "
+            "verify a Darwin's DNA after a restart)"
+        )
+    if not str(getattr(args, "db", None) or "").startswith(("postgres://", "postgresql://")):
+        problems.append("--db must be a postgres:// DSN")
+    if not getattr(args, "leader_election", False):
+        problems.append("--leader-election required")
+    if getattr(args, "driver", "in-process") != "k8s":
+        problems.append("--driver k8s required (per-Darwin isolation)")
+    if getattr(args, "wallet_provider", None) != "cdp":
+        problems.append("--wallet-provider cdp required")
+    fee = val("platform_fee_address", "DARWIN_PLATFORM_FEE_ADDRESS")
+    if not fee or not _is_checksum_address(fee):
+        problems.append("--platform-fee-address must be a checksummed 0x address")
+    if not val("gas_tank_key", "DARWIN_GAS_TANK_KEY"):
+        problems.append("--gas-tank-key required (each Darwin's account pays gas)")
+    if not val("e2b_api_key", "E2B_API_KEY"):
+        problems.append("--e2b-api-key required (no in-process sandbox in production)")
+    if getattr(args, "fiat_provider", "none") not in ("none", "moonpay"):
+        problems.append("--fiat-provider must be none or moonpay (the platform never holds fiat)")
+    if getattr(args, "allow_manual_credit", False):
+        problems.append("--allow-manual-credit mints unbacked user credit")
+    if getattr(args, "enable_omnibus", False):
+        problems.append("--enable-omnibus is not a v1 money rail")
+    if getattr(args, "push_provider", "none") != "webpush":
+        problems.append("--push-provider webpush required (owners must hear about escalations)")
+    return problems
+
+
+def _is_checksum_address(addr: str) -> bool:
+    try:
+        from eth_utils import is_checksum_address
+    except ImportError:  # pragma: no cover - [web3] extra absent
+        return False
+    return is_checksum_address(addr)
+
+
+def _assert_production_ready(args: argparse.Namespace) -> None:
+    """Refuse a production (or mainnet) boot that is missing anything real
+    money and real users need — auth, KYC, sanctions, isolation, durable
+    state — printing every gap at once. Also refuses a testnet boot pointed
+    at a mainnet RPC (almost certainly a mistake)."""
     rpc = (
         getattr(args, "rpc_url", None)
         or os.environ.get("DARWIN_RPC_URL")
         or ""
     )
-    is_mainnet = _is_mainnet(args)
-    # Coherence: an explicit testnet boot pointed at a mainnet RPC is almost
-    # certainly a mistake — fail loud rather than sign real-money txns with
-    # testnet-grade safety config.
-    if not is_mainnet and "mainnet" in rpc.lower():
+    if not _is_mainnet(args) and "mainnet" in rpc.lower():
         print(
             f"refusing to boot: --network testnet but DARWIN_RPC_URL={rpc} "
             "looks like mainnet. Pass --network mainnet (with live compliance "
@@ -1609,25 +1815,13 @@ def _assert_mainnet_safe(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    if not is_mainnet:
+    if not _is_production(args):
         return
-    sanctions = getattr(args, "sanctions_provider", None) or "local"
-    if sanctions not in ("chainalysis", "trm"):
-        print(
-            f"refusing to boot on mainnet with sanctions-provider={sanctions!r}: "
-            "real-money transfers require a live screener (--sanctions-provider "
-            "chainalysis|trm + --sanctions-api-key). An offline denylist is not "
-            "acceptable for mainnet.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    if getattr(args, "allow_manual_credit", False):
-        print(
-            "refusing to boot on mainnet with --allow-manual-credit: minting "
-            "unbacked user credit against real funds is unsafe. In production, "
-            "credit only via verified Stripe/on-chain deposits.",
-            file=sys.stderr,
-        )
+    problems = _production_problems(args)
+    if problems:
+        print("refusing to boot in production:", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
         sys.exit(2)
 
 
@@ -1648,8 +1842,8 @@ def _serve(args: argparse.Namespace) -> int:
     from .runtime.supervisor import Supervisor
     from .security.auth import InMemoryTokenStore
 
-    # Mainnet money-safety gate (refuses demo-grade config against real funds).
-    _assert_mainnet_safe(args)
+    # Production / mainnet readiness gate (refuses demo-grade config).
+    _assert_production_ready(args)
 
     # -- OpenTelemetry trace export (doc 08) -----------------------------
     # Wire a real OTLP exporter so the spans the supervisor emits leave
@@ -1680,33 +1874,47 @@ def _serve(args: argparse.Namespace) -> int:
             kwargs["lock_key"] = int(args.leader_lock_key)
         leader_election = PostgresAdvisoryLockElection(**kwargs)
 
-    real_factories = _build_real_factories(args)
-
     sanctions = _build_sanctions(args)
     notification_sink = _build_notification_sink(args)
     alert_sink = _build_alert_sink(args)
 
     k8s_driver = _build_k8s_driver(args)
-    if k8s_driver is not None and real_factories:
-        # The K8s driver hosts every per-Darwin substrate inside the
-        # orchestrator pod, not in the supervisor process. Passing
-        # in-process factories alongside k8s mode would silently apply
-        # them to a code path that never spawns Darwins — refuse clearly.
-        print(
-            "real-adapter flags (--rpc-url etc.) are not supported with "
-            "--driver=k8s; pass those to the orchestrator image instead",
-            file=sys.stderr,
-        )
-        return 2
-
     supervisor_kwargs: dict[str, Any] = {}
+    if k8s_driver is None:
+        real_factories = _build_real_factories(args)
+    else:
+        # Pods build their own substrate from the forwarded settings; the
+        # supervisor builds none in-process. It keeps only a per-Darwin
+        # signer: pods get a watch-only wallet and never hold signing keys.
+        real_factories = {}
+        supervisor_kwargs["pod_substrate"] = _pod_substrate(args)
+        if getattr(args, "wallet_provider", None) == "cdp":
+            supervisor_kwargs["pod_signer_factory"] = _cdp_chain_factory(args)
+            gas_key = getattr(args, "gas_tank_key", None) or os.environ.get(
+                "DARWIN_GAS_TANK_KEY"
+            )
+            if gas_key:
+                from web3 import Web3
+
+                from .adapters.web3_chain import GasTank
+
+                mainnet = _is_mainnet(args)
+                rpc = (
+                    getattr(args, "rpc_url", None) or os.environ.get("DARWIN_RPC_URL")
+                    or ("https://mainnet.base.org" if mainnet else "https://sepolia.base.org")
+                )
+                supervisor_kwargs["gas_tank"] = GasTank(
+                    Web3(Web3.HTTPProvider(rpc)), private_key=gas_key,
+                    chain_id=8453 if mainnet else 84532,
+                )
+
     if args.heartbeat_seconds is not None:
         supervisor_kwargs["heartbeat_seconds"] = float(args.heartbeat_seconds)
     # Provider/network descriptors for the money-capabilities manifest. The
     # wallet-factory closures bake these in but don't expose them, so carry
     # the resolved choice strings explicitly (see Supervisor.money_capabilities).
     supervisor_kwargs["wallet_provider"] = (
-        getattr(args, "wallet_provider", None) or "cdp"
+        getattr(args, "wallet_provider", None) or "none"
     )
     supervisor_kwargs["network"] = (
         "base-mainnet" if _is_mainnet(args) else "base-sepolia"
@@ -1732,9 +1940,11 @@ def _serve(args: argparse.Namespace) -> int:
     namespace_provisioner = _build_namespace_provisioner(args, k8s_driver)
     if namespace_provisioner is not None:
         supervisor_kwargs["namespace_provisioner"] = namespace_provisioner
+    supervisor_kwargs.update(_build_store(args))
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
+        require_payout_address=_is_production(args),
         sanctions_screener=sanctions,
         notification_sink=notification_sink,
         alert_sink=alert_sink,
@@ -1782,7 +1992,9 @@ def _serve(args: argparse.Namespace) -> int:
                     or os.environ.get("CLERK_AUDIENCE")
                 ),
             )
-            token_store = ClerkTokenStore(verifier=verifier)
+            # Seed ownership from the persisted owners so a restart doesn't
+            # 403 every owner on their own Darwins.
+            token_store = ClerkTokenStore(verifier=verifier, ownership=sup.owners())
 
     app = build_app(
         sup,
@@ -1796,6 +2008,7 @@ def _serve(args: argparse.Namespace) -> int:
         # doc 01/05: in production, spawns must carry owner consent (kill-switch
         # terms + 18+). Captured always; enforced in production.
         require_spawn_consent=_is_production(args),
+        require_auth=_is_production(args),
         # None → build_app falls back to the DARWIN_ENABLE_DOCS env var.
         enable_docs=getattr(args, "enable_docs", None),
     )
@@ -1948,6 +2161,41 @@ def build_parser() -> argparse.ArgumentParser:
              "Env: DARWIN_WALLET_KEY. Never log this value.",
     )
     wallet_group.add_argument(
+        "--store-price-usdc", default=None, type=float, metavar="USDC",
+        help="Open the x402 storefront: every Darwin sells a research report "
+             "for this price, paid to its own wallet. Env: "
+             "DARWIN_STORE_PRICE_USDC",
+    )
+    wallet_group.add_argument(
+        "--x402-facilitator-url", default=None, metavar="URL",
+        help="x402 facilitator (verify/settle). Default: x402.org on testnet, "
+             "Coinbase's CDP facilitator on mainnet. Env: "
+             "DARWIN_X402_FACILITATOR_URL",
+    )
+    wallet_group.add_argument(
+        "--gas-tank-key", default=None, metavar="HEX",
+        help="Private key of a small ETH float that tops up each Darwin's "
+             "CDP account with gas before the platform signs for it "
+             "(--driver k8s). Env: DARWIN_GAS_TANK_KEY",
+    )
+    wallet_group.add_argument(
+        "--wallet-address", default=None, metavar="ADDR",
+        help="Address a --wallet-provider watch wallet reads (no key; the "
+             "platform signs). Env: DARWIN_WALLET_ADDRESS",
+    )
+    wallet_group.add_argument(
+        "--platform-fee-address", default=None, metavar="ADDR",
+        help="Platform USDC address that accrued metering + harvest fees "
+             "settle to (one transfer per maintenance pass). Env: "
+             "DARWIN_PLATFORM_FEE_ADDRESS",
+    )
+    wallet_group.add_argument(
+        "--wallet-state-dir", default=None, metavar="DIR",
+        help="Directory for each real wallet's durable feed + accrual log "
+             "(<darwin_id>.wallet.jsonl). Unset = in memory (lost on "
+             "restart). Env: DARWIN_WALLET_STATE_DIR",
+    )
+    wallet_group.add_argument(
         "--usdc-contract", default=None, metavar="ADDR",
         help="USDC ERC-20 contract address. Defaults to Base Sepolia or "
              "mainnet constant based on the RPC URL.",
@@ -1977,9 +2225,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stellar account secret. Env: DARWIN_STELLAR_SECRET",
     )
     wallet_group.add_argument(
-        "--wallet-provider", default="cdp",
-        choices=["web3", "cdp", "local-vault"],
-        help="Wallet backend (default: cdp). 'cdp' (Coinbase CDP, "
+        "--wallet-provider", default=None,
+        choices=["web3", "cdp", "local-vault", "watch"],
+        help="Wallet backend (default: none = in-memory FakeWallet, dev "
+             "only; production must pick one). 'cdp' (Coinbase CDP, "
              "non-custodial, per-Darwin TEE-held key — production default); "
              "'local-vault' (per-Darwin keypair minted on spawn and sealed "
              "in the per-Darwin vault — self-custodial for chains CDP "
@@ -2554,16 +2803,13 @@ def build_parser() -> argparse.ArgumentParser:
              "(NetworkPolicy peer for per-Darwin orchestrator pods).",
     )
     k8s_group.add_argument(
-        "--k8s-lancedb-image", default="lancedb/lancedb:latest",
-        help="Image for the per-Darwin LanceDB sidecar.",
+        "--k8s-data-storage-size", default="1Gi",
+        help="PVC size for each pod's durable /data (audit log, checkpoint, "
+             "wallet feed). Default: 1Gi.",
     )
     k8s_group.add_argument(
-        "--k8s-lancedb-storage-size", default="1Gi",
-        help="PVC size for the LanceDB sidecar (default: 1Gi).",
-    )
-    k8s_group.add_argument(
-        "--k8s-lancedb-storage-class", default=None,
-        help="StorageClass for the LanceDB PVC. Empty → cluster default.",
+        "--k8s-data-storage-class", default=None,
+        help="StorageClass for the /data PVC. Empty → cluster default.",
     )
     k8s_group.add_argument(
         "--k8s-soma-storage-size", default="1Gi",

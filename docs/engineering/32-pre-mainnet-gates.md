@@ -87,7 +87,7 @@ real Stage-1 recipe before mainnet.
 
 - **Proves:** an engineer who did **not** write the supervisor can spawn,
   observe, and kill a Darwin using only the HTTP API + event log (operability).
-- **Run:** hand them [`08-http-api.md`](08-http-api.md) and the dashboard;
+- **Run:** hand them [`08-platform-control-plane.md`](08-platform-control-plane.md) (the HTTP API) and the dashboard;
   have them spawn, watch `/events`, and kill — no source diving, no Slack help.
 - **Pass:** they complete all three unaided and can explain what they saw.
 - **Status:** 🟢 runnable (no code needed) — schedule it.

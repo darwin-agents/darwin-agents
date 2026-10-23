@@ -261,3 +261,14 @@ def test_stats_reports_counts():
     assert s["success_count"] == 0
     assert s["failure_count"] == 0
     assert s["purged_count"] == 0
+
+
+def test_supervisor_wires_owner_resolver_even_inside_a_fanout():
+    """Production built the sink with no owner resolver, so no ticket ever
+    reached a device; behind a fan-out (Slack + push) it was never wired."""
+    from darwin_platform.observability.sinks import FanOutNotificationSink
+    from darwin_platform.runtime.supervisor import Supervisor
+
+    sink = _make_sink()
+    sup = Supervisor(notification_sink=FanOutNotificationSink([sink]))
+    assert sink._resolver == sup.owner_of  # noqa: SLF001

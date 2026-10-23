@@ -24,12 +24,14 @@ darwin-platform serve --db state.db \
 ### Docker Compose (local stack)
 
 ```bash
-cd infra/docker
-cp ../../.env.example .env   # add LLM provider keys (.env.example: repo root)
-docker compose up --build
+make docker-up     # copies .env.example → .env (repo root) if missing, then builds + starts the stack
+# equivalent: docker compose -f infra/docker/docker-compose.yml --env-file .env up --build -d
+make docker-down   # stop (named volumes are kept)
 ```
 
-Services: supervisor (:8000), postgres (host :15432 → container :5432; host 5432 is left free for a local Postgres), litellm (:4000), prometheus (:9090), jaeger (:16686).
+The compose file reads the **repo-root** `.env` via `--env-file`; `infra/docker/` holds no `.env` of its own. Add LLM provider keys there.
+
+Services: supervisor (:8000), web dashboard (:3000), postgres (host :15432 → container :5432; host 5432 is left free for a local Postgres), redis (host :16379 → container :6379), litellm (:4000), prometheus (:9090), otel-collector (OTLP gRPC :4317, HTTP :4318), jaeger (UI :16686 only — spans arrive from the collector in-network), alertmanager (:9093).
 
 See [`infra/docker/README.md`](../../infra/docker/README.md) for full documentation.
 
@@ -77,7 +79,7 @@ for the complete, current set. The operationally important metrics:
 | ------ | ---- | ------------- |
 | `darwin_platform_darwins` | gauge | Live Darwin count. |
 | `darwin_platform_uptime_seconds` | gauge | Supervisor process uptime. |
-| `darwin_neuron_dispatch_total` | counter | Neuron dispatches; labelled by `darwin_id`, `neuron`, `status`. |
+| `darwin_neuron_dispatch_total` | counter | Fleet-wide count of neuron dispatches (`intent:neuron.*` records on the genome audit chains). **No labels** — per-Darwin, per-neuron and status breakdowns come from the event log. |
 | `darwin_daily_spend_usdc` | gauge | Per-Darwin spend today (`darwin_id`). |
 | `darwin_llm_cost_usdc` / `darwin_revenue_usdc` | gauge | Per-Darwin LLM cost and revenue (`darwin_id`). |
 | `darwin_platform_alerts_total` | counter | Monitor alerts fired. |
@@ -102,8 +104,8 @@ for the complete, current set. The operationally important metrics:
 When something seems wrong:
 
 1. **`GET /darwins/{id}`** → alive? paused? killed? balance?
-2. **`GET /darwins/{id}/events?limit=20`** → last 20 audit entries. Look for `outcome:fail`, `event:kill`, `event:death`.
-3. **Prometheus** → `darwin_neuron_dispatch_total{status="fail"}` rate. Spike = the Darwin is stuck on a broken neuron path.
+2. **`GET /darwins/{id}/events?limit=20`** → last 20 audit entries. Look for `outcome` records with `status: "fail"`, `event:kill`, `event:death`.
+3. **Failed dispatches** → `GET /darwins/{id}/events?kind=outcome` and look for `status: "fail"`. A run of failures on one neuron = the Darwin is stuck on a broken neuron path. (Prometheus `darwin_neuron_dispatch_total` is a fleet-wide, unlabelled count — useful to spot a stalled fleet, not a failing neuron.)
 4. **Jaeger** → trace by `darwin_id` tag. Long spans = slow LLM calls or hung browser sessions.
 
 ## Failure modes and recovery
@@ -117,7 +119,7 @@ These are the predicted failure modes from [`18-layer-zero-build-plan.md`](18-la
 **Detection:** The Darwin dispatches neurons but with random/incoherent tasks. The `plan` field in audit records has no clear structure. Revenue is zero despite many dispatches.
 
 **Signals:**
-- High `darwin_neuron_dispatch_total` with status=ok but zero revenue growth in ledger.
+- Steady `darwin_neuron_dispatch_total` growth and `outcome` records with `status: "ok"`, but zero revenue growth in the ledger.
 - Planner LLM responses (logged in audit records) show aimless output.
 
 **Response:**
@@ -394,7 +396,7 @@ curl -s http://darwin-platform:8000/darwins/<id> | jq .alive
 
 ```bash
 # Against Docker Compose:
-docker compose up -d
+make docker-up
 uv run python -m tools.soak.run_soak --duration 24h --url http://localhost:8000
 
 # Against a remote cluster:
@@ -406,7 +408,7 @@ uv run python -m tools.soak.run_soak --duration 24h \
 ### Monitoring during the soak
 
 - **Terminal 1:** soak script progress (polls status every 60s, prints balance + tick).
-- **Terminal 2:** `docker compose logs -f supervisor` (or `kubectl logs -f`).
+- **Terminal 2:** `make docker-logs` (or `kubectl logs -f`).
 - **Prometheus:** `http://localhost:9090` — watch `darwin_neuron_dispatch_total` rate (should be steady), `darwin_daily_spend_usdc` (should rise slowly).
 - **Jaeger:** `http://localhost:16686` — spot-check one trace every few hours for unexpectedly slow spans.
 
@@ -425,7 +427,7 @@ uv run python -m tools.soak.run_soak --duration 24h \
 ### Recovering from a failed soak
 
 1. Don't wipe the state — the failure is valuable forensic data.
-2. Export the full state: `docker exec darwin-supervisor sqlite3 /data/state.db .dump > soak_failure.sql`
+2. Export the full state: `docker exec darwin-postgres pg_dump -U darwin darwin > soak_failure.sql` (the Compose supervisor uses Postgres; for a SQLite `--db` run, `sqlite3 <file> .dump`).
 3. Identify the root cause using the failure mode guides above.
 4. Fix and re-run. A passing soak after a fix counts.
 
@@ -434,17 +436,16 @@ uv run python -m tools.soak.run_soak --duration 24h \
 ### Fleet pause (all Darwins)
 
 ```bash
-# Via API (requires platform_operator token):
-for id in $(curl -s -H "Authorization: Bearer $OPS_TOKEN" \
-  http://localhost:8000/darwins | jq -r '.[].darwin_id'); do
-  curl -X POST -H "Authorization: Bearer $OPS_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"reason": "fleet pause: <reason>"}' \
-    "http://localhost:8000/darwins/$id/pause"
-done
+# Via API (requires platform_operator token; no request body):
+curl -X POST -H "Authorization: Bearer $OPS_TOKEN" \
+  http://localhost:8000/platform/fleet/pause
+
+# Resume the fleet:
+curl -X POST -H "Authorization: Bearer $OPS_TOKEN" \
+  http://localhost:8000/platform/fleet/resume
 ```
 
-All Darwins halt at their next checkpoint. No data loss. Resume by POSTing to `/resume` for each.
+All Darwins halt at their next checkpoint. No data loss. Narrower fleet-wide levers: `POST /platform/fleet/spend_lock`, `/platform/fleet/block_category`, `/platform/fleet/block_counterparty`; a single Darwin is `POST /platform/darwins/{id}/quarantine` (`DELETE` to release).
 
 ### Fleet kill (nuclear option)
 
@@ -458,15 +459,17 @@ Same loop but `POST /darwins/{id}/kill`. Irreversible. Use only when the fleet i
 # an explicit, audited API call; it requires --db so the retired key is
 # recorded (platform_retired_keys) for the drain window.
 
-# 1. Note the current public key:
-curl -s http://localhost:8000/platform/signing/public_key
+# 1. Note the current public key (platform_operator scope, like rotate):
+curl -s http://localhost:8000/platform/signing/public_key \
+  -H "Authorization: Bearer $OPERATOR_TOKEN"
 
 # 2. Rotate (retires the current key into the drain window, mints a new one):
 curl -s -X POST http://localhost:8000/platform/signing/rotate \
   -H "Authorization: Bearer $OPERATOR_TOKEN"
 
 # 3. Verify the new key is different:
-curl -s http://localhost:8000/platform/signing/public_key
+curl -s http://localhost:8000/platform/signing/public_key \
+  -H "Authorization: Bearer $OPERATOR_TOKEN"
 
 # Manifests signed by the old key remain valid during the drain window.
 # New Darwins spawned after rotation get manifests signed by the new key.
@@ -484,30 +487,30 @@ All Darwin vault reads will fail. Neurons that need credentials will get `VaultA
 
 ## Log reading guide
 
-### Structlog fields
+### Log format
 
-The supervisor emits JSON-structured logs. Key fields:
-
-| Field | Meaning |
-| ----- | ------- |
-| `event` | Log message / event name |
-| `darwin_id` | Which Darwin (if applicable) |
-| `level` | `info`, `warning`, `error` |
-| `ts` | ISO timestamp |
-| `span_id` / `trace_id` | OpenTelemetry correlation (when tracing enabled) |
-| `tick` | Darwin's heartbeat counter |
+The supervisor does **not** emit structured JSON logs. `darwin-platform serve` runs uvicorn (`--log-level`), which writes its standard text access and error lines to stdout/stderr; platform modules use stdlib `logging` without a JSON formatter. Treat the logs as a crash/HTTP trail, not a per-Darwin record.
 
 ### Correlating events
 
-To follow one Darwin's life:
+The per-Darwin record of truth is the hash-chained audit log, read through the API:
+
 ```bash
-docker compose logs supervisor | grep '"darwin_id":"<id>"' | jq .
+# One Darwin's life, newest first (owner or operator token):
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/darwins/<id>/events?limit=200" | jq '.events[] | {seq, kind}'
+
+# Failed outcomes only:
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/darwins/<id>/events?kind=outcome&limit=200" \
+  | jq '.events[] | select(.payload.status == "fail")'
+
+# Operator actions across the fleet (platform_operator token):
+curl -s -H "Authorization: Bearer $OPS_TOKEN" \
+  "http://localhost:8000/platform/audit?darwin_id=<id>&limit=100"
 ```
 
-To find the moment something went wrong:
-```bash
-docker compose logs supervisor | grep '"level":"error"' | jq '{ts, event, darwin_id}'
-```
+For crashes, `make docker-logs` (or `kubectl logs`) shows the uvicorn/Python traceback.
 
 ### Trace lookup
 

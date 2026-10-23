@@ -82,6 +82,72 @@ def test_torn_final_line_is_tolerated(tmp_path):
     assert [r["seq"] for r in reopened.read_all()] == [0]
 
 
+def test_appends_after_a_torn_line_survive_the_next_restart(tmp_path):
+    """Regression: the reopened sink used to append straight after the torn
+    bytes, gluing the next record onto them — so every post-crash record was
+    invisible to readers and to the next boot's chain scan."""
+    path = tmp_path / "a.jsonl"
+    log = AuditLogger("d1", JsonlAuditSink(path))
+    for k in range(3):
+        log.log_event("x", {"k": k})
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write('{"seq": 3, "prev_hash": "00')  # crash mid-write
+
+    after_crash = AuditLogger("d1", JsonlAuditSink(path))
+    after_crash.log_event("after_crash", {})
+
+    rebooted = AuditLogger("d1", JsonlAuditSink(path))
+    kinds = [r["kind"] for r in rebooted.read_records()]
+    assert kinds[-1] == "event:after_crash" and len(kinds) == 4
+    rebooted.verify()  # one unbroken chain, not a fork
+
+
+def test_unterminated_but_complete_final_record_is_kept(tmp_path):
+    path = tmp_path / "a.jsonl"
+    rec = {"seq": 0, "prev_hash": GENESIS_HASH, "hash": _h(0), "kind": "event:x",
+           "ts": 0.0, "payload": {}}
+    import json
+    path.write_text(json.dumps(rec))  # crash between the record and its newline
+    sink = JsonlAuditSink(path)
+    assert sink.count() == 1
+    sink.append({**rec, "seq": 1, "prev_hash": _h(0), "hash": _h(1)})
+    assert [r["seq"] for r in JsonlAuditSink(path).read_all()] == [0, 1]
+
+
+def test_mid_file_damage_is_left_on_disk(tmp_path):
+    """Only a torn *final* line is cut; damage earlier in the file is tamper
+    evidence and must never be truncated away."""
+    path = tmp_path / "a.jsonl"
+    path.write_text(
+        '{"seq": 0, "prev_hash": "0", "hash": "a"}\n'
+        "not json\n"
+        '{"seq": 2, "prev_hash": "b", "hash": "c"}\n'
+    )
+    before = path.read_bytes()
+    sink = JsonlAuditSink(path)
+    sink.close()
+    assert path.read_bytes() == before
+    assert sink.count() == 1
+
+
+@pytest.mark.parametrize("limit", [1, 7, 500, 10_000])
+def test_read_tail_matches_the_forward_scan(tmp_path, limit):
+    sink = JsonlAuditSink(tmp_path / "a.jsonl")
+    _drive(sink, n=700)  # ~2,100 records — spans several 64 KiB read blocks
+    assert sink.read_tail(limit) == sink.read_all()[-limit:]
+
+
+def test_read_tail_falls_back_to_forward_semantics_on_damage(tmp_path):
+    path = tmp_path / "a.jsonl"
+    path.write_text(
+        '{"seq": 0, "prev_hash": "0", "hash": "a"}\n'
+        "not json\n"
+        '{"seq": 2, "prev_hash": "b", "hash": "c"}\n'
+    )
+    # The forward scan stops at the bad line; the tail must agree.
+    assert [r["seq"] for r in JsonlAuditSink(path).read_tail(5)] == [0]
+
+
 def _drive(sink, n=40):
     log = AuditLogger("d1", sink)
     for k in range(n):
@@ -143,3 +209,28 @@ def test_parity_with_inmemory_sink_same_inputs(tmp_path, monkeypatch):
     disk = _drive(JsonlAuditSink(tmp_path / "a.jsonl"))
     assert mem._head == disk._head  # noqa: SLF001
     assert mem.merkle_root() == disk.merkle_root()
+
+
+async def test_file_checkpoint_resumes_the_same_life(tmp_path):
+    """A pod restart boots the same DNA + this file and continues where it
+    left off; a checkpoint from another organism is never resumed."""
+    from darwin_dna.evolution import boot
+    from darwin_fakes import FakeStack
+    from darwin_platform.runtime.audit_sink import FileCheckpointStore
+
+    path = tmp_path / "checkpoint.json"
+    first = FakeStack(opening_usdc=50.0, clock=lambda: 0.0)
+    first.checkpoint = FileCheckpointStore(path)
+    rt = boot(first.platform(), sleep=lambda _: None)
+    await rt.run(max_heartbeats=3)
+    tick = rt.state.tick
+    assert tick >= 3
+
+    again = FakeStack(opening_usdc=50.0, clock=lambda: 0.0)
+    again.manifest, again.layer_blobs, again.layer_names = (
+        first.manifest, first.layer_blobs, first.layer_names,
+    )
+    again.signer, again.identity = first.signer, None
+    again.checkpoint = FileCheckpointStore(path)
+    assert boot(again.platform(), sleep=lambda _: None).state.tick == tick
+    assert FileCheckpointStore(path).load("someone-else") is None

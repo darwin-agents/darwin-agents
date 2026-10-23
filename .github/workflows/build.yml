@@ -1,5 +1,8 @@
 # Build + push the supervisor container image.
 #
+# Gated on the lint + test workflows (called below): a red commit never
+# publishes an image.
+#
 # Triggers:
 #   - push to main           → publishes ghcr.io/{repo}:latest + sha-XXXXXX
 #   - tag v*.*.*             → publishes the semver tag too
@@ -28,8 +31,15 @@ permissions:
   id-token: write
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  test:
+    uses: ./.github/workflows/test.yml
+
   image:
     name: docker build + push
+    needs: [lint, test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/darwin/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { shortId } from "@/lib/format";
-import type { LineageNode, Lifecycle } from "@/lib/types";
+import type { LineageNode } from "@/lib/types";
 
 export default function LineagePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -18,12 +18,6 @@ export default function LineagePage({ params }: { params: Promise<{ id: string }
     queryKey: queryKeys.lineage(id),
     queryFn: () => api.lineageTree(id),
   });
-
-  // Tolerate either { root, ancestors, descendants } or a flat tree response
-  // — the runtime currently returns the latter shape.
-  const root: LineageNode | undefined =
-    (data?.root as LineageNode | undefined) ??
-    (data as unknown as LineageNode | undefined);
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -44,56 +38,71 @@ export default function LineagePage({ params }: { params: Promise<{ id: string }
               Failed to load lineage: {(error as Error).message}
             </p>
           )}
-          {root && <TreeNode node={root} highlight={id} depth={0} />}
+          {data && (
+            <div className="space-y-1">
+              {[...data.ancestors].reverse().map((a, i) => (
+                <Row key={a.darwin_id} id={a.darwin_id} alive={a.alive} depth={i} note="ancestor" />
+              ))}
+              <Row
+                id={data.darwin_id}
+                alive
+                depth={data.ancestors.length}
+                note={`gen ${data.generation}`}
+                me
+              />
+              {data.descendants.map((child) => (
+                <TreeNode key={child.darwin_id} node={child} depth={data.ancestors.length + 1} />
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
   );
 }
 
-function TreeNode({
-  node,
-  highlight,
+function Row({
+  id,
+  alive,
   depth,
+  note,
+  me = false,
 }: {
-  node: LineageNode;
-  highlight: string;
+  id: string;
+  alive: boolean;
   depth: number;
+  note?: string;
+  me?: boolean;
 }) {
-  const isMe = node.darwin_id === highlight;
-  const lifecycle = (node.lifecycle ?? "alive") as Lifecycle;
   return (
-    <div className="space-y-1">
-      <div
-        className="flex items-center gap-2 rounded px-2 py-1 text-sm"
-        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+    <div
+      className="flex items-center gap-2 rounded px-2 py-1 text-sm"
+      style={{ paddingLeft: `${depth * 16 + 8}px` }}
+    >
+      <Link
+        href={{ pathname: `/darwins/${id}` }}
+        className={`mono ${me ? "font-bold text-[var(--color-accent)]" : "hover:underline"}`}
       >
-        <Link
-          href={{ pathname: `/darwins/${node.darwin_id}` }}
-          className={`mono ${isMe ? "font-bold text-[var(--color-accent)]" : "hover:underline"}`}
-        >
-          {shortId(node.darwin_id, 10, 6)}
-        </Link>
-        <StatusBadge status={lifecycle} />
-        {node.generation !== undefined && (
-          <span className="text-xs text-[var(--color-muted-foreground)]">
-            gen {node.generation}
-          </span>
-        )}
-        {node.cause_of_death && (
-          <span className="text-xs text-[var(--color-muted-foreground)]">
-            · {node.cause_of_death}
-          </span>
-        )}
-      </div>
-      {node.children?.map((child) => (
-        <TreeNode
-          key={child.darwin_id}
-          node={child}
-          highlight={highlight}
-          depth={depth + 1}
-        />
-      ))}
+        {shortId(id, 10, 6)}
+      </Link>
+      <StatusBadge status={alive ? "alive" : "dead"} />
+      {note && <span className="text-xs text-[var(--color-muted-foreground)]">{note}</span>}
     </div>
+  );
+}
+
+function TreeNode({ node, depth }: { node: LineageNode; depth: number }) {
+  return (
+    <>
+      <Row
+        id={node.darwin_id}
+        alive={node.alive}
+        depth={depth}
+        note={`child · budget $${node.budget_usdc.toFixed(2)}`}
+      />
+      {node.children?.map((child) => (
+        <TreeNode key={child.darwin_id} node={child} depth={depth + 1} />
+      ))}
+    </>
   );
 }

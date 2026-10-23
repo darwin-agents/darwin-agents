@@ -18,6 +18,12 @@ const STATUS_MAP: Record<
     text: "text-[var(--color-status-paused)]",
     bg: "bg-[var(--color-status-paused-soft)]/40",
   },
+  crashed: {
+    label: "crashed",
+    dot: "bg-[var(--color-destructive)]",
+    text: "text-[var(--color-destructive)]",
+    bg: "bg-[var(--color-status-quarantined-soft)]/40",
+  },
   quarantined: {
     label: "quarantined",
     dot: "bg-[var(--color-status-quarantined)]",
@@ -40,7 +46,14 @@ const STATUS_MAP: Record<
 
 function normalize(value: string): Lifecycle {
   const v = value.toLowerCase();
-  if (v === "alive" || v === "paused" || v === "quarantined" || v === "dead" || v === "killed") {
+  if (
+    v === "alive" ||
+    v === "paused" ||
+    v === "crashed" ||
+    v === "quarantined" ||
+    v === "dead" ||
+    v === "killed"
+  ) {
     return v;
   }
   // Backend uses additional "alive-ish" intermediate states (pausing, killing).

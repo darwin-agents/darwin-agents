@@ -37,7 +37,7 @@ class DarwinSpec:
 
     darwin_id: str
     opening_usdc: float
-    escalation_auto: str | None = "approve"
+    escalation_auto: str | None = None
     parent_id: str | None = None
     # Sealed DNA. The K8s driver writes these into a ConfigMap so the
     # orchestrator pod can reconstruct the same identity on boot (lossless
@@ -90,6 +90,11 @@ class DarwinSnapshot:
     # in-process path reads ``runtime.audit.merkle_root()`` directly. ``None``
     # when the pod can't produce one (kept out of the anchor).
     merkle_root: str | None = None
+    # Set when the pod's drive loop crashed (see DarwinStatus.crashed).
+    crashed: str | None = None
+    address: str | None = None
+    profit_usdc: float = 0.0
+    unsettled_usdc: float = 0.0
 
 
 @runtime_checkable

@@ -11,11 +11,11 @@ The shape is *opinionated*:
 - ``runtimeClassName: kata`` on the orchestrator pod so the genome runs
   in a Firecracker microVM. The chart's ``runtimeclass.yaml`` declares
   the class; this builder references it by name (configurable).
-- LanceDB sidecar in the same pod — lightweight read/write surface for
-  the genome's vector memory. PVC mounted at ``/data``.
-- NetworkPolicy default-deny + the four allow-pinholes the doc-08
-  egress design wants (DNS, supervisor→orchestrator, orchestrator→
-  egress-proxy, orchestrator→Postgres).
+- A per-Darwin PVC mounted at ``/data``: the audit log, checkpoint and
+  wallet feed live there, so a restarted pod is the same organism.
+- NetworkPolicy default-deny + allow-pinholes: DNS, supervisor→
+  orchestrator, orchestrator→LiteLLM, orchestrator→Postgres, and either
+  orchestrator→egress-proxy or (no proxy) public HTTPS only.
 - Per-Darwin Secret with a control-API bearer token; the supervisor's
   RPC calls present this token, the orchestrator verifies it.
 
@@ -53,7 +53,16 @@ POD_LABEL_COMPONENT = "darwin.io/component"
 # the pod by default; the Service exposes it to the cluster on the same
 # number for symmetry.
 CONTROL_API_PORT = 8001
-LANCEDB_PORT = 9999
+
+# The pod's durable volume (audit log, checkpoint, wallet feed).
+DATA_MOUNT_PATH = "/data"
+
+# Private/link-local ranges the direct-egress rule must never reach
+# (cluster services, node metadata endpoints, carrier-grade NAT).
+_PRIVATE_CIDRS = (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+    "100.64.0.0/10",
+)
 
 # In-pod mount point for the mutable soma tree (docs 03/21/05). When soma-merge
 # is enabled, a volume is mounted here and the orchestrator is launched with
@@ -82,6 +91,12 @@ VAULT_APPROLE_ROLE_ID_SECRET_KEY = "vault_approle_role_id"
 VAULT_APPROLE_SECRET_ID_SECRET_KEY = "vault_approle_secret_id"
 ORGANISM_DB_DSN_SECRET_KEY = "organism_db_dsn"
 
+# Secret key holding the pod's substrate settings (JSON): what the pod's own
+# ``serve`` parse needs to build its LLM / browser / sandbox / watch wallet.
+SUBSTRATE_SECRET_KEY = "substrate.json"
+# The platform signing public key (PEM) the pod verifies its DNA against.
+PLATFORM_PUBLIC_KEY_SECRET_KEY = "platform_public_key.pem"
+
 
 @dataclass(frozen=True)
 class DarwinPodConfig:
@@ -96,10 +111,17 @@ class DarwinPodConfig:
     image_pull_policy: str = "IfNotPresent"
     image_pull_secrets: tuple[str, ...] = ()
     runtime_class_name: str | None = "kata"
-    # LanceDB sidecar
-    lancedb_image: str = "lancedb/lancedb:latest"
-    lancedb_storage_size: str = "1Gi"
-    lancedb_storage_class: str | None = None
+    # The pod's durable /data volume.
+    data_storage_size: str = "1Gi"
+    data_storage_class: str | None = None
+    # Seconds between heartbeats. Each heartbeat may make paid LLM calls.
+    heartbeat_seconds: float = 5.0
+    # Where LiteLLM runs (NetworkPolicy egress peer). Empty namespace → no
+    # rule (an external https LiteLLM rides the public-HTTPS rule).
+    llm_namespace: str = ""
+    llm_port: int = 4000
+    llm_pod_label_key: str = "app.kubernetes.io/name"
+    llm_pod_label_value: str = "litellm"
     # Mutable soma tree (docs 03/21/05). When soma-merge is enabled the pod
     # gets a per-Darwin PVC so promoted self-modifications SURVIVE a pod
     # restart (the genome keeps its evolved code, not just within one pod's
@@ -117,7 +139,8 @@ class DarwinPodConfig:
     orchestrator_cpu_limit: str = "1000m"
     orchestrator_memory_request: str = "512Mi"
     orchestrator_memory_limit: str = "2Gi"
-    # Where the egress proxy lives (NetworkPolicy peer).
+    # Where the egress proxy lives (NetworkPolicy peer). Empty → no proxy:
+    # pods get direct egress to public HTTPS only.
     platform_data_namespace: str = "platform-data"
     egress_proxy_pod_label_key: str = "darwin.io/component"
     egress_proxy_pod_label_value: str = "egress-proxy"
@@ -139,11 +162,6 @@ class DarwinPodConfig:
     # Free-form extra env vars for the orchestrator container — useful
     # for OTel endpoints, real-adapter API keys via secretKeyRef, etc.
     extra_env: tuple[dict[str, Any], ...] = ()
-    # Wallet provider forwarded to the orchestrator pod (--wallet-provider
-    # flag). Matches the supervisor's choice so per-pod wallets pick the
-    # same backend (cdp / local-vault / web3). Default 'cdp' matches the
-    # supervisor CLI default.
-    wallet_provider: str = "cdp"
     # Platform-mediated money rails (fiat / sanctions / KYC / omnibus) as a
     # JSON blob, forwarded from the supervisor so the pod's planner reasons
     # over the full money picture (these rails run in the supervisor, never
@@ -285,19 +303,19 @@ def build_pvc(
     namespace: str,
     config: DarwinPodConfig,
 ) -> dict[str, Any]:
-    """LanceDB data volume. ReadWriteOnce — the sidecar is the only
-    writer, the orchestrator container reads via localhost gRPC."""
+    """The pod's durable ``/data`` volume (audit log, checkpoint, wallet
+    feed). ReadWriteOnce — the orchestrator is the only writer."""
     spec: dict[str, Any] = {
         "accessModes": ["ReadWriteOnce"],
-        "resources": {"requests": {"storage": config.lancedb_storage_size}},
+        "resources": {"requests": {"storage": config.data_storage_size}},
     }
-    if config.lancedb_storage_class:
-        spec["storageClassName"] = config.lancedb_storage_class
+    if config.data_storage_class:
+        spec["storageClassName"] = config.data_storage_class
     return {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {
-            "name": "darwin-lancedb",
+            "name": "darwin-data",
             "namespace": namespace,
             "labels": {
                 NAMESPACE_LABEL_MANAGED_BY: "darwin-platform",
@@ -403,10 +421,10 @@ def build_deployment(
         "--opening-usdc", f"{opening_usdc:g}",
         "--control-port", str(CONTROL_API_PORT),
         "--control-token-path", "/run/secrets/darwin-control/control_token",
-        "--wallet-provider", config.wallet_provider,
+        "--heartbeat-seconds", f"{config.heartbeat_seconds:g}",
     ]
-    if escalation_auto is not None:
-        args.extend(["--escalation-auto", escalation_auto])
+    # Always explicit: None means "owner responds", never the pod default.
+    args.extend(["--escalation-auto", escalation_auto or "none"])
     # Real soma merge + death forensics (docs 03/21/05). The supervisor enables
     # this when it's configured with a soma root; the pod writes its soma tree
     # to the SOMA_MOUNT_PATH emptyDir below.
@@ -534,6 +552,7 @@ def build_deployment(
             {"name": "darwin-dna", "mountPath": "/etc/darwin", "readOnly": True},
             {"name": "darwin-control", "mountPath": "/run/secrets/darwin-control",
              "readOnly": True},
+            {"name": "darwin-data", "mountPath": DATA_MOUNT_PATH},
         ],
     }
     if soma_enabled:
@@ -541,54 +560,15 @@ def build_deployment(
             {"name": "darwin-soma", "mountPath": SOMA_MOUNT_PATH},
         )
 
-    lancedb_container = {
-        "name": "lancedb",
-        "image": config.lancedb_image,
-        "imagePullPolicy": config.image_pull_policy,
-        # The orchestrator reaches LanceDB over localhost; the sidecar
-        # binds 127.0.0.1 so a misconfigured NetworkPolicy can't leak it.
-        "args": ["--host", "127.0.0.1", "--port", str(LANCEDB_PORT),
-                 "--data", "/data"],
-        "ports": [
-            {"name": "lancedb", "containerPort": LANCEDB_PORT,
-             "protocol": "TCP"},
-        ],
-        "resources": {
-            "requests": {"cpu": "50m", "memory": "128Mi"},
-            "limits": {"cpu": "500m", "memory": "512Mi"},
-        },
-        "securityContext": {
-            "allowPrivilegeEscalation": False,
-            "capabilities": {"drop": ["ALL"]},
-            "runAsNonRoot": True,
-            "runAsUser": 1000,
-        },
-        "volumeMounts": [
-            {"name": "darwin-lancedb", "mountPath": "/data"},
-        ],
-    }
-
-    # LanceDB sidecar is opt-in. Setting --k8s-lancedb-image="" (empty)
-    # drops it entirely; the orchestrator's episodic memory falls back
-    # to the deterministic in-memory default. Useful for local stacks
-    # where no published lancedb container image exists yet.
-    lancedb_enabled = bool(config.lancedb_image)
-    containers = (
-        [orchestrator_container, lancedb_container]
-        if lancedb_enabled
-        else [orchestrator_container]
-    )
+    containers = [orchestrator_container]
     volumes = [
         {"name": "darwin-dna",
          "configMap": {"name": "darwin-dna"}},
         {"name": "darwin-control",
          "secret": {"secretName": "darwin-control"}},
+        {"name": "darwin-data",
+         "persistentVolumeClaim": {"claimName": "darwin-data"}},
     ]
-    if lancedb_enabled:
-        volumes.append({
-            "name": "darwin-lancedb",
-            "persistentVolumeClaim": {"claimName": "darwin-lancedb"},
-        })
     if soma_enabled:
         # Persistent by default: a per-Darwin PVC so promoted self-mods
         # survive a pod restart. emptyDir only when soma storage is explicitly
@@ -668,18 +648,21 @@ def build_network_policy(
     namespace: str,
     config: DarwinPodConfig,
 ) -> dict[str, Any]:
-    """Default deny + the four allow-pinholes.
+    """Default deny + allow-pinholes.
 
     Ingress:
       - Supervisor pod → orchestrator's control port.
 
-    Egress (in priority order):
+    Egress:
       - DNS (UDP 53 + TCP 53 to kube-system CoreDNS).
-      - Orchestrator → ``platform-data/egress-proxy`` (any TCP).
+      - Orchestrator → in-cluster LiteLLM (when ``llm_namespace`` is set).
+      - Orchestrator → ``platform-data/egress-proxy`` (any TCP) when a
+        proxy namespace is configured; otherwise public HTTPS (TCP 443)
+        to anything outside the private ranges — never cluster services
+        or node metadata.
       - Orchestrator → Postgres (when configured).
 
-    Anything else is dropped — outbound LLM, Browserbase, E2B, Coinbase,
-    Vault all flow through the egress proxy so it can log + filter."""
+    Anything else is dropped."""
 
     ingress_rules: list[dict[str, Any]] = [
         {
@@ -726,8 +709,9 @@ def build_network_policy(
                 {"protocol": "TCP", "port": 53},
             ],
         },
-        # Egress proxy
-        {
+    ]
+    if config.platform_data_namespace:
+        egress_rules.append({
             "to": [
                 {
                     "namespaceSelector": {
@@ -744,8 +728,30 @@ def build_network_policy(
                     },
                 },
             ],
-        },
-    ]
+        })
+    else:
+        egress_rules.append({
+            "to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": list(_PRIVATE_CIDRS)}}],
+            "ports": [{"protocol": "TCP", "port": 443}],
+        })
+    if config.llm_namespace:
+        egress_rules.append({
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {
+                            "kubernetes.io/metadata.name": config.llm_namespace,
+                        },
+                    },
+                    "podSelector": {
+                        "matchLabels": {
+                            config.llm_pod_label_key: config.llm_pod_label_value,
+                        },
+                    },
+                },
+            ],
+            "ports": [{"protocol": "TCP", "port": config.llm_port}],
+        })
     if (
         config.postgres_namespace
         and config.postgres_pod_label_key

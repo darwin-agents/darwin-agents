@@ -113,14 +113,15 @@ async def test_status_reads_driver_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_kills_each_k8s_darwin():
+async def test_shutdown_leaves_k8s_darwins_running():
+    """A deploy restarts the supervisor; its pods must keep living (the next
+    supervisor re-adopts them). Found on a real cluster: shutdown killed them."""
     driver = _FakeK8sDriver()
     sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
-    a = (await sup.spawn(opening_usdc=10.0)).darwin_id
-    b = (await sup.spawn(opening_usdc=10.0)).darwin_id
+    await sup.spawn(opening_usdc=10.0)
+    await sup.spawn(opening_usdc=10.0)
     await sup.shutdown(kill_running=True)
-    killed_ids = {did for did, _r in driver.killed}
-    assert {a, b} <= killed_ids
+    assert driver.killed == []
 
 
 @pytest.mark.asyncio
@@ -292,3 +293,104 @@ async def test_kill_without_forensics_verb_is_noop(tmp_path):
     did = status.darwin_id
     await sup.kill(did, reason="op")  # must not raise
     assert sup.list_soma_forensics(did) == []
+
+
+@pytest.mark.asyncio
+async def test_k8s_spawn_seals_watch_wallet_substrate_without_signing_keys():
+    """Each pod gets the forwarded substrate plus a watch-only wallet on its
+    own Darwin's address; the signing account stays in the supervisor."""
+    import json
+
+    class _Signer:
+        def __init__(self, darwin_id):
+            self.darwin_id = darwin_id
+
+        def address(self):
+            return "0x" + self.darwin_id[:8].rjust(40, "0")
+
+    driver = _FakeK8sDriver()
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0,
+        pod_substrate={"network": "testnet", "e2b_api_key": "e2b-x"},
+        pod_signer_factory=lambda did, clock: _Signer(did),
+    )
+    status = await sup.spawn(opening_usdc=10.0)
+    sub = json.loads(driver.started[0].secret_extras["substrate.json"])
+    assert sub["wallet_provider"] == "watch"
+    assert sub["wallet_address"] == sup._pod_signer(status.darwin_id).address()  # noqa: SLF001
+    assert sub["wallet_state_dir"] == "/data/wallet"
+    assert sub["e2b_api_key"] == "e2b-x"
+    assert not any(k.startswith("cdp") or k == "wallet_key" for k in sub)
+
+
+@pytest.mark.asyncio
+async def test_k8s_lifecycle_row_keeps_owner_and_is_never_respawned(tmp_path):
+    """A k8s spawn writes its lifecycle row (with owner); after a restart the
+    pod is re-adopted with that owner — never re-spawned as a duplicate."""
+    db = tmp_path / "p.db"
+    driver = _FakeK8sDriver()
+    sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0, persistence_path=str(db))
+    status = await sup.spawn(opening_usdc=10.0, actor="user_bob")
+    assert sup._lifecycle.get(status.darwin_id).owner_subject == "user_bob"  # noqa: SLF001
+
+    fresh = _FakeK8sDriver()
+    fresh.reconcile_result = [{"darwin_id": status.darwin_id, "spawned_at": 1.0}]
+    sup2 = Supervisor(k8s_driver=fresh, heartbeat_seconds=0.0, persistence_path=str(db))
+    assert await sup2._resume_from_persistence() == 0  # noqa: SLF001
+    assert fresh.started == []
+    await sup2._reconcile_k8s()  # noqa: SLF001
+    assert sup2.owner_of(status.darwin_id) == "user_bob"
+
+    await sup2.kill(status.darwin_id, actor="user_bob")
+    assert sup2._lifecycle.get(status.darwin_id).killed  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_pod_boots_supervisor_signed_genesis_and_cannot_sign(tmp_path):
+    """The pod used to mint its own genesis with a random key, so every pod
+    restart was a new organism. Now the supervisor signs the DNA; the pod
+    boots it from the ConfigMap as the same Darwin and holds no signing key."""
+    import base64
+
+    from darwin_dna.evolution import boot
+    from darwin_fakes.fake_platform import SigningService
+    from darwin_platform.k8s.manifests import (
+        PLATFORM_PUBLIC_KEY_SECRET_KEY,
+        build_configmap,
+    )
+    from darwin_platform.runtime import orchestrator as pod
+
+    driver = _FakeK8sDriver()
+    sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
+    status = await sup.spawn(opening_usdc=10.0)
+    spec = driver.started[0]
+    assert spec.darwin_id == status.darwin_id
+
+    # Materialise the ConfigMap the way the kubelet mounts it.
+    cm = build_configmap(
+        darwin_id=spec.darwin_id, namespace="ns",
+        manifest_json=spec.manifest_json, layer_blobs=spec.layer_blobs,
+        layer_names=spec.layer_names,
+    )
+    for k, v in cm["data"].items():
+        (tmp_path / k).write_text(v)
+    for k, v in cm["binaryData"].items():
+        (tmp_path / k).write_bytes(base64.b64decode(v))
+    manifest_json, blobs, names = pod._load_manifest_and_blobs(  # noqa: SLF001
+        tmp_path / "manifest.json", tmp_path, tmp_path / "layer_names.json",
+    )
+    pem = spec.secret_extras[PLATFORM_PUBLIC_KEY_SECRET_KEY].encode()
+
+    def _stack(key: bytes):
+        return pod._build_stack(  # noqa: SLF001
+            darwin_id=spec.darwin_id, opening_usdc=10.0, escalation_auto=None,
+            manifest_json=manifest_json, layer_blobs=blobs, layer_names=names,
+            clock=lambda: 0.0, platform_public_key_pem=key,
+        )
+
+    stack = _stack(pem)
+    assert boot(stack.platform(), sleep=lambda _: None).identity.darwin_id == status.darwin_id
+    with pytest.raises(PermissionError):
+        stack.signer.sign(b"child layer")
+    with pytest.raises(Exception):
+        boot(_stack(SigningService().public_key_pem()).platform(), sleep=lambda _: None)

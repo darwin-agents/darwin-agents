@@ -16,7 +16,6 @@ from darwin_platform.security.kyc import (
     KYCError,
     KYCService,
     KYCStatus,
-    KYCTier,
     KYCVerdict,
     StubKYCProvider,
 )

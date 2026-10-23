@@ -14,10 +14,11 @@ from pydantic import BaseModel, Field
 class SpawnRequest(BaseModel):
     opening_usdc: float = Field(default=100.0, gt=0)
     escalation_auto: str | None = Field(
-        default="approve",
-        description="Unattended owner-response policy for the fake inbox: "
-        "'approve' | 'deny' | null. None means a real owner (or test) must "
-        "respond via the respond_escalation endpoint.",
+        default=None,
+        description="Unattended owner-response policy: 'approve' | 'deny' | "
+        "null. Default null: the owner must respond via the "
+        "respond_escalation endpoint. 'approve' auto-approves every ticket "
+        "(spend, captcha, KYC) and is meant for unattended dev/sim runs.",
     )
     parent_id: str | None = None
     # Owner consent (doc 01 step 3 + doc 05). Captured + audit-recorded on
@@ -88,7 +89,8 @@ class KYCStartRequest(BaseModel):
 
 
 class KYCWebhookRequest(BaseModel):
-    subject: str = Field(min_length=1)
+    # Default: the caller. Only operators may name another subject.
+    subject: str | None = None
     inquiry_id: str = Field(min_length=1)
 
 
@@ -235,6 +237,13 @@ class HarvestRequest(BaseModel):
     destination: str = Field(min_length=1)
 
 
+class PayoutAddressRequest(BaseModel):
+    """Checksummed USDC address (e.g. an exchange deposit address) for this
+    Darwin's harvests and closing sweep."""
+
+    address: str = Field(min_length=42, max_length=42)
+
+
 class AmendmentRequest(BaseModel):
     """A platform amendment layer to ship via forced reproduction (doc 02).
 
@@ -247,3 +256,60 @@ class AmendmentRequest(BaseModel):
     amendment_blob_b64: str
     amendment_name: str = Field(min_length=1)
     kill_parent_reason: str = "amendment reproduction"
+
+
+# -- typed responses (so the dashboard's generated client knows the shapes) --
+class BillingInfrastructure(BaseModel):
+    gross_usdc: float
+    provider_cost_usdc: float
+    platform_revenue_usdc: float
+    events: int
+
+
+class BillingHarvests(BaseModel):
+    gross_usdc: float
+    net_usdc: float
+    fee_usdc: float
+    events: int
+    history_tail: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BillingSummary(BaseModel):
+    darwin_id: str
+    infrastructure: BillingInfrastructure
+    harvests: BillingHarvests
+    total_platform_revenue_usdc: float
+
+
+class LineageAncestor(BaseModel):
+    darwin_id: str
+    alive: bool
+
+
+class LineageNode(BaseModel):
+    darwin_id: str
+    budget_usdc: float
+    spawned_at: float
+    alive: bool
+    children: list["LineageNode"] = Field(default_factory=list)
+
+
+class LineageTree(BaseModel):
+    darwin_id: str
+    generation: int
+    ancestors: list[LineageAncestor]
+    descendants: list[LineageNode]
+
+
+class AlertRow(BaseModel):
+    darwin_id: str
+    kind: str
+    severity: str
+    suggested_level: int
+    detail: dict[str, Any] = Field(default_factory=dict)
+    ts: float
+
+
+class DarwinAlerts(BaseModel):
+    darwin_id: str
+    alerts: list[AlertRow]

@@ -36,10 +36,10 @@ keywords:
   - platform
   - control-plane
 
-home: https://github.com/quantium-rock/darwin-agent
+home: https://github.com/darwin-agents/darwin-agents
 
 sources:
-  - https://github.com/quantium-rock/darwin-agent
+  - https://github.com/darwin-agents/darwin-agents
 
 # The chart is intentionally not packaged with a dependencies block — the
 # supervisor is the only workload. Cluster-platform charts (Postgres,

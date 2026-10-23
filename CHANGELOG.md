@@ -7,8 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Darwins now run as Kubernetes pods end to end, and the money path is real on Base:
+
+- **Pod Darwins** — each pod gets a durable data volume and direct egress, holds a watch-only wallet and no signing keys, and is re-adopted (not respawned) when the supervisor restarts; the supervisor proxies pod reads and owner controls, and harvests, sweeps, and answers escalations on the pod's behalf.
+- **Money** — atomic USDC transfers through Coinbase CDP, gas topped up from a platform tank, metering fees accrued and settled, the wallet synced from on-chain transfer logs, and an x402 storefront where a Darwin sells paid reports to its own wallet.
+- **Production safety** — a production boot lists every missing requirement at once and refuses to serve without auth; KYC verdicts persist and are bound to their subject; harvests go only to a payout address past its cooldown.
+- **Durability** — bounded-memory audit-chain boot and Merkle anchoring, an O(1) treasury balance over a bounded ledger window, and a fix for audit records silently lost after a torn write.
+- **Dashboard** — operator console, money-rails and KYC cards, proposals, consent on spawn, funding and onboarding pages.
+- **Quality** — new e2e, infra, and performance test tiers (e2e gates every PR); a documentation hub, a configuration reference generated from the CLI, and the full API route table.
+
 ### Added
 
+- feat(web): show funding, onboarding, and draft legal pages
+- feat(platform): return wallet, profit, and payout on Darwin status
+- test(performance): bound control-plane API latency on a populated fleet
+- test(performance): bound manifest verify, kill-switch, and treasury cost
+- test(performance): bound audit-chain boot memory and tail reads
+- test: add a Base Sepolia walk of the paid-report money path
+- test(infra): check charts, compose, terraform, CI, and pod security
+- test(infra): collect deployment-asset checks under the infra marker
+- feat(platform): sell reports over x402 and gate production boot
+- test(e2e): run the live serve process outside integration
+- test(kyc): reject using another subject's approved inquiry
+- feat(platform): persist KYC verdicts and bind each inquiry to its subject
+- feat(platform): top up Darwin gas from a platform tank
+- feat(platform): harvest, sweep, and answer escalations for pod Darwins
+- test(platform): earn profit before the postgres harvest fee
+- feat(platform): keep ownership and pod identity across a restart
+- feat(infra): configure the per-Darwin data volume instead of LanceDB
+- feat(platform): keep signing keys off the orchestrator pods
+- feat(k8s): give each pod a durable data volume and direct egress
+- feat(platform): add a watch-only wallet and settle accrued fees
+- test(platform): earn profit before the persisted harvest fee
+- test(platform): expect metered spend and harvest fees to accrue
+- feat(platform): sync the wallet from USDC transfer logs
+- test(platform): charge harvest fees only on earned profit
+- test(dna): journal deposits, harvests, sweeps, and malformed rows
+- test(platform): expect bare serve to leave the wallet provider unset
+- test: cover RLS and leader election in the postgres job
 - feat(platform): forward platform money rails to k8s pod planner manifest
 - feat(platform): inject money manifest in k8s pods and tune audit boot
 - feat(web): add money rails card to operator console
@@ -37,11 +73,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- docs: renumber the evolution guide and document the test tiers
+- build(docker): install the image from the locked dependency set
+- docs(platform): describe the money capabilities route
 - refactor(platform): extract shared money_capabilities detection module
 - refactor(web): route harvest through api client with idempotency key
 
 ### Fixed
 
+- ci: run the e2e tier on every pull request
+- fix(platform): keep the audit chain intact after a torn write
+- fix(platform): buy Base USDC straight into the Darwin's wallet
+- fix(infra): publish OTLP only on the collector
+- fix(k8s): leave pods running when the supervisor shuts down
+- fix(k8s): send the in-cluster service-account token
+- fix(platform): default spawn escalations to an owner response
+- fix(platform): wait before booking an unhinted outbound transfer
+- fix(platform): send CDP transfers as atomic USDC on Base
+- fix(supabase): restore the applied waitlist migration
+- fix(platform): surface a crashed drive loop and restart it on resume
+- fix(dna): rebase profit against the balance each harvest left
+- fix(tools): auto-approve escalations in unattended drills
+- fix(dna): keep deposits and principal draws out of profit
+- fix(ci): match the rendered providers secret name
+- fix(ci): deploy image tags without the leading v
+- ci: refuse to publish an image when lint or test fails
+- fix(platform): cancel the stream drain task when the socket closes
+- fix(platform): leave escalations for the owner by default
+- fix(platform): default an unset wallet to FakeWallet
 - fix(dna): bound ledger window with O(1) treasury balance
 - fix(dna): stream audit chain boot and Merkle for bounded memory
 - fix(platform): degrade k8s status to cached snapshot on pod RPC failure
@@ -50,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix(web): extend CSP and auth chrome for Clerk production
 
 ## [0.0.6] - 2026-06-09
+
+Compliance and tenant isolation: KYC enforced on spawn and fiat paths with verified Persona/Onfido webhooks, per-Darwin LiteLLM virtual keys with spend reconciliation, Postgres row-level security, per-Darwin Vault scopes and organism databases, net-worth bankruptcy over marked holdings, soma activation with death-time forensics, the MoonPay hosted-widget flow, and CNPG point-in-time recovery, Vault auto-unseal, and Kata on Hetzner.
 
 ### Added
 
@@ -153,22 +214,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: note exchange-custody holdings in threat model
 - docs: add pre-mainnet operator gates and real-cloud IaC verify script
 - docs: align tech stack and deployment docs with as-built choices
-- docs(changelog): reorganize unreleased section newest-first
 - docs: document schema v12 RLS and sync unreleased changelog
-- docs: sync unreleased changelog for LiteLLM virtual keys
 - docs: align infra READMEs with shipped local and Hetzner terraform
-- docs: sync unreleased changelog for compliance, fleet, and treasury fixes
 - docs(engineering): sync runbook, config reference, and schema v11 contract
-- docs: sync unreleased changelog for browser, egress, and sandbox
-- docs: sync unreleased changelog for mainnet wallet safety
-- docs: sync unreleased changelog for k8s reconcile on restart
-- docs: sync unreleased changelog for Hetzner production stack
-- docs: sync unreleased changelog for make dev
-- docs: sync unreleased changelog for platform-stack and k8s fixes
 - refactor(terraform/local): compose kind stack via platform-stack
 - refactor(terraform): move ingress out of darwin-platform module
-- docs: sync unreleased changelog for docker web stack and CSP fix
-- docs: sync unreleased changelog for infra consolidation and k8s fixes
 - refactor(terraform): deploy darwin-platform supervisor via Helm chart
 - refactor(infra): consolidate deploy assets under infra/
 - docs(engineering): update backlog for k8s substrate forwarding and SQL splitter
@@ -198,10 +248,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.5] - 2026-05-31
 
+Local Kubernetes stack fixes: the supervisor runs in k8s driver mode on kind, with a pinned node image, a reliable kube-credential bootstrap, and a corrected LiteLLM mount.
+
 ### Changed
 
-- docs: sync unreleased changelog for recent infra and sim fixes
-- docs: sync unreleased changelog for kind bootstrap fix
 - docs(engineering): mark cloud-agnostic Terraform IaC as shipped in backlog
 
 ### Fixed
@@ -214,6 +264,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix(infra): bootstrap kind via CLI and extract kube credentials at apply
 
 ## [0.0.4] - 2026-05-30
+
+Infrastructure as code and the owner money console: Terraform modules for kind, CloudNativePG, Vault, LiteLLM, and the supervisor; the PWA escalation companion with Web Push; Stripe webhook deposits; owner pre-approvals, the freelancer registry, and fiat payouts; Clerk sign-in in the dashboard; and the `--network` mainnet safety switch.
 
 ### Added
 
@@ -258,12 +310,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- docs: sync unreleased changelog for Terraform infra modules
 - docs: update backlog and changelog for PWA mobile companion
 - build(web): add multi-stage Docker image with Next.js standalone output
 - docs(engineering): align mainnet cutover doc with --network flag and webhooks
 - docs(engineering): update backlog for M3 dashboard and Playwright E2E
-- docs: sync unreleased changelog with recent platform and web work
 - docs(config): reorganize env example with required and optional sections
 - refactor(dna): await async LLM calls in content and support neurons
 - refactor(dna): await async LLM calls in orchestrator plan and mutation nodes
@@ -290,6 +340,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix(platform): sweep dead Darwin USDC on-chain and add omnibus fund retry
 
 ## [0.0.3] - 2026-05-29
+
+The dashboard and real providers: the Next.js dashboard (fleet, anatomy, timeline, owner controls, vault, billing) over a WebSocket stream, plus Coinbase CDP wallets, Clerk JWT auth, Onfido KYC, Stripe and MoonPay ramps, Twilio SMS, LanceDB memory, and Browser Use Cloud.
 
 ### Added
 
@@ -357,6 +409,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix(changelog): scope release to commits since previous tag
 
 ## [0.0.2] - 2026-05-22
+
+Phase 1 and 2 services wired into `serve`: OTLP tracing, owner controls and quarantine, the soak and evolution harnesses, the content-safety gate, egress bandwidth quotas, daily Merkle anchoring, the drift detector, the namespace provisioner, and mainnet safety for the real wallet.
 
 ### Added
 
@@ -655,3 +709,11 @@ First public pre-release: Layer 0 genome (`darwin_dna`), platform control plane
 - chore: expand gitignore for Python, tooling, and local IDE state
 - chore: add .gitignore for Python build artifacts
 - chore: add Python project scaffolding for Layer 0
+
+[Unreleased]: https://github.com/darwin-agents/darwin-agents/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/darwin-agents/darwin-agents/compare/v0.0.5...v0.0.6
+[0.0.5]: https://github.com/darwin-agents/darwin-agents/compare/v0.0.4...v0.0.5
+[0.0.4]: https://github.com/darwin-agents/darwin-agents/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/darwin-agents/darwin-agents/compare/v0.0.2...v0.0.3
+[0.0.2]: https://github.com/darwin-agents/darwin-agents/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/darwin-agents/darwin-agents/releases/tag/v0.0.1

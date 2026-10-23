@@ -13,6 +13,7 @@ from collections import deque
 
 from darwin_dna.constitution import OwnerSoftCaps, PreApprovalRule
 from darwin_dna.hyperparameters import HARD_CAPS
+from darwin_dna.machinery.ledger import DEPOSIT_PREFIX
 
 
 class WalletError(Exception):
@@ -178,12 +179,18 @@ class FakeWallet:
         return {"tx_hash": f"0x{len(self.ledger):08x}", **tx}
 
     # -- revenue (the world pays the Darwin) -------------------------------
-    def credit(self, amount_usdc: float, source: str) -> None:
+    def credit(
+        self, amount_usdc: float, source: str, *, tx_hash: str | None = None,
+        payer: str | None = None,
+    ) -> None:
+        """Book an inbound transfer at once (no chain to wait for); the
+        tx/payer labels a real wallet needs are accepted and ignored."""
         amount = float(amount_usdc)
         if amount < 0:
             raise WalletError("negative credit")
         self._balance += amount
-        self._last_revenue_ts = float(self._clock())
+        if not source.startswith(DEPOSIT_PREFIX):  # a top-up is not revenue
+            self._last_revenue_ts = float(self._clock())
         self.ledger.append(
             {"credit": {"from": source, "amount_usdc": amount,
                         "ts": float(self._clock())}}

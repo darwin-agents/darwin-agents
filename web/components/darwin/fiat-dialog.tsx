@@ -27,6 +27,9 @@ interface FiatQuote {
   provider: string;
   ttl_seconds: number;
   quoted_at: number;
+  // Hosted on-ramp (MoonPay): the buyer completes payment there and the
+  // USDC is delivered straight to the Darwin's wallet.
+  widget_url?: string | null;
 }
 
 type Mode = "deposit" | "withdraw";
@@ -64,9 +67,9 @@ export function FiatDialog({ darwinId }: { darwinId: string | null }) {
         <DialogHeader>
           <DialogTitle>Fiat ramp</DialogTitle>
           <DialogDescription>
-            Provider is chosen at platform deploy time (<code>--fiat-provider</code>). The
-            dashboard surfaces the quote — actual settlement happens via the configured ramp
-            (Stripe or MoonPay).
+            Provider is chosen at platform deploy time (<code>--fiat-provider</code>). The dashboard
+            surfaces the quote — actual settlement happens via the configured ramp (Stripe or
+            MoonPay).
           </DialogDescription>
         </DialogHeader>
 
@@ -119,7 +122,7 @@ function ModeButton({
 
 function DepositPanel({ darwinId, onDone }: { darwinId: string | null; onDone: () => void }) {
   const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState("card");
+  const [method, setMethod] = useState("credit_debit_card");
   const [quote, setQuote] = useState<FiatQuote | null>(null);
 
   const fetchQuote = useMutation({
@@ -127,6 +130,7 @@ function DepositPanel({ darwinId, onDone }: { darwinId: string | null; onDone: (
       api.fiatDepositQuote({
         amount_usd: Number(amount),
         payment_method: method.trim(),
+        destination_darwin_id: darwinId,
       }) as Promise<unknown> as Promise<FiatQuote>,
     onSuccess: (q) => setQuote(q),
   });
@@ -235,13 +239,27 @@ function QuoteSummary({
           </>
         )}
       </div>
+      {quote.widget_url && (
+        <p className="text-[var(--color-muted-foreground)]">
+          Pay with {quote.provider}; the USDC goes straight to this Darwin&apos;s wallet and shows
+          up here once it confirms on-chain.
+        </p>
+      )}
       <DialogFooter>
         <Button variant="outline" disabled={confirming} onClick={onReset}>
           Edit
         </Button>
-        <Button disabled={confirming} onClick={onConfirm}>
-          {confirming ? "Confirming…" : "Confirm deposit"}
-        </Button>
+        {quote.widget_url ? (
+          <Button asChild>
+            <a href={quote.widget_url} target="_blank" rel="noopener noreferrer">
+              Continue to {quote.provider}
+            </a>
+          </Button>
+        ) : (
+          <Button disabled={confirming} onClick={onConfirm}>
+            {confirming ? "Confirming…" : "Confirm deposit"}
+          </Button>
+        )}
       </DialogFooter>
     </div>
   );
@@ -304,7 +322,7 @@ function WithdrawPanel({ onDone }: { onDone: () => void }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
+      <label className="mb-1 block text-xs tracking-wide text-[var(--color-muted-foreground)] uppercase">
         {label}
       </label>
       {children}
@@ -315,7 +333,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function ErrorPanel({ error }: { error: unknown }) {
   let msg = "Unknown error";
   if (error instanceof ApiError) {
-    msg = error.status === 409 ? "Quote expired or provider refused." : `${error.status} · ${error.code}`;
+    msg =
+      error.status === 409
+        ? "Quote expired or provider refused."
+        : `${error.status} · ${error.code}`;
   } else if (error instanceof Error) {
     msg = error.message;
   }

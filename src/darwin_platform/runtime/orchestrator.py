@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import hashlib
 import json
 import os
@@ -85,6 +84,7 @@ def _build_stack(
     layer_blobs: dict[str, bytes],
     layer_names: list[str],
     clock: Callable[[], float],
+    platform_public_key_pem: bytes | None = None,
 ):
     """Construct the FakeStack the runtime boots against. Real adapters
     can be swapped in via :func:`_apply_real_adapters` after construction,
@@ -102,12 +102,42 @@ def _build_stack(
     if manifest_json:
         from darwin_dna.manifest import Manifest
         stack.manifest = Manifest.model_validate_json(manifest_json)
-        stack.layer_blobs = layer_blobs
-        stack.layer_names = layer_names
+        # The ConfigMap carries blobs by name; the platform wants them by
+        # layer index (the manifest is the authority on both).
+        stack.layer_blobs = {e.index: layer_blobs[e.name] for e in stack.manifest.layers}
+        stack.layer_names = {e.index: e.name for e in stack.manifest.layers}
         # Force boot() to reconstruct identity from the manifest, not
         # the throwaway one FakeStack just minted.
         stack.identity = None
+        if platform_public_key_pem:
+            stack.signer = _VerifyOnlySigner(platform_public_key_pem)
     return stack
+
+
+class _VerifyOnlySigner:
+    """The platform's public key: boot verifies the DNA against it. Signing
+    is the supervisor's job, so a pod (running LLM-driven code) cannot."""
+
+    def __init__(self, pem: bytes) -> None:
+        self._pem = pem
+
+    def public_key_pem(self) -> bytes:
+        return self._pem
+
+    def sign(self, message: bytes) -> bytes:
+        raise PermissionError("pods cannot sign; the platform signs DNA")
+
+
+def _pod_args(substrate_path: Path) -> argparse.Namespace:
+    """A full ``serve`` namespace (every flag at its default) overlaid with
+    the supervisor-forwarded substrate settings, so the pod's factories see
+    the same option surface as the supervisor's — no missing attributes."""
+    from .. import __main__ as cli_main
+
+    ns = cli_main.build_parser().parse_args(["serve"])
+    if substrate_path.exists():
+        vars(ns).update(json.loads(substrate_path.read_text()))
+    return ns
 
 
 def _apply_real_adapters(
@@ -124,36 +154,11 @@ def _apply_real_adapters(
     fiat / sanctions / KYC / omnibus are platform-mediated (enforced in the
     supervisor pod, never run here), so they report ``none`` from the pod's
     own vantage."""
-    # We intentionally avoid importing __main__ to keep startup light;
-    # the env var fallback set is the same. (Note: __main__ lives at the
-    # darwin_platform package root, not under runtime/ — relative import
-    # needs to go one level up.)
+    # ``args`` is a full ``serve`` namespace (see _pod_args), so the pod builds
+    # its substrate exactly as the supervisor would in-process. (__main__
+    # lives at the darwin_platform package root — one level up.)
     from .. import __main__ as cli_main
-    fake_args = argparse.Namespace(
-        # wallet — provider + per-chain config (forwarded from the
-        # supervisor's --wallet-provider choice when it launched this pod).
-        wallet_provider=args.wallet_provider,
-        cdp_api_key_id=getattr(args, "cdp_api_key_id", None),
-        cdp_api_key_secret=getattr(args, "cdp_api_key_secret", None),
-        cdp_wallet_secret=getattr(args, "cdp_wallet_secret", None),
-        cdp_mainnet=getattr(args, "cdp_mainnet", False),
-        rpc_url=args.rpc_url, wallet_key=args.wallet_key,
-        usdc_contract=args.usdc_contract,
-        chain_networks=args.chain_networks,
-        solana_rpc_url=args.solana_rpc_url,
-        solana_wallet_key=args.solana_wallet_key,
-        stellar_horizon_url=args.stellar_horizon_url,
-        stellar_secret=args.stellar_secret,
-        # vault
-        vault_url=args.vault_url, vault_token=args.vault_token,
-        vault_mount=args.vault_mount,
-        # browser
-        browserbase_url=args.browserbase_url,
-        browserbase_api_key=args.browserbase_api_key,
-        # sandbox
-        e2b_api_key=args.e2b_api_key,
-    )
-    factories = cli_main._build_real_factories(fake_args)  # noqa: SLF001
+    factories = cli_main._build_real_factories(args)  # noqa: SLF001
     # Vault first: a local-vault wallet provider needs the real per-Darwin
     # vault to seal/retrieve its keypair before the wallet is constructed.
     if "vault_factory" in factories:
@@ -215,12 +220,8 @@ def _apply_real_adapters(
         c.strip() for c in (args.chain_networks or "base").split(",") if c.strip()
     ]
     return assemble_money_capabilities(
-        network=(
-            "base-mainnet"
-            if getattr(args, "cdp_mainnet", False)
-            else "base-sepolia"
-        ),
-        wallet_provider=args.wallet_provider,
+        network="base-mainnet" if cli_main._is_mainnet(args) else "base-sepolia",  # noqa: SLF001
+        wallet_provider=args.wallet_provider or "none",
         wallet_live="wallet_factory" in factories,
         chains=chains,
         fiat=fiat,
@@ -324,13 +325,19 @@ class OrchestratorState:
         # runs here, so the pod owns this state; the supervisor sets it via
         # the control API and the drive loop mirrors it into runtime.state
         # every heartbeat (same contract as the in-process Supervisor._drive).
-        self.reproduction_blocked = False
+        # Reproduction is off in pods: a child needs a supervisor-signed
+        # genesis and a funded pod of its own (not built yet), and a pod's
+        # signer cannot sign. ponytail: lift once pod-to-supervisor spawn lands.
+        self.reproduction_blocked = True
         self.disabled_neurons: set[str] = set()
         self.disabled_categories: set[str] = set()
         # Death-time code fingerprint (doc 05), captured once when the genome
         # dies. The supervisor pulls it via GET /forensics before reaping the
         # pod and persists it to its own forensics store.
         self._death_forensics: dict[str, Any] | None = None
+        # "<ExcType>: <msg>" once the drive loop crashed; cleared by resume().
+        self.crashed: str | None = None
+        self.orders = None  # OrderBook when the storefront is on
 
     def start(self) -> None:
         if self._task is not None:
@@ -391,6 +398,12 @@ class OrchestratorState:
                     self.stack.kill.flip("orchestrator cancelled")
                 except Exception:
                     pass
+            raise
+        except Exception as exc:
+            # The loop is dead: no ticks, no spend. Surface it through the
+            # snapshot (the supervisor alerts on it) rather than freezing
+            # silently while reporting alive; resume() restarts the loop.
+            self.crashed = f"{type(exc).__name__}: {exc}"
             raise
 
     def _maybe_hot_reload_soma(self) -> None:
@@ -454,7 +467,46 @@ class OrchestratorState:
             "death_reason": st.death_reason,
             "llm_spend_usdc": float(llm_spend),
             "merkle_root": merkle_root,
+            "crashed": self.crashed,
+            # What the supervisor needs to sign for this Darwin: whose address,
+            # what's accrued, and how much is profit (harvest fee base).
+            "wallet": {
+                "address": getattr(self.stack.wallet, "address", lambda: None)(),
+                "unsettled_usdc": getattr(self.stack.wallet, "unsettled_usdc", 0.0),
+                "stale": bool(getattr(self.stack.wallet, "stale", False)),
+            },
+            "profit_baseline_usdc": float(st.profit_baseline_usdc),
+            "starting_capital_usdc": float(st.starting_capital_usdc),
         }
+
+    # -- platform-signed money (the pod's wallet is watch-only) -----------
+    def escalations_since(self, since: int) -> dict[str, Any]:
+        """Tickets the genome posted since cursor ``since`` (a cursor past the
+        end means the pod restarted; the supervisor resets to 0)."""
+        tickets = self.stack.escalation.tickets
+        return {"tickets": tickets[max(0, since):], "next": len(tickets)}
+
+    def respond_escalation(self, ticket: str, decision: str, data: dict) -> None:
+        self.stack.escalation.respond(ticket, decision, data)
+
+    def wallet_expect(self, tx_hash: str, movement: dict) -> None:
+        expect = getattr(self.stack.wallet, "expect", None)
+        if not callable(expect):
+            raise ValueError("this wallet does not track on-chain movements")
+        expect(tx_hash, movement)
+
+    def wallet_harvest(
+        self, *, tx_hash: str, destination: str, net_usdc: float, fee_usdc: float,
+    ) -> None:
+        """The supervisor sent ``net_usdc`` to the owner in ``tx_hash``;
+        book it when it confirms, and accrue the fee for settlement."""
+        if net_usdc > 0:
+            self.wallet_expect(tx_hash, {"harvest": {
+                "destination": destination, "amount_usdc": float(net_usdc),
+                "kind": "owner_net", "ts": float(self._clock()),
+            }})
+        if fee_usdc > 0:
+            self.stack.wallet.accrue_harvest_fee(float(fee_usdc))
 
     def forensics(self) -> dict[str, Any]:
         """The pod's death-time code fingerprint — the k8s analog of the
@@ -700,7 +752,9 @@ class OrchestratorState:
         )
 
     def set_reproduction_block(self, blocked: bool) -> dict[str, Any]:
-        self.reproduction_blocked = bool(blocked)
+        if not blocked:
+            raise ValueError("reproduction is not available for pod-hosted Darwins yet")
+        self.reproduction_blocked = True
         return {"reproduction_blocked": self.reproduction_blocked}
 
     def set_disabled_neurons(self, neurons: list[str]) -> dict[str, Any]:
@@ -893,6 +947,11 @@ class OrchestratorState:
 
     def resume(self) -> None:
         self.stack.pause.resume()
+        if self.crashed and self._task is not None and self._task.done():
+            self.crashed = None
+            self._task = asyncio.create_task(
+                self._drive(), name=f"darwin:{self.darwin_id}"
+            )
 
     def kill(self, reason: str) -> None:
         self._kill_requested = True
@@ -924,7 +983,21 @@ def _build_control_app(state: OrchestratorState, token: str):
             "darwin_platform.orchestrator needs the [platform] extra"
         ) from exc
 
-    app = FastAPI(title=f"darwin-orchestrator:{state.darwin_id}")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan(_app):
+        # Start the drive loop once uvicorn's event loop is up; stop it on
+        # shutdown.
+        state.start()
+        try:
+            yield
+        finally:
+            await state.stop()
+
+    app = FastAPI(
+        title=f"darwin-orchestrator:{state.darwin_id}", lifespan=_lifespan,
+    )
 
     def _require_token(authorization: str | None = Header(default=None)) -> None:
         # Defense in depth — even with NetworkPolicy locking ingress to
@@ -1161,6 +1234,89 @@ def _build_control_app(state: OrchestratorState, token: str):
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
+    @app.get("/escalations")
+    async def escalations(since: int = 0, _: None = Depends(_require_token)) -> dict:
+        return state.escalations_since(since)
+
+    @app.post("/escalations/respond")
+    async def escalations_respond(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        if body.get("decision") not in ("approve", "deny", "data") or not body.get("ticket"):
+            raise HTTPException(status_code=400, detail="ticket and decision are required")
+        state.respond_escalation(
+            str(body["ticket"]), str(body["decision"]), dict(body.get("data") or {}),
+        )
+        return {"responded": True}
+
+    @app.post("/wallet/expect")
+    async def wallet_expect(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            state.wallet_expect(str(body["tx_hash"]), dict(body["movement"]))
+        except (KeyError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"bad movement: {exc}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"expected": True}
+
+    @app.post("/orders")
+    async def orders_add(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        from ..payments.orders import OrderBookFull
+
+        if state.orders is None:
+            raise HTTPException(status_code=409, detail="this Darwin sells nothing")
+        try:
+            state.orders.add(str(body["order_id"]), str(body["topic"]))
+        except OrderBookFull as exc:
+            return {"accepted": False, "reason": str(exc)}
+        return {"accepted": True}
+
+    @app.get("/orders/{order_id}")
+    async def orders_get(order_id: str, _: None = Depends(_require_token)) -> dict:
+        return {"order": state.orders.get(order_id) if state.orders else None}
+
+    @app.post("/orders/{order_id}/forget")
+    async def orders_forget(order_id: str, _: None = Depends(_require_token)) -> dict:
+        if state.orders is not None:
+            state.orders.forget(order_id)
+        return {"forgotten": True}
+
+    @app.post("/wallet/revenue")
+    async def wallet_revenue(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        from ..payments.orders import record_sale
+
+        record_sale(
+            state.stack.wallet, phase=str(body["phase"]),
+            amount_usdc=float(body["amount_usdc"]), source=str(body["source"]),
+            payer=str(body["payer"]),
+        )
+        return {"recorded": True}
+
+    @app.post("/wallet/harvest")
+    async def wallet_harvest(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            state.wallet_harvest(
+                tx_hash=str(body.get("tx_hash") or ""),
+                destination=str(body["destination"]),
+                net_usdc=float(body["net_usdc"]), fee_usdc=float(body["fee_usdc"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"booked": True}
+
     @app.post("/pause")
     async def pause(
         body: dict = Body(default_factory=dict),
@@ -1183,29 +1339,11 @@ def _build_control_app(state: OrchestratorState, token: str):
         return {"killed": True}
 
     @app.post("/force-reproduce")
-    async def force_reproduce(
-        body: dict = Body(default_factory=dict),
-        _: None = Depends(_require_token),
-    ) -> dict:
-        amendment_blob = None
-        encoded = body.get("amendment_blob_b64")
-        if encoded:
-            try:
-                amendment_blob = base64.b64decode(encoded)
-            except Exception:
-                raise HTTPException(
-                    status_code=400, detail="amendment_blob_b64 is not base64",
-                )
-        state.force_reproduce(
-            amendment_blob=amendment_blob,
-            amendment_name=body.get("amendment_name"),
-            kill_parent_reason=body.get("kill_parent_reason"),
+    async def force_reproduce(_: None = Depends(_require_token)) -> dict:
+        raise HTTPException(
+            status_code=409,
+            detail="reproduction is not available for pod-hosted Darwins yet",
         )
-        return {"requested": True}
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await state.stop()
 
     return app
 
@@ -1235,7 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--opening-usdc", default=100.0, type=float)
     p.add_argument(
-        "--escalation-auto", default="approve",
+        "--escalation-auto", default="none",
         choices=["approve", "deny", "none"],
         help="Unattended owner-response policy (use 'none' to disable).",
     )
@@ -1272,39 +1410,26 @@ def build_parser() -> argparse.ArgumentParser:
             "legacy in-memory sink (bounded sims/tests only)."
         ),
     )
-    p.add_argument("--heartbeat-seconds", default=0.005, type=float)
+    p.add_argument(
+        "--checkpoint-path", default="/data/checkpoint.json", type=Path,
+        help="Durable genome checkpoint (on the pod's PVC). 'none' keeps it "
+             "in memory (tests).",
+    )
+    p.add_argument("--heartbeat-seconds", default=5.0, type=float)
     p.add_argument("--host", default="0.0.0.0",
                    help="Bind address for the control API.")
     p.add_argument("--log-level", default="info")
-    # Real-adapter flags (mirror of __main__.py). Kept here so the
-    # orchestrator can talk to real LiteLLM/Vault/Browserbase/E2B without
-    # routing through the supervisor.
-    p.add_argument("--rpc-url", default=None)
-    p.add_argument("--wallet-key", default=None)
-    p.add_argument("--usdc-contract", default=None)
-    p.add_argument("--chain-networks", default="base")
-    p.add_argument("--solana-rpc-url", default=None)
-    p.add_argument("--solana-wallet-key", default=None)
-    p.add_argument("--stellar-horizon-url", default=None)
-    p.add_argument("--stellar-secret", default=None)
-    # Wallet provider — supervisor forwards its --wallet-provider choice
-    # when launching this pod so each Darwin uses the platform-selected
-    # backend (cdp / local-vault / web3). Default matches the supervisor
-    # CLI's default.
     p.add_argument(
-        "--wallet-provider", default="cdp",
-        choices=["web3", "cdp", "local-vault"],
+        "--platform-key-path",
+        default="/run/secrets/darwin-control/platform_public_key.pem", type=Path,
+        help="Platform signing public key (PEM) to verify the DNA against.",
     )
-    p.add_argument("--cdp-api-key-id", default=None)
-    p.add_argument("--cdp-api-key-secret", default=None)
-    p.add_argument("--cdp-wallet-secret", default=None)
-    p.add_argument("--cdp-mainnet", action="store_true")
-    p.add_argument("--vault-url", default=None)
-    p.add_argument("--vault-token", default=None)
-    p.add_argument("--vault-mount", default="secret")
-    p.add_argument("--browserbase-url", default=None)
-    p.add_argument("--browserbase-api-key", default=None)
-    p.add_argument("--e2b-api-key", default=None)
+    p.add_argument(
+        "--substrate-path",
+        default="/run/secrets/darwin-control/substrate.json", type=Path,
+        help="Supervisor-forwarded substrate settings (JSON from the control "
+             "Secret): LLM, browser, sandbox, watch wallet.",
+    )
     return p
 
 
@@ -1345,9 +1470,14 @@ def main(argv: list[str] | None = None) -> int:
         layer_blobs=layer_blobs,
         layer_names=layer_names,
         clock=clock,
+        platform_public_key_pem=(
+            args.platform_key_path.read_bytes()
+            if args.platform_key_path.exists() else None
+        ),
     )
+    pod_args = _pod_args(args.substrate_path)
     money_capabilities = _apply_real_adapters(
-        stack, args, clock, darwin_id=args.darwin_id,
+        stack, pod_args, clock, darwin_id=args.darwin_id,
     )
 
     # Durable disk-backed audit sink (the prod ``AuditSink`` is "an append-only
@@ -1372,11 +1502,27 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # Durable node-boundary checkpoint on the pod's PVC: a restarted pod
+    # resumes the same life (tick, profit baseline, open escalations).
+    if str(args.checkpoint_path).lower() != "none":
+        from .audit_sink import FileCheckpointStore
+
+        stack.checkpoint = FileCheckpointStore(args.checkpoint_path)
+
     from darwin_dna.evolution import boot
     pod_platform = stack.platform()
     # Money-rails manifest so this pod's planner reasons over the rails it
     # actually has (wallet + x402), mirroring the in-process supervisor path.
     pod_platform.money_capabilities = money_capabilities
+    # x402 storefront: this Darwin's business is the paid reports it's sold.
+    orders = None
+    if getattr(pod_args, "store_price_usdc", None):
+        from darwin_dna.strategies import PaidReportStrategy
+
+        from ..payments.orders import OrderBook
+
+        orders = pod_platform.orders = OrderBook()
+        pod_platform.strategy = PaidReportStrategy()
     # Soma activation (doc 33): inject this Darwin's evolved soma strategy on
     # the platform BEFORE boot binds it, so a restarted/respawned pod RUNS its
     # promoted self-modifications (the soma tree is PVC-persisted). No-op +
@@ -1400,13 +1546,8 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_seconds=args.heartbeat_seconds,
         soma_merger=soma_merger,
     )
+    state.orders = orders
     app = _build_control_app(state, token)
-
-    # Start the drive loop AFTER uvicorn brings the event loop up. The
-    # FastAPI lifespan "startup" hook is the right place.
-    @app.on_event("startup")
-    async def _startup() -> None:
-        state.start()
 
     uvicorn.run(
         app, host=args.host, port=args.control_port, log_level=args.log_level,

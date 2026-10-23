@@ -135,6 +135,7 @@ def build_app(
     allow_manual_credit: bool = False,
     require_spawn_consent: bool = False,
     enable_docs: bool | None = None,
+    require_auth: bool = False,
 ) -> FastAPI:
     """Build a FastAPI app bound to ``supervisor`` (or a fresh one).
 
@@ -152,7 +153,13 @@ def build_app(
 
     Tests use this directly with an ASGI client; the module-level ``app``
     below is the default singleton for the standard uvicorn entry point.
+
+    ``require_auth`` (production) refuses to build without a token store —
+    a second guard behind the CLI's, since no store means every caller is a
+    platform operator.
     """
+    if require_auth and token_store is None:
+        raise RuntimeError("refusing to serve without auth: no token store configured")
     sup = supervisor or Supervisor()
     app_started_ts = time.time()
 

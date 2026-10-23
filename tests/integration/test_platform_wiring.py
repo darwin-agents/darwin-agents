@@ -457,7 +457,7 @@ async def test_maintenance_omnibus_reconciliation_audited():
         maintenance_interval_seconds=0.05,
         omnibus_wallet=OmnibusWallet(_Chain(balance=0.0)),
     )
-    status = await sup.spawn(opening_usdc=100.0, actor="test")
+    await sup.spawn(opening_usdc=100.0, actor="test")
     try:
         await asyncio.sleep(0.4)
         # reconcile_omnibus runs in fleet maintenance; the books start

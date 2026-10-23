@@ -153,13 +153,14 @@ docker-ps: ## Show Compose service status
 # --- Tests (pytest) -------------------------------------------------------------
 
 .PHONY: test test-fast test-all test-unit test-property test-redteam \
-        test-integration test-simulation test-slow test-postgres
+        test-integration test-simulation test-e2e test-infra test-perf \
+        test-slow test-postgres
 test: test-fast ## Alias for fast test tier
 
-test-fast: install-all ## Fast tier: unit + property + redteam + integration (~90s)
+test-fast: install-all ## Fast tier: unit + property + redteam + integration + infra (~3 min)
 	$(UV) run pytest -m "not slow" --maxfail=3
 
-test-all: install-all ## Full suite including simulation tier (~3–5 min)
+test-all: install-all ## Full suite incl. simulation, e2e, and performance tiers
 	$(UV) run pytest
 
 test-unit: install-all ## Unit tier only
@@ -174,15 +175,26 @@ test-redteam: install-all ## Red-team adversarial tier only
 test-integration: install-all ## Integration tier only
 	$(UV) run pytest tests/integration
 
-test-simulation: install-all ## Simulation path (same as test-slow)
+test-simulation: install-all ## Simulation tier only (multi-day in-process sims)
 	$(UV) run pytest tests/simulation
 
-test-slow: install-all ## Simulation marker only (CI slow workflow)
+test-e2e: install-all ## E2E tier: the real `darwin-platform serve` process over HTTP
+	$(UV) run pytest tests/e2e -v
+
+test-infra: install-all ## Infra tier: Docker/Compose/Helm/Terraform/CI/config contracts
+	$(UV) run pytest tests/infra -v -rs
+
+test-perf: install-all ## Performance tier: latency/throughput/memory budgets (DARWIN_PERF_SCALE=N)
+	$(UV) run pytest tests/performance -v
+
+test-slow: install-all ## Everything marked slow: simulation + e2e + performance (CI slow workflow)
 	$(UV) run pytest -m slow -v
 
-test-postgres: install-all ## Postgres persistence tests (needs Postgres on :5432)
+test-postgres: install-all ## Postgres persistence + RLS + leader-election tests (needs Postgres on :5432)
 	DARWIN_POSTGRES_TEST_DSN="$(POSTGRES_DSN)" \
-		$(UV) run pytest tests/unit/darwin_platform/runtime/test_persistence_postgres.py -v
+		$(UV) run pytest -v tests/unit/darwin_platform/runtime/test_persistence_postgres.py \
+		tests/unit/darwin_platform/runtime/test_persistence_rls.py \
+		tests/unit/darwin_platform/runtime/test_leadership.py
 
 # --- Lint / format ------------------------------------------------------------
 
@@ -213,6 +225,10 @@ soak: install-serve ## Phase 0 soak driver (platform must be running separately)
 	$(UV) run python -m tools.soak.run_soak $(ARGS)
 
 # --- Changelog (git-cliff + scripts/changelog.py) ------------------------------
+
+.PHONY: docs-config
+docs-config: ## Regenerate doc 27's `serve` flag tables from the CLI
+	$(UV) run python scripts/gen_config_reference.py
 
 .PHONY: changelog changelog-sync changelog-preview release
 changelog: changelog-sync ## Alias: rewrite [Unreleased] from commits since last tag

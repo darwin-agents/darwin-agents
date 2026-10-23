@@ -128,7 +128,11 @@ def run_soak(config: SoakConfig) -> SoakReport:
     _log(f"endpoint healthy: {config.url} ({health.json()})")
 
     # -- spawn ---------------------------------------------------------
-    r = client.post("/darwins", json={"opening_usdc": config.opening_usdc})
+    # Unattended run: nobody answers escalations, so auto-approve explicitly.
+    r = client.post(
+        "/darwins",
+        json={"opening_usdc": config.opening_usdc, "escalation_auto": "approve"},
+    )
     r.raise_for_status()
     spawned = r.json()
     darwin_id = spawned["darwin_id"]

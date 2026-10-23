@@ -63,7 +63,7 @@ Darwin has two levels: the **platform** (one instance, multi-tenant SaaS) and th
                                   ┌────────────────────────┐
                                   │  External world        │
                                   │  - LLM / image / video │ ← via platform LiteLLM gateway (model-agnostic)
-                                  │  - Payment rails       │ ← USDC/x402 + Stripe Privy
+                                  │  - Payment rails       │ ← USDC/x402 (Coinbase CDP) + MoonPay/Stripe ramps
                                   │  - Web (browsers)      │ ← via Browser-Use on Browserbase
                                   │  - APIs (ads, blogs)   │ ← via per-neuron integrations
                                   └────────────────────────┘
@@ -92,7 +92,7 @@ The remaining files drill into each box of the diagram:
 - [`02-dna-core.md`](02-dna-core.md) — what's in the DNA, how it's loaded and verified, what the layer structure looks like
 - [`03-soma-and-orchestrator.md`](03-soma-and-orchestrator.md) — the mutable agent code, the LangGraph orchestrator, the self-modification loop
 - [`04-neurons.md`](04-neurons.md) — the neuron contract, the catalog of initial neurons, how new ones are added
-- [`05-treasury-and-payments.md`](05-treasury-and-payments.md) — wallets, x402, AgentCore Payments, spend policy, ledger
+- [`05-treasury-and-payments.md`](05-treasury-and-payments.md) — wallets, x402, fiat ramps, spend policy, ledger (AgentCore Payments is descoped; see doc 17)
 - [`06-evolution-and-reproduction.md`](06-evolution-and-reproduction.md) — fitness, mutation, selection, the reproduction event
 - [`07-isolation-and-multi-tenancy.md`](07-isolation-and-multi-tenancy.md) — sandboxing, networking, vault, per-tenant data isolation
 - [`08-platform-control-plane.md`](08-platform-control-plane.md) — the SaaS side: supervisor, billing, dashboards, escalation routing

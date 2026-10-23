@@ -211,6 +211,13 @@ class WebPushNotificationSink:
         store so a stale subscription gets deleted from disk too."""
         self._purge = callback
 
+    def set_owner_resolver(
+        self, resolver: Callable[[str], str | None] | None,
+    ) -> None:
+        """Install ``darwin_id → owner_subject`` (the supervisor's
+        ``owner_of``). Without it no ticket reaches any device."""
+        self._resolver = resolver
+
     def subscriptions_for(self, owner_subject: str) -> list[PushSubscription]:
         ownset = self._owners.get(owner_subject)
         if ownset is None:

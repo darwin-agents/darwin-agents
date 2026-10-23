@@ -197,3 +197,26 @@ def test_coerce_keeps_distinct_darwins_distinct():
 ])
 def test_coerce_always_yields_a_cdp_valid_name(name):
     assert _CDP_NAME_RE.match(_coerce_cdp_account_name(name))
+
+
+def test_real_account_sends_atomic_units_on_sdk_network_name():
+    """cdp-sdk v1 ``transfer`` takes int atomic units, and calls Base
+    mainnet ``"base"`` (``"base-mainnet"`` resolves USDC to nothing)."""
+    from darwin_platform.adapters.coinbase_cdp import _AsyncBridge, _RealCdpAccount
+
+    calls: list[dict] = []
+
+    class _Acct:
+        address = "0x" + "a" * 40
+
+        async def transfer(self, **kw):
+            calls.append(kw)
+            return "0xhash"
+
+    real = _RealCdpAccount(
+        client=None, account=_Acct(), network="base", bridge=_AsyncBridge(),
+    )
+    assert real.transfer_usdc(to="0x" + "b" * 40, amount_usdc=1.25, memo="m") == "0xhash"
+    assert calls == [{"to": "0x" + "b" * 40, "amount": 1_250_000,
+                      "token": "usdc", "network": "base"}]
+    assert isinstance(calls[0]["amount"], int)

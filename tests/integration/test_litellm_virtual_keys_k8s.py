@@ -137,7 +137,9 @@ async def test_spawn_k8s_without_minter_injects_no_key():
     sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
     try:
         await sup.spawn(opening_usdc=100.0)
-        assert driver.started[0].secret_extras == {}
+        from darwin_platform.k8s.manifests import LITELLM_VIRTUAL_KEY_SECRET_KEY
+
+        assert LITELLM_VIRTUAL_KEY_SECRET_KEY not in driver.started[0].secret_extras
     finally:
         await sup.shutdown()
 

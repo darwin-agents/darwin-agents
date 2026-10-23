@@ -125,7 +125,8 @@ jobs:
             --set 'providers.fiat.stripeApiKey=sk_test' \
             > /tmp/providers.yaml
           # A providers Secret is rendered.
-          grep -q "darwin-providers" /tmp/providers.yaml \
+          # fullname = <release>-<chart> = darwin-darwin-platform
+          grep -q "name: darwin-darwin-platform-providers$" /tmp/providers.yaml \
             || { echo "providers Secret missing"; exit 1; }
           # Env vars wired on the Deployment.
           for env in DARWIN_SANCTIONS_API_KEY DARWIN_SLACK_WEBHOOK_URL \

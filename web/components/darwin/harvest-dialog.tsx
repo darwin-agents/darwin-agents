@@ -29,12 +29,14 @@ export function HarvestDialog({ darwinId }: { darwinId: string }) {
   const [destination, setDestination] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
 
-  const { data: billing } = useQuery({
-    queryKey: queryKeys.billing(darwinId),
-    queryFn: () => api.billing(darwinId),
+  const { data: status } = useQuery({
+    queryKey: queryKeys.darwin(darwinId),
+    queryFn: () => api.getDarwin(darwinId),
     enabled: open,
   });
-  const balance = billing?.balance_usdc;
+  const balance = status?.balance_usdc;
+  const profit = status?.profit_usdc;
+  const payout = status?.payout_address ?? "";
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -54,8 +56,7 @@ export function HarvestDialog({ darwinId }: { darwinId: string }) {
   });
 
   const amt = Number(amount);
-  const amountValid =
-    Number.isFinite(amt) && amt > 0 && (balance === undefined || amt <= balance);
+  const amountValid = Number.isFinite(amt) && amt > 0 && (balance === undefined || amt <= balance);
   const destValid = destination.trim().length > 0;
 
   return (
@@ -64,7 +65,10 @@ export function HarvestDialog({ darwinId }: { darwinId: string }) {
       onOpenChange={(o) => {
         if (mutation.isPending) return;
         setOpen(o);
-        if (o) setIdempotencyKey(crypto.randomUUID());
+        if (o) {
+          setIdempotencyKey(crypto.randomUUID());
+          if (!destination && payout) setDestination(payout);
+        }
       }}
     >
       <DialogTrigger asChild>
@@ -87,6 +91,10 @@ export function HarvestDialog({ darwinId }: { darwinId: string }) {
             <span className="text-[var(--color-muted-foreground)]">Available</span>
             <span className="mono">{formatUsdc(balance)}</span>
           </div>
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            Profit now {formatUsdc(profit)}. The platform fee applies only to the profit part of a
+            harvest; withdrawing your deposit is free.
+          </p>
           <Field
             label="Amount (USDC)"
             input={
@@ -137,18 +145,10 @@ export function HarvestDialog({ darwinId }: { darwinId: string }) {
   );
 }
 
-function Field({
-  label,
-  input,
-  hint,
-}: {
-  label: string;
-  input: React.ReactNode;
-  hint?: string;
-}) {
+function Field({ label, input, hint }: { label: string; input: React.ReactNode; hint?: string }) {
   return (
     <div>
-      <label className="mb-1 block text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
+      <label className="mb-1 block text-xs tracking-wide text-[var(--color-muted-foreground)] uppercase">
         {label}
       </label>
       {input}

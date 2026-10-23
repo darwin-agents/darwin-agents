@@ -2,7 +2,7 @@
 
 The technical design of the core Darwin agent and the platform that hosts it. Read [`../overview/`](../overview/) first for the idea and the rationale; this folder is the *how*.
 
-The docs are numbered and meant to be read roughly in order, but each stands alone.
+The docs are numbered and meant to be read roughly in order, but each stands alone. Design docs (01–17) record the design and its rationale, with **As built** notes where the implementation diverged; build plans (18, 20–22) are historical plans with status banners; the reference docs (23–30) describe the system as it runs today. The hub for every docs folder is [`../README.md`](../README.md).
 
 ## Architecture (the organism + the platform)
 
@@ -41,19 +41,27 @@ The docs are numbered and meant to be read roughly in order, but each stands alo
 - [`23-data-model-reference.md`](23-data-model-reference.md) — canonical Postgres schemas, state machine, checkpoint format, audit shape, migration strategy
 - [`24-security-threat-model.md`](24-security-threat-model.md) — attack surfaces, adversarial soma contract, red-team checklist, kill-switch timing proof
 - [`25-operational-runbook.md`](25-operational-runbook.md) — deployment, monitoring, failure modes, recovery, soak test operations
-- [`26-testing-strategy.md`](26-testing-strategy.md) — test tiers, adversarial posture, red-team mapping, CI split (fast vs slow)
-- [`27-configuration-reference.md`](27-configuration-reference.md) — CLI flags, env vars, Helm values, and driver-mode knobs in one table
+- [`26-testing-strategy.md`](26-testing-strategy.md) — the eight test tiers (unit → simulation, incl. infra, e2e, performance), adversarial posture, red-team mapping, CI map
+- [`27-configuration-reference.md`](27-configuration-reference.md) — every CLI flag (generated from the CLI), env var, Helm value, and genome constant
 - [`28-cross-cutting-contracts.md`](28-cross-cutting-contracts.md) — error handling philosophy, retry/halt/escalate rules, timeouts, idempotency
-- [`29-incident-postmortem-template.md`](29-incident-postmortem-template.md) — structured format for documenting and learning from failures
-- [`30-evolution-tuning-guide.md`](30-evolution-tuning-guide.md) — reading the archive, fitness trajectories, hyperparameter calibration, reproduction diagnostics
+- [`29-incident-postmortem-template.md`](29-incident-postmortem-template.md) — structured format for documenting and learning from failures; filled-in incidents live in [`../postmortems/`](../postmortems/)
+- [`30-mainnet-cutover.md`](30-mainnet-cutover.md) — testnet → real-money checklist: the `--network` switch, hard gates, credentials, go-live status
+- [`31-browser-use-evaluation.md`](31-browser-use-evaluation.md) — research note re-evaluating Browser Use Cloud against the Browser-Use-on-Browserbase split (doc 15)
+- [`32-pre-mainnet-gates.md`](32-pre-mainnet-gates.md) — the operator gates that must be *run* before real money moves: soaks, drills, real-cloud IaC verification, external reviews
+- [`33-soma-activation-design.md`](33-soma-activation-design.md) — how promoted self-modifications actually load and run (`SomaLoader`, overlay, hot-swap)
+- [`34-evolution-tuning-guide.md`](34-evolution-tuning-guide.md) — reading the archive, fitness trajectories, hyperparameter calibration, reproduction diagnostics (numbered 30 until 2026-10)
+- [`BACKLOG.md`](BACKLOG.md) — doc-vs-implementation audit: what is done, partial, or missing, with evidence
 
 ## Repository tooling (repo root)
 
-- [`../../Makefile`](../../Makefile) — `make help` lists install, test tiers, lint, Docker stack, changelog sync, and semver release
+- [`../../Makefile`](../../Makefile) — `make help` lists install, the eight test tiers, lint, the Docker and kind stacks, `docs-config`, changelog sync, and semver release
 - [`../../README.md`](../../README.md) — quickstart and contributing conventions (Conventional Commits, changelog workflow)
+- [`../../tests/README.md`](../../tests/README.md) — one-page map of the test suite
+- [`../../infra/README.md`](../../infra/README.md) — Docker, Helm, Terraform, and Grafana assets; [`../../infra/OPERATOR_RUNBOOK.md`](../../infra/OPERATOR_RUNBOOK.md) — provider matrix and failure-response checklist
 
-## Related (in `overview/`)
+## Related
 
+- [`../marketing/`](../marketing/) — public-facing message source (non-technical by design)
 - [`../overview/02-design-principles.md`](../overview/02-design-principles.md) — the P1–P10 principles every doc here is checked against
 - [`../overview/06-roadmap-and-phases.md`](../overview/06-roadmap-and-phases.md) — the phased build plan
 - [`../overview/07-deployment-and-infrastructure.md`](../overview/07-deployment-and-infrastructure.md) — infrastructure phase by phase

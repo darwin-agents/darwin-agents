@@ -252,10 +252,11 @@ services:
     container_name: darwin-jaeger
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+    # Only the UI is published: the host's :4317/:4318 belong to the
+    # otel-collector (binding them twice fails `compose up`); the collector
+    # reaches Jaeger in-network as jaeger:4317.
     ports:
       - "16686:16686"   # trace UI
-      - "4317:4317"     # OTLP gRPC (direct debug; collector uses jaeger:4317)
-      - "4318:4318"     # OTLP HTTP
     restart: unless-stopped
 
   # -- alertmanager: routes Prometheus alerts to receivers (doc 22) -----

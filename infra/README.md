@@ -5,7 +5,7 @@ by deployment target. Pick the subdir that matches where you're running.
 
 | Path                         | What it is                                                                                     | Start here                                       |
 | ---------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| [`docker/`](docker/)         | **Local dev** — Docker Compose stack (supervisor + web + Postgres + Redis + LiteLLM + Prometheus + Jaeger). No Kubernetes. | [`docker/README.md`](docker/README.md)           |
+| [`docker/`](docker/)         | **Local dev** — Docker Compose stack (supervisor + web + Postgres + Redis + LiteLLM + Prometheus + Alertmanager + OTel collector + Jaeger). No Kubernetes. | [`docker/README.md`](docker/README.md)           |
 | [`charts/`](charts/)         | **Packaging** — the `darwin-platform` Helm chart. The single source of truth for the Kubernetes workload. | [`charts/darwin-platform/README.md`](charts/darwin-platform/README.md) |
 | [`terraform/`](terraform/)   | **Provisioning** — Terraform envs + modules (kind local, Hetzner k3s prod, shared `platform-stack`). | [`terraform/README.md`](terraform/README.md)     |
 | [`grafana/`](grafana/)       | Dashboard JSON for platform metrics.                                                           | [`grafana/README.md`](grafana/README.md)         |

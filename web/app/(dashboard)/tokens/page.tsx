@@ -41,10 +41,34 @@ export default function TokensPage() {
         <CardContent>
           <AlertBadges
             alerts={[
-              { level: 1, code: "warn", summary: "Cost > 0.5 USDC/h" },
-              { level: 2, code: "throttle", summary: "LLM tier rate-limited" },
-              { level: 3, code: "pause", summary: "Repeated rejection" },
-              { level: 4, code: "quarantine", summary: "Egress locked" },
+              {
+                darwin_id: "demo",
+                kind: "cost_spike",
+                severity: "warning",
+                suggested_level: 1,
+                ts: 1,
+              },
+              {
+                darwin_id: "demo",
+                kind: "llm_throttled",
+                severity: "warning",
+                suggested_level: 2,
+                ts: 2,
+              },
+              {
+                darwin_id: "demo",
+                kind: "repeated_rejection",
+                severity: "error",
+                suggested_level: 3,
+                ts: 3,
+              },
+              {
+                darwin_id: "demo",
+                kind: "egress_locked",
+                severity: "critical",
+                suggested_level: 4,
+                ts: 4,
+              },
             ]}
           />
         </CardContent>
@@ -86,9 +110,7 @@ export default function TokensPage() {
           <p className="text-xs text-[var(--color-muted-foreground)]">
             Body 12 muted — secondary copy
           </p>
-          <p className="mono text-sm">
-            darwin_a3f9b4c1e2 · event_01HQ8XZ2J · gen 2
-          </p>
+          <p className="mono text-sm">darwin_a3f9b4c1e2 · event_01HQ8XZ2J · gen 2</p>
         </CardContent>
       </Card>
     </div>
