@@ -331,6 +331,8 @@ class OrchestratorState:
         # dies. The supervisor pulls it via GET /forensics before reaping the
         # pod and persists it to its own forensics store.
         self._death_forensics: dict[str, Any] | None = None
+        # "<ExcType>: <msg>" once the drive loop crashed; cleared by resume().
+        self.crashed: str | None = None
 
     def start(self) -> None:
         if self._task is not None:
@@ -391,6 +393,12 @@ class OrchestratorState:
                     self.stack.kill.flip("orchestrator cancelled")
                 except Exception:
                     pass
+            raise
+        except Exception as exc:
+            # The loop is dead: no ticks, no spend. Surface it through the
+            # snapshot (the supervisor alerts on it) rather than freezing
+            # silently while reporting alive; resume() restarts the loop.
+            self.crashed = f"{type(exc).__name__}: {exc}"
             raise
 
     def _maybe_hot_reload_soma(self) -> None:
@@ -454,6 +462,7 @@ class OrchestratorState:
             "death_reason": st.death_reason,
             "llm_spend_usdc": float(llm_spend),
             "merkle_root": merkle_root,
+            "crashed": self.crashed,
         }
 
     def forensics(self) -> dict[str, Any]:
@@ -893,6 +902,11 @@ class OrchestratorState:
 
     def resume(self) -> None:
         self.stack.pause.resume()
+        if self.crashed and self._task is not None and self._task.done():
+            self.crashed = None
+            self._task = asyncio.create_task(
+                self._drive(), name=f"darwin:{self.darwin_id}"
+            )
 
     def kill(self, reason: str) -> None:
         self._kill_requested = True

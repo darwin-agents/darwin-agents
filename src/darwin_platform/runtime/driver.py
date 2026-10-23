@@ -90,6 +90,8 @@ class DarwinSnapshot:
     # in-process path reads ``runtime.audit.merkle_root()`` directly. ``None``
     # when the pod can't produce one (kept out of the anchor).
     merkle_root: str | None = None
+    # Set when the pod's drive loop crashed (see DarwinStatus.crashed).
+    crashed: str | None = None
 
 
 @runtime_checkable

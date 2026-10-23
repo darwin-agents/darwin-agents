@@ -170,6 +170,9 @@ class DarwinStatus:
     tick: int
     days_elapsed: float
     open_escalations: int
+    # Set when the drive loop died on an unexpected exception: the Darwin no
+    # longer ticks (or spends) until an owner/operator ``resume``.
+    crashed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,8 @@ class _Handle:
     # write one (doc 05 death sequence). Idempotent guard.
     forensics_captured: bool = False
     task: asyncio.Task | None = None
+    # "<ExcType>: <msg>" once the drive loop crashed; cleared by resume().
+    crashed: str | None = None
     # Tickets we have already routed to the genome's inbox so we don't
     # double-respond. Indexed by ticket id.
     handled_responses: set[str] = field(default_factory=set)
@@ -1590,6 +1595,7 @@ class Supervisor:
             tick=snapshot.tick,
             days_elapsed=snapshot.days_elapsed,
             open_escalations=0,
+            crashed=snapshot.crashed,
         )
 
     async def _k8s_control_get(self, darwin_id: str, path: str) -> dict[str, Any]:
@@ -2609,6 +2615,12 @@ class Supervisor:
             # again if the breach is still live. (A repeat breach is a
             # different alert event from the operator's perspective.)
             h.auto_paused_for = None
+            if h.crashed and (h.task is None or h.task.done()):
+                h.crashed = None
+                h.task = asyncio.create_task(
+                    self._drive(h), name=f"darwin:{h.darwin_id}"
+                )
+                h.task.add_done_callback(self._log_drive_done)
             self._audit.record(
                 actor=actor, action="resume", darwin_id=darwin_id, metadata={},
             )
@@ -4584,6 +4596,7 @@ class Supervisor:
             open_escalations=len(
                 self._router.for_darwin(h.darwin_id, include_resolved=False)
             ),
+            crashed=h.crashed,
         )
 
     def _ancestry(self, darwin_id: str) -> list[str]:
@@ -5477,6 +5490,19 @@ class Supervisor:
             if not handle.killed:
                 handle.killed = True
                 handle.stack.kill.flip("supervisor cancelled")
+            raise
+        except Exception as exc:
+            # The loop is dead, so the Darwin stops ticking and spending.
+            # Make that visible (status, audit, page) instead of leaving a
+            # Darwin that reports alive while frozen; resume() restarts it.
+            handle.crashed = f"{type(exc).__name__}: {exc}"
+            self._audit.record(
+                actor="platform.supervisor", action="drive_crashed",
+                darwin_id=handle.darwin_id, metadata={"error": handle.crashed},
+            )
+            self._fleet_alert("drive_crashed", {
+                "darwin_id": handle.darwin_id, "error": handle.crashed,
+            })
             raise
 
     def _observe_children(self, parent: _Handle) -> None:

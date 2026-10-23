@@ -466,6 +466,7 @@ class K8sDarwinDriver:
             death_reason=data.get("death_reason"),
             llm_spend_usdc=float(data.get("llm_spend_usdc", 0.0) or 0.0),
             merkle_root=(data.get("merkle_root") or None),
+            crashed=(data.get("crashed") or None),
         )
 
 
