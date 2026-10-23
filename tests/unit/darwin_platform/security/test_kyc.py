@@ -589,3 +589,62 @@ def test_cli_parses_kyc_webhook_secret_flags():
     ])
     assert args.kyc_persona_webhook_secret == "whsec"
     assert args.kyc_onfido_webhook_token == "wht"
+
+
+def test_an_approved_inquiry_cannot_unlock_another_subject(tmp_path):
+    """Any owner could post someone else's approved inquiry id with their own
+    subject and pass the KYC + 18+ gate. The verdict now only ever lands on
+    the subject who started the inquiry — and survives a restart."""
+    from darwin_platform.runtime.persistence import PersistenceStore
+    from darwin_platform.security.kyc import KYCService, KYCStatus, StubKYCProvider
+
+    store = PersistenceStore(tmp_path / "p.db")
+    svc = KYCService(provider=StubKYCProvider())
+    svc.attach_store(store.kyc_store())
+    inq = svc.start_inquiry(subject="alice")["inquiry_id"]
+    with pytest.raises(KYCError, match="another subject"):
+        svc.refresh_status(subject="mallory", inquiry_id=inq)
+    with pytest.raises(KYCError, match="unknown KYC inquiry"):
+        svc.refresh_status(subject="mallory", inquiry_id="inq-not-ours")
+    assert svc.status_for("mallory").status == KYCStatus.UNKNOWN
+    svc.refresh_status(subject="alice", inquiry_id=inq)
+
+    again = KYCService(provider=StubKYCProvider())  # a restarted platform
+    again.attach_store(store.kyc_store())
+    assert again.status_for("alice").status == KYCStatus.APPROVED
+    with pytest.raises(KYCError, match="another subject"):
+        again.refresh_status(subject="mallory", inquiry_id=inq)
+
+
+async def test_owner_kyc_routes_act_on_the_caller_only():
+    pytest.importorskip("fastapi")
+    httpx = pytest.importorskip("httpx")
+    from darwin_platform import OWNER, PLATFORM_OPERATOR, InMemoryTokenStore, Supervisor
+    from darwin_platform.api import build_app
+    from darwin_platform.security.kyc import KYCService, StubKYCProvider
+
+    tokens = InMemoryTokenStore()
+    tokens.issue("t-alice", scopes={OWNER}, subject="alice")
+    tokens.issue("t-mallory", scopes={OWNER}, subject="mallory")
+    tokens.issue("t-ops", scopes={PLATFORM_OPERATOR}, subject="ops")
+    sup = Supervisor(kyc_service=KYCService(provider=StubKYCProvider()))
+    app = build_app(sup, token_store=tokens)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://t") as c:
+        def h(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        inq = (await c.post("/platform/kyc/start", json={}, headers=h("t-alice"))).json()["inquiry_id"]
+        r = await c.post("/platform/kyc/webhook", headers=h("t-mallory"),
+                         json={"inquiry_id": inq})
+        assert r.status_code == 403
+        r = await c.get("/platform/kyc/status", params={"subject": "alice"},
+                        headers=h("t-mallory"))
+        assert r.status_code == 403
+        r = await c.post("/platform/kyc/webhook", headers=h("t-alice"),
+                         json={"inquiry_id": inq})
+        assert r.json()["status"] == "approved"
+        r = await c.get("/platform/kyc/status", params={"subject": "alice"},
+                        headers=h("t-ops"))
+        assert r.json()["status"] == "approved"
+    await sup.shutdown()
