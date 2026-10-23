@@ -206,6 +206,9 @@ class RealWallet:
         self._credit_sources: dict[str, str] = {}
         # settlement tx_hash → submit time; at most one in flight.
         self._settling: dict[str, float] = {}
+        # unregistered outbound tx_hash → first seen (see sync()).
+        self._unhinted_seen: dict[str, float] = {}
+        self.hint_grace_s = 120.0
         self._state_path = Path(state_path) if state_path else None
         self._load_state()
 
@@ -278,9 +281,17 @@ class RealWallet:
         same block. Inbound → credit (source from ``credit(tx_hash=…)``,
         else ``deposit:<from>``); outbound → its registered row, or a
         settlement when it pays the fee address, else ``unattributed_out``.
+
+        An outbound transfer nobody registered yet holds the sync at the
+        block before it for ``hint_grace_s``: when the platform signs for
+        this wallet, its ``expect`` may land a moment after the chain shows
+        the tx, and booking it as unattributed in between would be wrong.
         An RPC failure keeps the prior snapshot and sets ``stale``."""
         if self._reader is None:
             return
+        now = float(self._clock())
+        me = self.address().lower()
+        fee = (self._fee_address or "").lower()
         try:
             block = self._reader.head() - self._confirmations
             if self._synced_block is not None and block <= self._synced_block:
@@ -289,14 +300,23 @@ class RealWallet:
                 [] if self._synced_block is None
                 else self._reader.transfers(self._synced_block + 1, block)
             )
+            for log in logs:
+                tx = log["tx_hash"].lower()
+                if (
+                    log["from"] == me and log["to"] not in (me, fee)
+                    and tx not in self._hints
+                    and now - self._unhinted_seen.setdefault(tx, now) < self.hint_grace_s
+                ):
+                    block = log["block"] - 1
+                    logs = [lg for lg in logs if lg["block"] <= block]
+                    break
+            if self._synced_block is not None and block <= self._synced_block:
+                return
             balance = self._reader.balance_at(block)
         except Exception:
             self.stale = True
             return
         self.stale = False
-        now = float(self._clock())
-        me = self.address().lower()
-        fee = (self._fee_address or "").lower()
         rows: list[dict] = []
         for log in logs:
             tx, amt = log["tx_hash"].lower(), float(log["amount_usdc"])
@@ -324,6 +344,7 @@ class RealWallet:
                             "ts": now, "tx_hash": tx,
                         }})
                 else:
+                    self._unhinted_seen.pop(tx, None)
                     rows.append({"unattributed_out": {
                         "destination": log["to"], "amount_usdc": amt,
                         "ts": now, "tx_hash": tx,
@@ -355,6 +376,18 @@ class RealWallet:
             self._settling[tx_hash.lower()] = now
         self._write()
         return {"tx_hash": tx_hash, "amount_usdc": amount}
+
+    def accrue_harvest_fee(self, fee_usdc: float) -> None:
+        """Book the platform's harvest fee now; the next settlement pays it."""
+        fee = float(fee_usdc)
+        if fee <= 0:
+            return
+        self._unsettled += fee
+        self._write({"harvest": {
+            "destination": self._fee_address or "platform.fee",
+            "amount_usdc": fee, "kind": "platform_fee",
+            "ts": float(self._clock()),
+        }})
 
     @property
     def unsettled_usdc(self) -> float:
@@ -596,11 +629,7 @@ class RealWallet:
                 "kind": "owner_net", "ts": ts,
             }})
         if fee > 0:
-            self._unsettled += fee
-            self._write({"harvest": {
-                "destination": self._fee_address or "platform.fee",
-                "amount_usdc": fee, "kind": "platform_fee", "ts": ts,
-            }})
+            self.accrue_harvest_fee(fee)
         return {
             "gross_usdc": gross, "net_usdc": net, "fee_usdc": fee,
             "destination": destination, "ts": ts,

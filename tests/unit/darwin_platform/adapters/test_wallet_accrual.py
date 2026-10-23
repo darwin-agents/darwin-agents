@@ -125,6 +125,7 @@ def test_harvest_is_one_transfer_and_fee_accrues() -> None:
 def test_unknown_outbound_is_booked_not_drift() -> None:
     chain = _Chain(20.0)
     w = _wallet(chain)
+    w.hint_grace_s = 0.0  # don't wait for a registration that never comes
     w.movements()
     chain._land(ME, PAYER, 3.0)  # e.g. a key used outside the platform
     assert any("unattributed_out" in mv for mv in w.movements())
@@ -149,3 +150,28 @@ def test_state_survives_restart_and_a_torn_tail(tmp_path) -> None:
     assert again.spent_lifetime_usdc() == pytest.approx(1.5)
     assert again.balance_usdc() == pytest.approx(w.balance_usdc())
     _reconciles(again, 30.0)
+
+
+def test_outbound_waits_for_its_late_hint_instead_of_booking_unattributed() -> None:
+    """The platform signs for a pod's watch wallet and registers the row a
+    moment later; a sync in between must hold, not mis-book the transfer."""
+    clock = [1_000.0]
+    chain = _Chain(40.0)
+    w = RealWallet(chain, clock=lambda: clock[0], reader=chain,
+                   fee_address=FEE, confirmations=0)
+    w.movements()
+    tx = chain._land(ME, OWNER, 5.0)  # signed elsewhere; no hint yet
+    feed = w.movements()
+    assert not any("unattributed_out" in mv for mv in feed)
+    assert w.balance_usdc() == pytest.approx(40.0)  # held before the tx
+    w.expect(tx, {"harvest": {"destination": OWNER, "amount_usdc": 5.0,
+                              "kind": "owner_net", "ts": 1.0}})
+    assert any("harvest" in mv for mv in w.movements())
+    assert w.balance_usdc() == pytest.approx(35.0)
+    _reconciles(w, 40.0)
+
+    chain._land(ME, PAYER, 1.0)  # never hinted: booked after the grace
+    w.movements()
+    clock[0] += w.hint_grace_s + 1
+    assert any("unattributed_out" in mv for mv in w.movements())
+    _reconciles(w, 40.0)
