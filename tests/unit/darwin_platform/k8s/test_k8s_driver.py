@@ -226,7 +226,7 @@ async def test_snapshot_uses_control_endpoint():
 @pytest.mark.asyncio
 async def test_soma_enabled_spec_creates_persistent_soma_pvc():
     """A soma-enabled spawn provisions the per-Darwin soma PVC (alongside the
-    lancedb PVC) so promoted self-mods survive a pod restart."""
+    /data PVC) so promoted self-mods survive a pod restart."""
     api = _RecordingApi()
     control = _RecordingControl(become_ready_after=1)
     driver = K8sDarwinDriver(
@@ -240,7 +240,7 @@ async def test_soma_enabled_spec_creates_persistent_soma_pvc():
         b["metadata"]["name"] for (k, _ns, b) in api.created if k == "pvc"
     ]
     assert "darwin-soma" in pvc_names
-    assert "darwin-lancedb" in pvc_names
+    assert "darwin-data" in pvc_names
 
 
 @pytest.mark.asyncio
@@ -313,102 +313,6 @@ async def test_start_refuses_duplicate_darwin_id():
     await driver.start(DarwinSpec(darwin_id="d-5", opening_usdc=50.0))
     with pytest.raises(DriverError):
         await driver.start(DarwinSpec(darwin_id="d-5", opening_usdc=50.0))
-
-
-# ---------------------------------------------------------------------------
-# --wallet-provider forwarding to per-Darwin orchestrator pods
-# ---------------------------------------------------------------------------
-
-
-def _orchestrator_args(api_create: list) -> list[str]:
-    """Pull the orchestrator container's args list out of the deployment
-    body the driver submitted to the K8s API."""
-    deployments = [body for kind, _, body in api_create if kind == "deployment"]
-    assert deployments, "no deployment was created"
-    pod_spec = deployments[0]["spec"]["template"]["spec"]
-    orchestrator = next(
-        c for c in pod_spec["containers"] if c["name"] == "orchestrator"
-    )
-    return orchestrator["args"]
-
-
-@pytest.mark.asyncio
-async def test_k8s_spawn_forwards_default_wallet_provider_cdp():
-    """Default DarwinPodConfig.wallet_provider is "cdp" — the supervisor's
-    default CLI flag. A K8s spawn produces a deployment whose orchestrator
-    args carry --wallet-provider cdp."""
-    api = _RecordingApi()
-    control = _RecordingControl(become_ready_after=1)
-    driver = K8sDarwinDriver(
-        api=api, control_client=control,
-        pod_config=DarwinPodConfig(),
-    )
-    await driver.start(DarwinSpec(
-        darwin_id="d-abc", opening_usdc=100.0, escalation_auto="approve",
-    ))
-    args = _orchestrator_args(api.created)
-    assert "--wallet-provider" in args
-    assert args[args.index("--wallet-provider") + 1] == "cdp"
-
-
-@pytest.mark.asyncio
-async def test_k8s_spawn_forwards_local_vault_wallet_provider():
-    """When the operator configures wallet_provider="local-vault", every
-    spawn delivers --wallet-provider local-vault to the per-Darwin pod."""
-    api = _RecordingApi()
-    control = _RecordingControl(become_ready_after=1)
-    driver = K8sDarwinDriver(
-        api=api, control_client=control,
-        pod_config=DarwinPodConfig(wallet_provider="local-vault"),
-    )
-    await driver.start(DarwinSpec(
-        darwin_id="d-xyz", opening_usdc=100.0, escalation_auto="approve",
-    ))
-    args = _orchestrator_args(api.created)
-    assert args[args.index("--wallet-provider") + 1] == "local-vault"
-
-
-@pytest.mark.asyncio
-async def test_k8s_spawn_forwards_web3_wallet_provider():
-    """The testnet-only shared-key path also propagates end-to-end."""
-    api = _RecordingApi()
-    control = _RecordingControl(become_ready_after=1)
-    driver = K8sDarwinDriver(
-        api=api, control_client=control,
-        pod_config=DarwinPodConfig(wallet_provider="web3"),
-    )
-    await driver.start(DarwinSpec(
-        darwin_id="d-test", opening_usdc=100.0, escalation_auto="approve",
-    ))
-    args = _orchestrator_args(api.created)
-    assert args[args.index("--wallet-provider") + 1] == "web3"
-
-
-@pytest.mark.asyncio
-async def test_k8s_spawn_consistent_wallet_provider_across_darwins():
-    """A driver configured with one wallet_provider delivers it to every
-    Darwin it spawns — no per-spawn drift."""
-    api = _RecordingApi()
-    control = _RecordingControl(become_ready_after=1)
-    driver = K8sDarwinDriver(
-        api=api, control_client=control,
-        pod_config=DarwinPodConfig(wallet_provider="local-vault"),
-    )
-    await driver.start(DarwinSpec(
-        darwin_id="d-1", opening_usdc=100.0, escalation_auto="approve",
-    ))
-    await driver.start(DarwinSpec(
-        darwin_id="d-2", opening_usdc=100.0, escalation_auto="approve",
-    ))
-    deployments = [body for kind, _, body in api.created if kind == "deployment"]
-    assert len(deployments) == 2
-    for body in deployments:
-        pod_spec = body["spec"]["template"]["spec"]
-        orchestrator = next(
-            c for c in pod_spec["containers"] if c["name"] == "orchestrator"
-        )
-        args = orchestrator["args"]
-        assert args[args.index("--wallet-provider") + 1] == "local-vault"
 
 
 @pytest.mark.asyncio

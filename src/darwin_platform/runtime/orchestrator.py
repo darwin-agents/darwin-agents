@@ -110,6 +110,18 @@ def _build_stack(
     return stack
 
 
+def _pod_args(substrate_path: Path) -> argparse.Namespace:
+    """A full ``serve`` namespace (every flag at its default) overlaid with
+    the supervisor-forwarded substrate settings, so the pod's factories see
+    the same option surface as the supervisor's — no missing attributes."""
+    from .. import __main__ as cli_main
+
+    ns = cli_main.build_parser().parse_args(["serve"])
+    if substrate_path.exists():
+        vars(ns).update(json.loads(substrate_path.read_text()))
+    return ns
+
+
 def _apply_real_adapters(
     stack, args, clock: Callable[[], float], *, darwin_id: str,
 ) -> dict[str, Any]:
@@ -124,36 +136,11 @@ def _apply_real_adapters(
     fiat / sanctions / KYC / omnibus are platform-mediated (enforced in the
     supervisor pod, never run here), so they report ``none`` from the pod's
     own vantage."""
-    # We intentionally avoid importing __main__ to keep startup light;
-    # the env var fallback set is the same. (Note: __main__ lives at the
-    # darwin_platform package root, not under runtime/ — relative import
-    # needs to go one level up.)
+    # ``args`` is a full ``serve`` namespace (see _pod_args), so the pod builds
+    # its substrate exactly as the supervisor would in-process. (__main__
+    # lives at the darwin_platform package root — one level up.)
     from .. import __main__ as cli_main
-    fake_args = argparse.Namespace(
-        # wallet — provider + per-chain config (forwarded from the
-        # supervisor's --wallet-provider choice when it launched this pod).
-        wallet_provider=args.wallet_provider,
-        cdp_api_key_id=getattr(args, "cdp_api_key_id", None),
-        cdp_api_key_secret=getattr(args, "cdp_api_key_secret", None),
-        cdp_wallet_secret=getattr(args, "cdp_wallet_secret", None),
-        cdp_mainnet=getattr(args, "cdp_mainnet", False),
-        rpc_url=args.rpc_url, wallet_key=args.wallet_key,
-        usdc_contract=args.usdc_contract,
-        chain_networks=args.chain_networks,
-        solana_rpc_url=args.solana_rpc_url,
-        solana_wallet_key=args.solana_wallet_key,
-        stellar_horizon_url=args.stellar_horizon_url,
-        stellar_secret=args.stellar_secret,
-        # vault
-        vault_url=args.vault_url, vault_token=args.vault_token,
-        vault_mount=args.vault_mount,
-        # browser
-        browserbase_url=args.browserbase_url,
-        browserbase_api_key=args.browserbase_api_key,
-        # sandbox
-        e2b_api_key=args.e2b_api_key,
-    )
-    factories = cli_main._build_real_factories(fake_args)  # noqa: SLF001
+    factories = cli_main._build_real_factories(args)  # noqa: SLF001
     # Vault first: a local-vault wallet provider needs the real per-Darwin
     # vault to seal/retrieve its keypair before the wallet is constructed.
     if "vault_factory" in factories:
@@ -215,12 +202,8 @@ def _apply_real_adapters(
         c.strip() for c in (args.chain_networks or "base").split(",") if c.strip()
     ]
     return assemble_money_capabilities(
-        network=(
-            "base-mainnet"
-            if getattr(args, "cdp_mainnet", False)
-            else "base-sepolia"
-        ),
-        wallet_provider=args.wallet_provider,
+        network="base-mainnet" if cli_main._is_mainnet(args) else "base-sepolia",  # noqa: SLF001
+        wallet_provider=args.wallet_provider or "none",
         wallet_live="wallet_factory" in factories,
         chains=chains,
         fiat=fiat,
@@ -1286,39 +1269,16 @@ def build_parser() -> argparse.ArgumentParser:
             "legacy in-memory sink (bounded sims/tests only)."
         ),
     )
-    p.add_argument("--heartbeat-seconds", default=0.005, type=float)
+    p.add_argument("--heartbeat-seconds", default=5.0, type=float)
     p.add_argument("--host", default="0.0.0.0",
                    help="Bind address for the control API.")
     p.add_argument("--log-level", default="info")
-    # Real-adapter flags (mirror of __main__.py). Kept here so the
-    # orchestrator can talk to real LiteLLM/Vault/Browserbase/E2B without
-    # routing through the supervisor.
-    p.add_argument("--rpc-url", default=None)
-    p.add_argument("--wallet-key", default=None)
-    p.add_argument("--usdc-contract", default=None)
-    p.add_argument("--chain-networks", default="base")
-    p.add_argument("--solana-rpc-url", default=None)
-    p.add_argument("--solana-wallet-key", default=None)
-    p.add_argument("--stellar-horizon-url", default=None)
-    p.add_argument("--stellar-secret", default=None)
-    # Wallet provider — supervisor forwards its --wallet-provider choice
-    # when launching this pod so each Darwin uses the platform-selected
-    # backend (cdp / local-vault / web3). Default matches the supervisor
-    # CLI's default.
     p.add_argument(
-        "--wallet-provider", default="cdp",
-        choices=["web3", "cdp", "local-vault"],
+        "--substrate-path",
+        default="/run/secrets/darwin-control/substrate.json", type=Path,
+        help="Supervisor-forwarded substrate settings (JSON from the control "
+             "Secret): LLM, browser, sandbox, watch wallet.",
     )
-    p.add_argument("--cdp-api-key-id", default=None)
-    p.add_argument("--cdp-api-key-secret", default=None)
-    p.add_argument("--cdp-wallet-secret", default=None)
-    p.add_argument("--cdp-mainnet", action="store_true")
-    p.add_argument("--vault-url", default=None)
-    p.add_argument("--vault-token", default=None)
-    p.add_argument("--vault-mount", default="secret")
-    p.add_argument("--browserbase-url", default=None)
-    p.add_argument("--browserbase-api-key", default=None)
-    p.add_argument("--e2b-api-key", default=None)
     return p
 
 
@@ -1361,7 +1321,7 @@ def main(argv: list[str] | None = None) -> int:
         clock=clock,
     )
     money_capabilities = _apply_real_adapters(
-        stack, args, clock, darwin_id=args.darwin_id,
+        stack, _pod_args(args.substrate_path), clock, darwin_id=args.darwin_id,
     )
 
     # Durable disk-backed audit sink (the prod ``AuditSink`` is "an append-only

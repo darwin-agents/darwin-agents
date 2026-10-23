@@ -292,3 +292,31 @@ async def test_kill_without_forensics_verb_is_noop(tmp_path):
     did = status.darwin_id
     await sup.kill(did, reason="op")  # must not raise
     assert sup.list_soma_forensics(did) == []
+
+
+@pytest.mark.asyncio
+async def test_k8s_spawn_seals_watch_wallet_substrate_without_signing_keys():
+    """Each pod gets the forwarded substrate plus a watch-only wallet on its
+    own Darwin's address; the signing account stays in the supervisor."""
+    import json
+
+    class _Signer:
+        def __init__(self, darwin_id):
+            self.darwin_id = darwin_id
+
+        def address(self):
+            return "0x" + self.darwin_id[:8].rjust(40, "0")
+
+    driver = _FakeK8sDriver()
+    sup = Supervisor(
+        k8s_driver=driver, heartbeat_seconds=0.0,
+        pod_substrate={"network": "testnet", "e2b_api_key": "e2b-x"},
+        pod_signer_factory=lambda did, clock: _Signer(did),
+    )
+    status = await sup.spawn(opening_usdc=10.0)
+    sub = json.loads(driver.started[0].secret_extras["substrate.json"])
+    assert sub["wallet_provider"] == "watch"
+    assert sub["wallet_address"] == sup._pod_signer(status.darwin_id).address()  # noqa: SLF001
+    assert sub["wallet_state_dir"] == "/data/wallet"
+    assert sub["e2b_api_key"] == "e2b-x"
+    assert not any(k.startswith("cdp") or k == "wallet_key" for k in sub)

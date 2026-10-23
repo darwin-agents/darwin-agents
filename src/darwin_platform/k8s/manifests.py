@@ -91,6 +91,10 @@ VAULT_APPROLE_ROLE_ID_SECRET_KEY = "vault_approle_role_id"
 VAULT_APPROLE_SECRET_ID_SECRET_KEY = "vault_approle_secret_id"
 ORGANISM_DB_DSN_SECRET_KEY = "organism_db_dsn"
 
+# Secret key holding the pod's substrate settings (JSON): what the pod's own
+# ``serve`` parse needs to build its LLM / browser / sandbox / watch wallet.
+SUBSTRATE_SECRET_KEY = "substrate.json"
+
 
 @dataclass(frozen=True)
 class DarwinPodConfig:
@@ -156,11 +160,6 @@ class DarwinPodConfig:
     # Free-form extra env vars for the orchestrator container — useful
     # for OTel endpoints, real-adapter API keys via secretKeyRef, etc.
     extra_env: tuple[dict[str, Any], ...] = ()
-    # Wallet provider forwarded to the orchestrator pod (--wallet-provider
-    # flag). Matches the supervisor's choice so per-pod wallets pick the
-    # same backend (cdp / local-vault / web3). Default 'cdp' matches the
-    # supervisor CLI default.
-    wallet_provider: str = "cdp"
     # Platform-mediated money rails (fiat / sanctions / KYC / omnibus) as a
     # JSON blob, forwarded from the supervisor so the pod's planner reasons
     # over the full money picture (these rails run in the supervisor, never
@@ -420,7 +419,6 @@ def build_deployment(
         "--opening-usdc", f"{opening_usdc:g}",
         "--control-port", str(CONTROL_API_PORT),
         "--control-token-path", "/run/secrets/darwin-control/control_token",
-        "--wallet-provider", config.wallet_provider,
         "--heartbeat-seconds", f"{config.heartbeat_seconds:g}",
     ]
     # Always explicit: None means "owner responds", never the pod default.

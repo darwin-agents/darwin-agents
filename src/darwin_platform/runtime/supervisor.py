@@ -424,6 +424,12 @@ class Supervisor:
         wallet_provider: str = "none",
         network: str = "base-sepolia",
         chain_networks: tuple[str, ...] | None = None,
+        # K8s driver: settings forwarded to every pod (its own `serve` parse
+        # builds the substrate from them), and ``darwin_id -> ChainClient``
+        # for each Darwin's signing account. Pods only get a watch-only
+        # wallet; the supervisor executes every outbound transfer.
+        pod_substrate: dict[str, Any] | None = None,
+        pod_signer_factory: Callable[..., Any] | None = None,
         vault_factory: Callable[[], Any] | None = None,
         browser_factory: Callable[[Any], Any] | None = None,
         x402_factory: Callable[[Any], Any] | None = None,
@@ -764,6 +770,9 @@ class Supervisor:
         # Descriptors for the money-capabilities manifest (see ctor docstring).
         self._wallet_provider = wallet_provider
         self._network = network
+        self._pod_substrate: dict[str, Any] = dict(pod_substrate or {})
+        self._pod_signer_factory = pod_signer_factory
+        self._pod_signers: dict[str, Any] = {}
         self._chain_networks: tuple[str, ...] = tuple(chain_networks or ("base",))
         self._vault_factory: Callable[[], Any] | None = vault_factory
         self._browser_factory: Callable[[Any], Any] | None = browser_factory
@@ -4411,6 +4420,18 @@ class Supervisor:
                     secret_extras[ORGANISM_DB_DSN_SECRET_KEY] = boot[
                         "organism_db_dsn"
                     ]
+        from ..k8s.manifests import DATA_MOUNT_PATH, SUBSTRATE_SECRET_KEY
+
+        substrate = dict(self._pod_substrate)
+        if self._pod_signer_factory is not None:
+            # The pod watches this Darwin's own address; the supervisor keeps
+            # the account that can sign for it.
+            substrate.update(
+                wallet_provider="watch",
+                wallet_address=self._pod_signer(supervisor_id).address(),
+                wallet_state_dir=f"{DATA_MOUNT_PATH}/wallet",
+            )
+        secret_extras[SUBSTRATE_SECRET_KEY] = json.dumps(substrate)
         spec = DarwinSpec(
             darwin_id=supervisor_id,
             opening_usdc=float(opening_usdc),
@@ -4491,6 +4512,17 @@ class Supervisor:
             days_elapsed=snapshot.days_elapsed,
             open_escalations=0,
         )
+
+    def _pod_signer(self, darwin_id: str) -> Any:
+        """This k8s Darwin's signing account (built once; get-or-create by
+        name, so a supervisor restart re-binds the same account)."""
+        if self._pod_signer_factory is None:
+            raise SupervisorError("no signer configured for pod wallets")
+        if darwin_id not in self._pod_signers:
+            self._pod_signers[darwin_id] = self._pod_signer_factory(
+                darwin_id, self._clock,
+            )
+        return self._pod_signers[darwin_id]
 
     async def _reconcile_k8s(self) -> None:
         """Rebuild ``_k8s_handles`` from Darwins the driver re-adopts after a
