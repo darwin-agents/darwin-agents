@@ -82,6 +82,8 @@ The trade-off is operational: we run it. That's fine — we're already operating
 
 A single LiteLLM Proxy deployment per environment (dev, staging, prod), backed by Postgres for virtual keys and audit, Redis for rate limits and prompt cache, behind a load balancer.
 
+> **As built (2026-10):** only the Docker Compose stack runs Redis for the LiteLLM cache. The Terraform configs (`infra/terraform/envs/*/litellm.config.yaml`) drop the cache section because no Redis is deployed there; per-Darwin virtual keys (`--litellm-virtual-keys`) and the Prometheus exporter are wired.
+
 ```
 ┌────────────────────────────────────────────────┐
 │  LiteLLM Proxy (3+ replicas behind a LB)       │

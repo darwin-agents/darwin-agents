@@ -40,7 +40,7 @@ The main orchestrator is a single LangGraph graph stored under `soma/orchestrato
 
 Edges are conditional. The state object carries `current_strategy`, `pending_escalations`, `treasury_snapshot`, `recent_decisions`, `mutation_candidates`, `kill_flag`. Reducers merge concurrent updates predictably.
 
-Each neuron, internally, also uses a small LangGraph (or a plain coroutine if the neuron is trivially linear). The orchestrator's `dispatch_neuron` is just an RPC into the neuron's microVM; the neuron's internal graph is its own concern.
+Each neuron, internally, also uses a small LangGraph (or a plain coroutine if the neuron is trivially linear). The orchestrator's `dispatch` node calls the neuron in-process inside the orchestrator (pod or asyncio task); code a neuron wants executed goes to the E2B sandbox it is handed. The neuron's internal graph is its own concern.
 
 ## Persistence layout
 
@@ -53,6 +53,8 @@ postgres (per-Darwin schema):
 ```
 
 Checkpoints are written before every state-mutating node returns, which gives us the audit log's "before any side effect" property when combined with our outbox pattern.
+
+> **As built (2026-10):** the LangGraph Postgres saver is not used. The node functions are framework-agnostic; an in-process runner with the same checkpoint and kill-poll semantics is the default engine and `engine="langgraph"` wires the same nodes into a real `StateGraph` (`src/darwin_dna/orchestrator_skeleton/graph.py`). Checkpoints go through the genome's own `CheckpointStore` (latest state per node boundary): the `darwin_checkpoints` table for in-process Darwins (`src/darwin_platform/runtime/persistence.py`) or `FileCheckpointStore` on the pod's `/data` volume under `--driver k8s` (`src/darwin_platform/runtime/audit_sink.py`). There are no `langgraph_*` tables.
 
 ## What goes where
 

@@ -326,7 +326,7 @@ a pointer to `/metrics` as authoritative; inline metric refs corrected;
 `/platform/signing/public-key` → `public_key`. *(done 2026-05-22)*
 - **Doc 24** — red-team gate checklist + suite references repointed to
 `tests/redteam/`, `tests/property/`, `tests/integration/`. *(done 2026-05-22)*
-- **Doc 30** — calibration example uses `apply_calibration(sim_world=, revenue_model=, dataset=)` and `runtime.archive`. *(done 2026-05-22)*
+- **Doc 34** (evolution tuning guide, formerly 30) — calibration example uses `apply_calibration(sim_world=, revenue_model=, dataset=)` and `runtime.archive`. *(done 2026-05-22)*
 - **Doc 05** — MoonPay confirmed implemented (`MoonPayFiatRamp`,
 `src/darwin_platform/adapters/fiat.py:344`); scoreboard already corrected.
 

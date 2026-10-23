@@ -6,6 +6,8 @@
 - **Secondary:** Modal for GPU-heavy or long-batch workloads, if any.
 - **Fallback (future):** Northflank Sandboxes for BYO-cloud customers and air-gapped deployments.
 
+> **As built (2026-10):** E2B is the *code-execution* sandbox only. `E2BSandbox.run_code` creates and destroys a microVM per invocation (`src/darwin_platform/adapters/sandbox.py`) for mutation evaluation and code-running neurons; production refuses to boot without `--e2b-api-key` (`src/darwin_platform/__main__.py`). The orchestrator does not run in E2B: under `--driver k8s` it is a per-Darwin pod with a sandboxed RuntimeClass — `gvisor` by default on the Hetzner k3s nodes, `kata` where nodes have nested virtualisation (`infra/terraform/envs/hetzner/main.tf`) — so gVisor, rejected below for untrusted code, is the default boundary for the orchestrator process while generated code still goes to E2B. Neurons run in-process in that pod. Modal and Northflank are not integrated.
+
 ## Why microVMs, not containers
 
 Darwin runs untrusted, sometimes self-generated code. The threat model permits a hostile soma. We need kernel-level isolation, not user-space syscall interception.

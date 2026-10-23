@@ -4,6 +4,8 @@ This file is the visual companion to the architecture docs. The ASCII-art diagra
 
 For each diagram, the corresponding deep-dive doc is linked at the bottom of that section.
 
+> **As built (2026-10):** labels follow the shipped stack: k3s on Hetzner (`infra/terraform/envs/hetzner`), per-Darwin orchestrator pods under a gVisor (default) or Kata RuntimeClass with neurons in-process and generated code in E2B, Web Push to the PWA for escalations (`src/darwin_platform/escalations/notification_webpush.py`), and OTLP → collector + Jaeger, Prometheus, Alertmanager for observability (`infra/docker/`). Sentry and Honeycomb are not integrated.
+
 ---
 
 ## 1. The platform, end to end (control plane perspective)
@@ -46,9 +48,9 @@ This shows what's running in our infrastructure to host many Darwins.
             ┌──────────────────┘                      │                      └───────────────────┐
             ▼                                         ▼                                          ▼
    ┌──────────────────┐               ┌────────────────────────────┐               ┌──────────────────────┐
-   │  Signing service │               │   Kubernetes (EKS)         │               │  Notification bus    │
-   │  (HSM/KMS)       │               │   - per-Darwin namespace   │               │  - push (Expo/APN)   │
-   │  - DNA layers    │               │   - microVM sandboxes      │               │  - email             │
+   │  Signing service │               │   Kubernetes (k3s)         │               │  Notification bus    │
+   │  (HSM/KMS)       │               │   - per-Darwin namespace   │               │  - push (Web Push)   │
+   │  - DNA layers    │               │   - gVisor/Kata pods       │               │  - email             │
    │  - audit anchors │               │   - egress proxy           │               │  - SMS (Twilio)      │
    └──────────────────┘               └────────────┬───────────────┘               └──────────────────────┘
                                                    │
@@ -94,9 +96,9 @@ This shows what's running in our infrastructure to host many Darwins.
                                   ┌────────────────────────────────┐
                                   │  Observability / metrics       │
                                   │  - OpenTelemetry collectors    │
-                                  │  - Honeycomb (traces)          │
+                                  │  - Jaeger (traces)             │
                                   │  - Prometheus (metrics)        │
-                                  │  - Sentry (app errors)         │
+                                  │  - Alertmanager                │
                                   │  - PagerDuty (alerts)          │
                                   └────────────────────────────────┘
 ```
@@ -116,8 +118,8 @@ Zooming into one tenant — what runs inside one Darwin's Kubernetes namespace.
                           ├─────────────────────────────────────────────────────────┤
                           │                                                         │
                           │   ┌─────────────────────────────────────────────────┐   │
-                          │   │       ORCHESTRATOR microVM (E2B)                │   │
-                          │   │       (long-lived, rotated every 12h)           │   │
+                          │   │       ORCHESTRATOR pod (gVisor / Kata)          │   │
+                          │   │       (long-lived Deployment, per-Darwin PVCs)  │   │
                           │   │                                                 │   │
                           │   │   ┌─────────── DNA (read-only, signed) ────┐    │   │
                           │   │   │  Layer N  (sealed lessons)             │    │   │
@@ -145,7 +147,7 @@ Zooming into one tenant — what runs inside one Darwin's Kubernetes namespace.
                           │                         │                               │
                           │                         │ dispatches neuron tasks       │
                           │                         ▼                               │
-                          │   ┌───── NEURON microVMs (ephemeral, per-dispatch) ──┐  │
+                          │   ┌───── NEURONS (in-process; code runs in E2B) ─────┐  │
                           │   │                                                  │  │
                           │   │   content.writer    browser.operator             │  │
                           │   │   accounts.mgr      analytics                    │  │
@@ -392,16 +394,16 @@ How the **Anatomy** and **Timeline** views are powered.
                   │  - In-flight task graph  │    │  - Payment ledger         │    │  - Open escalations       │
                   │    (LangGraph state)     │    │  - Escalation history     │    │    (escalation tickets)   │
                   │  - Recent activity       │    │  - Mutation history       │    │  - Lineage info           │
-                  │    heatmap (Honeycomb    │    │  - Reproduction events    │    │  - DNA layer manifest     │
-                  │    or our own metrics)   │    │                           │    │                           │
+                  │    heatmap (recent       │    │  - Reproduction events    │    │  - DNA layer manifest     │
+                  │    audit-log slice)      │    │                           │    │                           │
                   └──────────┬───────────────┘    └────────────┬──────────────┘    └────────────┬──────────────┘
                              │                                 │                                │
                              └─────────────────────────────────┼────────────────────────────────┘
                                                                │
                                                                ▼
                                               ┌─────────────────────────────────────┐
-                                              │  Platform Postgres + Honeycomb      │
-                                              │  + per-Darwin LangGraph state       │
+                                              │  Platform Postgres + audit log      │
+                                              │  + per-Darwin checkpoint state      │
                                               └─────────────────────────────────────┘
 
 Interaction:

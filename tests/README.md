@@ -1,122 +1,98 @@
 # Darwin tests
 
-One-page map of the test suite. The long-form rationale lives in
-`docs/engineering/26-testing-strategy.md`; this file just tells you where
-things go and how to run them.
+One-page map of the test suite. The long-form rationale — what each tier
+proves, how it maps to the threat model, and the CI split — lives in
+[`docs/engineering/26-testing-strategy.md`](../docs/engineering/26-testing-strategy.md);
+this file tells you where things go and how to run them.
 
 ## Layout
 
 ```
 tests/
-├── conftest.py                     # shared fixtures (vclock, signer, genesis, booted)
-├── README.md                       # this file
+├── conftest.py                 # shared fixtures: vclock, signer, genesis, booted
+├── README.md                   # this file
 │
-├── unit/                           # tier 1 — one module per test, fakes only
+├── unit/                       # tier 1 — one module per test, fakes only (mirrors src/)
 │   ├── darwin_dna/
-│   │   ├── machinery/              # kill_switch, audit, ledger, vault, treasury,
-│   │   │                           #   patch_validator, fitness, memory, neuron_*,
-│   │   │                           #   eval_harness, pause, llm_circuit_breaker
-│   │   ├── constitution/           # constitution invariants
-│   │   ├── evolution/              # reproduction, lineage, compaction, amendments
-│   │   ├── neurons/                # per-neuron unit tests
-│   │   ├── test_signature.py       # genome signing
-│   │   └── test_untrusted.py       # fence wrapping
-│   └── darwin_platform/            # mirrors src/darwin_platform/ bounded contexts
-│       ├── runtime/                # supervisor, persistence, leadership
-│       ├── tenancy/                # provisioning, vault_admin, namespace, cross-pollination
-│       ├── payments/               # billing, omnibus, stripe ramp, harvest, sanctions
-│       ├── security/               # auth, kyc, signing, key rotation, watermark
-│       ├── observability/          # monitoring, drift, merkle anchor, audit, sinks
-│       ├── escalations/            # escalation router, FCM push
-│       ├── evolution/              # patch staging, eval runner
-│       ├── infra/                  # throttles, egress proxy, browser cache
-│       ├── adapters/               # wallet, vault, browser, fiat, multichain,
-│       │                           #   litellm, stagehand, real-SDK wrappers
-│       └── k8s/                    # driver + manifests
+│   │   ├── constitution/       # spend limits, forbidden actions, escalation rules
+│   │   ├── machinery/          # kill switch, audit, ledger, treasury, vault,
+│   │   │                       #   patch validator, fitness, memory, eval harness, …
+│   │   ├── evolution/          # reproduction, lineage, compaction, amendments
+│   │   ├── neurons/            # per-neuron contracts
+│   │   ├── orchestrator_skeleton/
+│   │   └── test_{signature,identity,hyperparameters,untrusted}.py
+│   └── darwin_platform/        # one folder per bounded context
+│       ├── runtime/            # supervisor, persistence (SQLite/Postgres/RLS), leadership, audit sink
+│       ├── tenancy/            # provisioning, Vault admin, namespaces, cross-pollination
+│       ├── payments/           # billing, omnibus, ramps, harvest, sanctions
+│       ├── security/           # auth, Clerk, KYC, signing, key rotation, watermark
+│       ├── observability/      # monitoring, drift, Merkle anchor, operator audit, sinks
+│       ├── escalations/        # escalation router, Web Push (+ legacy FCM sink)
+│       ├── evolution/          # patch staging, eval runner, soma loader / merge
+│       ├── infra/              # egress proxy, throttles, browser cache
+│       ├── adapters/           # wallet/chain, vault, browser, fiat, LiteLLM, x402, …
+│       ├── k8s/                # driver, manifests, namespace backend
+│       └── client/             # typed Python SDK
 │
-├── property/                       # tier 2 — hypothesis
-│   ├── test_kill_switch_properties.py
-│   ├── test_trust_root_properties.py
-│   └── test_safety_invariants.py
-│
-├── redteam/                        # tier 3 — adversarial, mapped to doc 24 rows
-│   └── test_redteam.py             # (will be split per-threat-class over time)
-│
-├── integration/                    # tier 4 — multi-module in-process flows
-│   ├── test_boot_integration.py
-│   ├── test_runtime_resume.py
-│   ├── test_platform_*.py          # supervisor, api, auth, billing, tracing, …
-│   ├── test_pathc_*.py             # propose → validate → apply
-│   └── test_cross_pollination_*.py # write side, read side, wiring
-│
-├── simulation/                     # tier 5 — multi-day in-sim runs (slow)
-│   ├── test_simulation.py
-│   ├── test_simulation_langgraph.py
-│   └── test_sim_calibration.py
-│
-└── fixtures/                       # static test data (manifests, PDFs, sample chains)
+├── property/                   # tier 2 — Hypothesis invariants (kill switch, trust root)
+├── redteam/                    # tier 3 — one file per doc-24 threat class (9 files)
+├── integration/                # tier 4 — multi-module flows in-process (HTTP via ASGI)
+├── infra/                      # tier 5 — Docker, Compose, Helm, Terraform, CI, k8s policy,
+│                               #   observability, and config-reference contracts
+├── e2e/                        # tier 6 — the real `darwin-platform serve` process
+│   └── conftest.py             #   Server harness, server_factory, tokens, wait_for
+├── performance/                # tier 7 — latency / throughput / memory budgets
+│   └── conftest.py             #   perf fixture (best_of, p95, peak_bytes, budget)
+└── simulation/                 # tier 8 — multi-day in-process sims
 ```
+
+## Tiers and markers
+
+Every tier's `conftest.py` applies its marker automatically — never decorate
+tests by hand. The e2e, performance, and simulation tiers also add `slow`,
+so the fast loop skips them.
+
+| Tier | Marker(s) | Make target | Runs in CI |
+| ---- | --------- | ----------- | ---------- |
+| `unit/` | `unit` | `make test-unit` | every push |
+| `property/` | `property` | `make test-property` | every push |
+| `redteam/` | `redteam` | `make test-redteam` | every push + release gate |
+| `integration/` | `integration` | `make test-integration` | every push |
+| `infra/` | `infra` | `make test-infra` | every push |
+| `e2e/` | `e2e`, `slow` | `make test-e2e` | every PR (own job) + main |
+| `performance/` | `performance`, `slow` | `make test-perf` | main + weekly |
+| `simulation/` | `simulation`, `slow` | `make test-simulation` | main + weekly |
 
 ## Running
 
-From the repo root, [`Makefile`](../Makefile) targets mirror these commands (`make test-fast`, `make test-unit`, …). See `make help`.
+From the repo root; [`Makefile`](../Makefile) targets mirror these (`make help`).
 
 ```bash
-# Fast loop — every push (unit + property + redteam + integration)
-uv run pytest -m "not slow"    # make test-fast
+uv run pytest -m "not slow"     # fast loop — what every push runs (make test-fast)
+uv run pytest -m e2e            # the real server over HTTP/WS     (make test-e2e)
+uv run pytest -m slow           # sim + e2e + performance          (make test-slow)
+uv run pytest                   # everything                       (make test-all)
 
-# Single tier by path
-uv run pytest tests/unit       # make test-unit
-uv run pytest tests/integration
+uv run pytest tests/infra -rs   # -rs lists the helm/terraform/docker checks that skipped
+DARWIN_PERF_SCALE=3 uv run pytest tests/performance   # 3x budgets on a slow machine
 
-# Single tier by marker (works across paths if you ever move a test)
-uv run pytest -m unit
-uv run pytest -m property
-uv run pytest -m redteam
-uv run pytest -m integration
-uv run pytest -m simulation        # = -m slow  (make test-slow)
-
-# Full suite including the slow sim tier (CI on main + nightly)
-uv run pytest                  # make test-all
-
-# Coverage report on the genome and platform
-uv run pytest --cov=darwin_dna --cov=darwin_platform --cov-report=term-missing
+# Postgres-backed persistence / RLS / leader election (needs Postgres on :5432)
+make test-postgres
 ```
 
-## Markers
+## Where a new test goes
 
-| Marker | What it means | When it runs |
-| --- | --- | --- |
-| (none) | Implicit unit-tier test | every push |
-| `unit` | Auto-applied to `tests/unit/**` | every push |
-| `property` | Auto-applied to `tests/property/**` | every push |
-| `redteam` | Auto-applied to `tests/redteam/**` | every push |
-| `integration` | Auto-applied to `tests/integration/**` | every push |
-| `simulation` | Auto-applied to `tests/simulation/**` (also adds `slow`) | nightly + main |
-| `slow` | Anything that takes > 5s | nightly + main |
-| `asyncio` | Async test (pytest-asyncio) | normal |
+| You are testing… | Put it in |
+| ---------------- | --------- |
+| one module of `src/` | `unit/<package>/<area>/test_<module>.py` |
+| an invariant over generated inputs | `property/test_<property>_properties.py` |
+| an attack from doc 24 | `redteam/test_<threat_class>.py` (one file per threat) |
+| a flow across modules, in-process | `integration/test_<flow>.py` |
+| a deployment asset or the config docs | `infra/test_<asset>.py` |
+| behaviour only the real process shows (CLI, lifespan, restart, sockets) | `e2e/test_<journey>.py` |
+| a latency / memory budget or a scaling property | `performance/test_<area>_perf.py` |
+| a multi-day invariant | `simulation/test_<scenario>.py` |
 
-Tier markers are added automatically by the per-tier `conftest.py` — you do
-not need to decorate test functions with `@pytest.mark.unit` etc.
-
-## Where do I put a new test?
-
-| Kind of test | Goes in |
-| --- | --- |
-| Single module, fakes only, < 1s | `tests/unit/<package>/<area>/test_<module>.py` |
-| Hypothesis / property | `tests/property/test_<property>_properties.py` |
-| Adversarial scenario from doc 24 | `tests/redteam/test_<threat_class>.py` |
-| Multi-module flow (boot, resume, HTTP, lifecycle) | `tests/integration/test_<flow>.py` |
-| Multi-day in-sim invariant | `tests/simulation/test_<scenario>.py` |
-| Static data | `tests/fixtures/` |
-
-## Fixtures (`conftest.py`)
-
-| Fixture | Provides |
-| --- | --- |
-| `vclock` | A `VClock` (deterministic time) |
-| `signer` | A `SigningService` (fresh keypair per test) |
-| `genesis` | A validly signed generation-0 DNA bundle |
-| `booted` | A fully booted `DarwinRuntime` against the fake stack |
-
-The fakes themselves live in `src/darwin_fakes/` — see doc 26 § "Fakes".
+Use the fakes in `darwin_fakes`, not mocks; assert the safety property and
+that the defence was *visible* (audit record, alert, status). See doc 26's
+checklist.
