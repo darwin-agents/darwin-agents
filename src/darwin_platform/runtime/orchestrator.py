@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import hashlib
 import json
 import os
@@ -85,6 +84,7 @@ def _build_stack(
     layer_blobs: dict[str, bytes],
     layer_names: list[str],
     clock: Callable[[], float],
+    platform_public_key_pem: bytes | None = None,
 ):
     """Construct the FakeStack the runtime boots against. Real adapters
     can be swapped in via :func:`_apply_real_adapters` after construction,
@@ -102,12 +102,30 @@ def _build_stack(
     if manifest_json:
         from darwin_dna.manifest import Manifest
         stack.manifest = Manifest.model_validate_json(manifest_json)
-        stack.layer_blobs = layer_blobs
-        stack.layer_names = layer_names
+        # The ConfigMap carries blobs by name; the platform wants them by
+        # layer index (the manifest is the authority on both).
+        stack.layer_blobs = {e.index: layer_blobs[e.name] for e in stack.manifest.layers}
+        stack.layer_names = {e.index: e.name for e in stack.manifest.layers}
         # Force boot() to reconstruct identity from the manifest, not
         # the throwaway one FakeStack just minted.
         stack.identity = None
+        if platform_public_key_pem:
+            stack.signer = _VerifyOnlySigner(platform_public_key_pem)
     return stack
+
+
+class _VerifyOnlySigner:
+    """The platform's public key: boot verifies the DNA against it. Signing
+    is the supervisor's job, so a pod (running LLM-driven code) cannot."""
+
+    def __init__(self, pem: bytes) -> None:
+        self._pem = pem
+
+    def public_key_pem(self) -> bytes:
+        return self._pem
+
+    def sign(self, message: bytes) -> bytes:
+        raise PermissionError("pods cannot sign; the platform signs DNA")
 
 
 def _pod_args(substrate_path: Path) -> argparse.Namespace:
@@ -307,7 +325,10 @@ class OrchestratorState:
         # runs here, so the pod owns this state; the supervisor sets it via
         # the control API and the drive loop mirrors it into runtime.state
         # every heartbeat (same contract as the in-process Supervisor._drive).
-        self.reproduction_blocked = False
+        # Reproduction is off in pods: a child needs a supervisor-signed
+        # genesis and a funded pod of its own (not built yet), and a pod's
+        # signer cannot sign. ponytail: lift once pod-to-supervisor spawn lands.
+        self.reproduction_blocked = True
         self.disabled_neurons: set[str] = set()
         self.disabled_categories: set[str] = set()
         # Death-time code fingerprint (doc 05), captured once when the genome
@@ -446,7 +467,45 @@ class OrchestratorState:
             "llm_spend_usdc": float(llm_spend),
             "merkle_root": merkle_root,
             "crashed": self.crashed,
+            # What the supervisor needs to sign for this Darwin: whose address,
+            # what's accrued, and how much is profit (harvest fee base).
+            "wallet": {
+                "address": getattr(self.stack.wallet, "address", lambda: None)(),
+                "unsettled_usdc": getattr(self.stack.wallet, "unsettled_usdc", 0.0),
+                "stale": bool(getattr(self.stack.wallet, "stale", False)),
+            },
+            "profit_baseline_usdc": float(st.profit_baseline_usdc),
+            "starting_capital_usdc": float(st.starting_capital_usdc),
         }
+
+    # -- platform-signed money (the pod's wallet is watch-only) -----------
+    def escalations_since(self, since: int) -> dict[str, Any]:
+        """Tickets the genome posted since cursor ``since`` (a cursor past the
+        end means the pod restarted; the supervisor resets to 0)."""
+        tickets = self.stack.escalation.tickets
+        return {"tickets": tickets[max(0, since):], "next": len(tickets)}
+
+    def respond_escalation(self, ticket: str, decision: str, data: dict) -> None:
+        self.stack.escalation.respond(ticket, decision, data)
+
+    def wallet_expect(self, tx_hash: str, movement: dict) -> None:
+        expect = getattr(self.stack.wallet, "expect", None)
+        if not callable(expect):
+            raise ValueError("this wallet does not track on-chain movements")
+        expect(tx_hash, movement)
+
+    def wallet_harvest(
+        self, *, tx_hash: str, destination: str, net_usdc: float, fee_usdc: float,
+    ) -> None:
+        """The supervisor sent ``net_usdc`` to the owner in ``tx_hash``;
+        book it when it confirms, and accrue the fee for settlement."""
+        if net_usdc > 0:
+            self.wallet_expect(tx_hash, {"harvest": {
+                "destination": destination, "amount_usdc": float(net_usdc),
+                "kind": "owner_net", "ts": float(self.clock()),
+            }})
+        if fee_usdc > 0:
+            self.stack.wallet.accrue_harvest_fee(float(fee_usdc))
 
     def forensics(self) -> dict[str, Any]:
         """The pod's death-time code fingerprint — the k8s analog of the
@@ -692,7 +751,9 @@ class OrchestratorState:
         )
 
     def set_reproduction_block(self, blocked: bool) -> dict[str, Any]:
-        self.reproduction_blocked = bool(blocked)
+        if not blocked:
+            raise ValueError("reproduction is not available for pod-hosted Darwins yet")
+        self.reproduction_blocked = True
         return {"reproduction_blocked": self.reproduction_blocked}
 
     def set_disabled_neurons(self, neurons: list[str]) -> dict[str, Any]:
@@ -1158,6 +1219,50 @@ def _build_control_app(state: OrchestratorState, token: str):
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
+    @app.get("/escalations")
+    async def escalations(since: int = 0, _: None = Depends(_require_token)) -> dict:
+        return state.escalations_since(since)
+
+    @app.post("/escalations/respond")
+    async def escalations_respond(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        if body.get("decision") not in ("approve", "deny", "data") or not body.get("ticket"):
+            raise HTTPException(status_code=400, detail="ticket and decision are required")
+        state.respond_escalation(
+            str(body["ticket"]), str(body["decision"]), dict(body.get("data") or {}),
+        )
+        return {"responded": True}
+
+    @app.post("/wallet/expect")
+    async def wallet_expect(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            state.wallet_expect(str(body["tx_hash"]), dict(body["movement"]))
+        except (KeyError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"bad movement: {exc}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"expected": True}
+
+    @app.post("/wallet/harvest")
+    async def wallet_harvest(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        try:
+            state.wallet_harvest(
+                tx_hash=str(body.get("tx_hash") or ""),
+                destination=str(body["destination"]),
+                net_usdc=float(body["net_usdc"]), fee_usdc=float(body["fee_usdc"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"booked": True}
+
     @app.post("/pause")
     async def pause(
         body: dict = Body(default_factory=dict),
@@ -1180,25 +1285,11 @@ def _build_control_app(state: OrchestratorState, token: str):
         return {"killed": True}
 
     @app.post("/force-reproduce")
-    async def force_reproduce(
-        body: dict = Body(default_factory=dict),
-        _: None = Depends(_require_token),
-    ) -> dict:
-        amendment_blob = None
-        encoded = body.get("amendment_blob_b64")
-        if encoded:
-            try:
-                amendment_blob = base64.b64decode(encoded)
-            except Exception:
-                raise HTTPException(
-                    status_code=400, detail="amendment_blob_b64 is not base64",
-                )
-        state.force_reproduce(
-            amendment_blob=amendment_blob,
-            amendment_name=body.get("amendment_name"),
-            kill_parent_reason=body.get("kill_parent_reason"),
+    async def force_reproduce(_: None = Depends(_require_token)) -> dict:
+        raise HTTPException(
+            status_code=409,
+            detail="reproduction is not available for pod-hosted Darwins yet",
         )
-        return {"requested": True}
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
@@ -1269,10 +1360,20 @@ def build_parser() -> argparse.ArgumentParser:
             "legacy in-memory sink (bounded sims/tests only)."
         ),
     )
+    p.add_argument(
+        "--checkpoint-path", default="/data/checkpoint.json", type=Path,
+        help="Durable genome checkpoint (on the pod's PVC). 'none' keeps it "
+             "in memory (tests).",
+    )
     p.add_argument("--heartbeat-seconds", default=5.0, type=float)
     p.add_argument("--host", default="0.0.0.0",
                    help="Bind address for the control API.")
     p.add_argument("--log-level", default="info")
+    p.add_argument(
+        "--platform-key-path",
+        default="/run/secrets/darwin-control/platform_public_key.pem", type=Path,
+        help="Platform signing public key (PEM) to verify the DNA against.",
+    )
     p.add_argument(
         "--substrate-path",
         default="/run/secrets/darwin-control/substrate.json", type=Path,
@@ -1319,6 +1420,10 @@ def main(argv: list[str] | None = None) -> int:
         layer_blobs=layer_blobs,
         layer_names=layer_names,
         clock=clock,
+        platform_public_key_pem=(
+            args.platform_key_path.read_bytes()
+            if args.platform_key_path.exists() else None
+        ),
     )
     money_capabilities = _apply_real_adapters(
         stack, _pod_args(args.substrate_path), clock, darwin_id=args.darwin_id,
@@ -1345,6 +1450,13 @@ def main(argv: list[str] | None = None) -> int:
                 f"with the audit chain)",
                 file=sys.stderr,
             )
+
+    # Durable node-boundary checkpoint on the pod's PVC: a restarted pod
+    # resumes the same life (tick, profit baseline, open escalations).
+    if str(args.checkpoint_path).lower() != "none":
+        from .audit_sink import FileCheckpointStore
+
+        stack.checkpoint = FileCheckpointStore(args.checkpoint_path)
 
     from darwin_dna.evolution import boot
     pod_platform = stack.platform()

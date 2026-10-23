@@ -143,3 +143,28 @@ def test_parity_with_inmemory_sink_same_inputs(tmp_path, monkeypatch):
     disk = _drive(JsonlAuditSink(tmp_path / "a.jsonl"))
     assert mem._head == disk._head  # noqa: SLF001
     assert mem.merkle_root() == disk.merkle_root()
+
+
+async def test_file_checkpoint_resumes_the_same_life(tmp_path):
+    """A pod restart boots the same DNA + this file and continues where it
+    left off; a checkpoint from another organism is never resumed."""
+    from darwin_dna.evolution import boot
+    from darwin_fakes import FakeStack
+    from darwin_platform.runtime.audit_sink import FileCheckpointStore
+
+    path = tmp_path / "checkpoint.json"
+    first = FakeStack(opening_usdc=50.0, clock=lambda: 0.0)
+    first.checkpoint = FileCheckpointStore(path)
+    rt = boot(first.platform(), sleep=lambda _: None)
+    await rt.run(max_heartbeats=3)
+    tick = rt.state.tick
+    assert tick >= 3
+
+    again = FakeStack(opening_usdc=50.0, clock=lambda: 0.0)
+    again.manifest, again.layer_blobs, again.layer_names = (
+        first.manifest, first.layer_blobs, first.layer_names,
+    )
+    again.signer, again.identity = first.signer, None
+    again.checkpoint = FileCheckpointStore(path)
+    assert boot(again.platform(), sleep=lambda _: None).state.tick == tick
+    assert FileCheckpointStore(path).load("someone-else") is None

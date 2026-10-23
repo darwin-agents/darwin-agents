@@ -11,7 +11,7 @@ Two classes of data exist, as specified in [`07-isolation-and-multi-tenancy.md`]
 
 The schema lives in [`src/darwin_platform/runtime/persistence.py`](../../src/darwin_platform/runtime/persistence.py) as a template string substituting type flavors per backend (`REAL` for SQLite, `DOUBLE PRECISION` for Postgres; `INTEGER PRIMARY KEY AUTOINCREMENT` vs. `BIGSERIAL PRIMARY KEY`).
 
-Current schema version: **12** (tracked in the `schema_version` table).
+Current schema version: **13** (tracked in the `schema_version` table).
 
 > This reference is bound to the code by a contract test
 > (`tests/integration/test_schema_doc_contract.py`): every table the schema
@@ -40,6 +40,8 @@ erDiagram
         int killed
         text kill_reason
         text escalation_auto
+        text owner_subject
+        text payout_address
     }
 
     audit_entries {
@@ -165,7 +167,11 @@ The source of truth for whether a Darwin is alive. The supervisor reads this on 
 | `alive` | INTEGER | NOT NULL | 1 = alive, 0 = dead |
 | `killed` | INTEGER | NOT NULL | 1 = kill confirmed |
 | `kill_reason` | TEXT | nullable | Human-readable death/kill reason |
-| `escalation_auto` | TEXT | nullable | Unattended owner-response policy: `"approve"` / `"deny"` / NULL |
+| `escalation_auto` | TEXT | nullable | Unattended owner-response policy: `"approve"` / `"deny"` / NULL (owner responds) |
+| `quarantined`, `quarantine_reason`, `quarantine_operator`, `quarantine_applied_ts` | | v3 | Doc-09 level-4 quarantine, restored on restart |
+| `owner_subject` | TEXT | nullable, v13 | Spawning user; never reassigned on resume. Seeds dashboard ownership after a restart |
+| `payout_address` | TEXT | nullable, v13 | Owner-set, sanctions-screened destination for harvests and sweeps |
+| `payout_address_set_at` | REAL | nullable, v13 | When it last changed (change cooldown) |
 
 Indexed on `alive` for leader-resume scans.
 

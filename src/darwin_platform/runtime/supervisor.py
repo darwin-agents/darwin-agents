@@ -430,6 +430,12 @@ class Supervisor:
         # wallet; the supervisor executes every outbound transfer.
         pod_substrate: dict[str, Any] | None = None,
         pod_signer_factory: Callable[..., Any] | None = None,
+        pod_settle_min_usdc: float = 1.0,
+        pod_sync_seconds: float = 5.0,
+        # Tops up a pod Darwin's account with gas before it signs (CDP
+        # server accounts are EOAs). ``.ensure(address)``; None = operator
+        # keeps them funded.
+        gas_tank: Any | None = None,
         vault_factory: Callable[[], Any] | None = None,
         browser_factory: Callable[[Any], Any] | None = None,
         x402_factory: Callable[[Any], Any] | None = None,
@@ -773,6 +779,12 @@ class Supervisor:
         self._pod_substrate: dict[str, Any] = dict(pod_substrate or {})
         self._pod_signer_factory = pod_signer_factory
         self._pod_signers: dict[str, Any] = {}
+        # Pods' accrued metering is paid to this address once it reaches
+        # ``pod_settle_min_usdc``; pods are polled every ``pod_sync_seconds``.
+        self._platform_fee_address = self._pod_substrate.get("platform_fee_address")
+        self._pod_settle_min_usdc = float(pod_settle_min_usdc)
+        self._pod_sync_seconds = float(pod_sync_seconds)
+        self._gas_tank = gas_tank
         self._chain_networks: tuple[str, ...] = tuple(chain_networks or ("base",))
         self._vault_factory: Callable[[], Any] | None = vault_factory
         self._browser_factory: Callable[[Any], Any] | None = browser_factory
@@ -1012,19 +1024,9 @@ class Supervisor:
         # interval. Only started in K8s mode with at least one of those
         # concerns wired — the in-process path drives them from each Darwin's
         # own _drive loop instead.
-        if (
-            self._k8s_driver is not None
-            and self._k8s_maintenance_task is None
-            and (
-                self._llm_spend_reconciler is not None
-                or self._merkle_anchor is not None
-                or self._omnibus_wallet is not None
-                # Death forensics alone can drive the loop: it's the only place
-                # a k8s Darwin's NATURAL death (bankruptcy) is observed and its
-                # pod-side code fingerprint pulled before reap (doc 05).
-                or self._soma_root is not None
-            )
-        ):
+        # Always on in K8s mode: it is also what routes pod escalations to
+        # owners and settles pod metering (_sync_k8s_pods).
+        if self._k8s_driver is not None and self._k8s_maintenance_task is None:
             self._k8s_maintenance_task = loop.create_task(
                 self._k8s_maintenance_loop()
             )
@@ -1061,20 +1063,26 @@ class Supervisor:
         reconciliation (doc 05). Sleeps in short slices so shutdown cancels
         promptly even with a long interval."""
         interval = max(1.0, float(self._maintenance_interval))
-        elapsed = 0.0
+        sync_every = max(0.01, float(self._pod_sync_seconds))
+        tick = min(sync_every, 1.0)
+        elapsed = since_sync = 0.0
         while not self._closed:
             try:
-                await asyncio.sleep(min(1.0, interval))
+                await asyncio.sleep(tick)
             except asyncio.CancelledError:
                 break
             if self._closed:
                 break
-            elapsed += min(1.0, interval)
+            elapsed += tick
+            since_sync += tick
+            if not self._leader.is_leader:
+                continue
+            if since_sync >= sync_every:
+                since_sync = 0.0
+                await self._sync_k8s_pods()
             if elapsed < interval:
                 continue
             elapsed = 0.0
-            if not self._leader.is_leader:
-                continue
             try:
                 await self._run_k8s_fleet_maintenance(self._clock())
             except Exception as exc:  # noqa: BLE001 - never kill the loop
@@ -1083,6 +1091,101 @@ class Supervisor:
                     action="fleet_maintenance_failed",
                     metadata={"reason": str(exc)[:200], "driver": "k8s"},
                 )
+
+    async def _sync_k8s_pods(self) -> None:
+        """Every few seconds, per pod: route new escalation tickets (classify,
+        notify the owner), alert once on a crashed drive loop, and settle
+        accrued metering. Never raises — one bad pod can't stall the rest."""
+        for did, h in list(self._k8s_handles.items()):
+            try:
+                await self._sync_k8s_pod(did, h)
+            except Exception as exc:  # noqa: BLE001
+                self._audit.record(
+                    actor="platform.maintenance", action="pod_sync_failed",
+                    darwin_id=did, metadata={"reason": str(exc)[:200]},
+                )
+
+    async def _sync_k8s_pod(self, did: str, h: dict[str, Any]) -> None:
+        cursor = int(h.get("esc_cursor", 0))
+        feed = await self._k8s_control_get(did, f"/escalations?since={cursor}")
+        if int(feed["next"]) < cursor:
+            h["esc_cursor"] = 0  # the pod restarted; its inbox is new
+            return
+        for payload in feed["tickets"]:
+            try:
+                routed = self._router.register({**payload, "darwin_id": did})
+            except Exception:
+                continue  # malformed ticket; never stall the others
+            policy = h.get("escalation_auto")
+            if policy in ("approve", "deny"):
+                # The pod's inbox auto-answered; mirror it on the router.
+                self._router.mark_responded(routed.ticket_id, policy, {})
+        h["esc_cursor"] = int(feed["next"])
+
+        snap = await self._k8s_control_get(did, "/snapshot")
+        crashed = snap.get("crashed")
+        if crashed and h.get("crash_alerted") != crashed:
+            h["crash_alerted"] = crashed
+            self._audit.record(
+                actor="platform.supervisor", action="drive_crashed",
+                darwin_id=did, metadata={"error": crashed},
+            )
+            self._fleet_alert("drive_crashed", {"darwin_id": did, "error": crashed})
+        await self._settle_k8s(did, h, snap)
+
+    async def _settle_k8s(
+        self, did: str, h: dict[str, Any], snap: dict[str, Any], *, force: bool = False,
+    ) -> None:
+        """Pay a pod's accrued metering + fees to the fee address. One
+        settlement in flight per Darwin, until the pod's books show it."""
+        unsettled = float((snap.get("wallet") or {}).get("unsettled_usdc") or 0.0)
+        inflight = h.get("settling")
+        if inflight and (unsettled < inflight[0] - 1e-9 or self._clock() - inflight[1] > 600):
+            inflight = h["settling"] = None
+        if inflight or self._pod_signer_factory is None or not self._platform_fee_address:
+            return
+        if unsettled < (1e-6 if force else self._pod_settle_min_usdc):
+            return
+        tx = await self._pod_transfer(
+            did, to=self._platform_fee_address, amount_usdc=round(unsettled, 6),
+            purpose="settlement",
+        )
+        h["settling"] = (unsettled, self._clock(), tx)
+
+    async def _pod_transfer(
+        self, did: str, *, to: str, amount_usdc: float, purpose: str,
+        movement: dict[str, Any] | None = None,
+    ) -> str:
+        """The only way money leaves a pod Darwin's wallet: screen the
+        recipient, top up gas, sign with the Darwin's own account, then tell
+        the pod which row to book when the chain shows it. Returns tx hash."""
+        signer = self._pod_signer(did)
+        if self._sanctions is not None and to != self._platform_fee_address:
+            verdict = self._sanctions.check(str(to))
+            if not verdict.allowed:
+                raise SupervisorError(
+                    f"sanctions:{verdict.source} refused {to!r}: "
+                    f"{verdict.reason or 'screening refused'}"
+                )
+        if self._gas_tank is not None:
+            await asyncio.to_thread(self._gas_tank.ensure, signer.address())
+        try:
+            tx = await asyncio.to_thread(
+                signer.transfer, to=to, amount_usdc=float(amount_usdc), memo=purpose,
+            )
+        except Exception as exc:
+            raise SupervisorError(f"{purpose} transfer failed: {exc}") from exc
+        tx_hash = str(tx.get("tx_hash", "")) if isinstance(tx, dict) else str(tx)
+        self._audit.record(
+            actor="platform.supervisor", action="pod_transfer", darwin_id=did,
+            metadata={"purpose": purpose, "to": to,
+                      "amount_usdc": float(amount_usdc), "tx_hash": tx_hash},
+        )
+        if movement is not None:
+            await self._k8s_control_post(
+                did, "/wallet/expect", {"tx_hash": tx_hash, "movement": movement},
+            )
+        return tx_hash
 
     async def _resume_from_persistence(self) -> int:
         """Re-spawn every persisted Darwin marked alive. Lossless when a
@@ -1093,6 +1196,10 @@ class Supervisor:
 
         Returns the count of resumed Darwins."""
         assert self._lifecycle is not None
+        if self._k8s_driver is not None:
+            # Pods outlive the supervisor; _reconcile_k8s re-adopts them.
+            # Re-spawning here would start a duplicate pod per row.
+            return 0
         resumed = 0
         for rec in self._lifecycle.list_alive():
             if rec.darwin_id in self._darwins:
@@ -1113,6 +1220,7 @@ class Supervisor:
                     parent_id=rec.parent_id,
                     actor="platform.resume",
                     _resume_id=rec.darwin_id if has_manifest else None,
+                    _owner=rec.owner_subject,
                 )
                 self._audit.record(
                     actor="platform.resume",
@@ -1182,6 +1290,7 @@ class Supervisor:
         parent_id: str | None = None,
         actor: str = "anonymous",
         _resume_id: str | None = None,
+        _owner: str | None = None,
     ) -> DarwinStatus:
         """Mint genesis, boot, start the drive task. Returns the new Darwin's
         status. ``parent_id`` is metadata only for genesis spawns — children
@@ -1503,7 +1612,8 @@ class Supervisor:
                 runtime=runtime,
                 spawned_at=self._clock(),
                 parent_id=parent_id,
-                owner_subject=actor,
+                # The spawning user owns it; a resume keeps the original owner.
+                owner_subject=_owner or actor,
                 escalation_auto=escalation_auto,
             )
             self._darwins[handle.darwin_id] = handle
@@ -1541,6 +1651,7 @@ class Supervisor:
                         parent_id=parent_id,
                         spawned_at=handle.spawned_at,
                         escalation_auto=escalation_auto,
+                        owner_subject=handle.owner_subject,
                     )
                 except Exception:
                     pass
@@ -3465,6 +3576,8 @@ class Supervisor:
                 actor=actor, action="kill", darwin_id=darwin_id,
                 metadata={"reason": reason, "driver": "k8s"},
             )
+            if self._lifecycle is not None:
+                self._lifecycle.mark_killed(darwin_id, reason=reason)
             # Pull the pod's death-time code fingerprint and persist it to our
             # own forensics store BEFORE the pod is reaped — the pod's
             # filesystem is the only place it lives, so this is the durable
@@ -4338,16 +4451,18 @@ class Supervisor:
 
         The supervisor records the spawn in its audit chain + lineage
         registry; subsequent reads route to the driver's snapshot."""
-        from .driver import DarwinSpec
-        import uuid as _uuid
+        from darwin_fakes.fake_platform import mint_genesis
 
-        # The driver expects an externally-minted id since it needs the
-        # namespace name before the pod boots. We mint a UUID here; the
-        # orchestrator's genesis id is independent and ends up in the
-        # status snapshot as the real darwin_id (the supervisor surfaces
-        # the supervisor-side id; the snapshot also carries the genome's
-        # own identity for cross-reference).
-        supervisor_id = _uuid.uuid4().hex[:16]
+        from .driver import DarwinSpec
+
+        # Mint + sign the genesis here (the platform key never leaves the
+        # supervisor) and use its Darwin id for the namespace, so the pod
+        # boots as the same organism on every restart instead of minting a
+        # fresh, randomly keyed identity each time.
+        manifest, blobs, names, identity = mint_genesis(
+            self._signer, birth_ts=self._clock(),
+        )
+        supervisor_id = identity.darwin_id
         # Mint this Darwin's LiteLLM virtual key (doc 13) BEFORE the pod boots
         # and seal it into the per-Darwin Secret, so the pod authenticates as
         # its own key — not the shared fleet master key. FATAL on mint failure
@@ -4420,7 +4535,11 @@ class Supervisor:
                     secret_extras[ORGANISM_DB_DSN_SECRET_KEY] = boot[
                         "organism_db_dsn"
                     ]
-        from ..k8s.manifests import DATA_MOUNT_PATH, SUBSTRATE_SECRET_KEY
+        from ..k8s.manifests import (
+            DATA_MOUNT_PATH,
+            PLATFORM_PUBLIC_KEY_SECRET_KEY,
+            SUBSTRATE_SECRET_KEY,
+        )
 
         substrate = dict(self._pod_substrate)
         if self._pod_signer_factory is not None:
@@ -4432,11 +4551,18 @@ class Supervisor:
                 wallet_state_dir=f"{DATA_MOUNT_PATH}/wallet",
             )
         secret_extras[SUBSTRATE_SECRET_KEY] = json.dumps(substrate)
+        # The pod verifies its DNA against this key; it cannot sign.
+        secret_extras[PLATFORM_PUBLIC_KEY_SECRET_KEY] = (
+            self._signer.public_key_pem().decode("ascii")
+        )
         spec = DarwinSpec(
             darwin_id=supervisor_id,
             opening_usdc=float(opening_usdc),
             escalation_auto=escalation_auto,
             parent_id=parent_id,
+            manifest_json=manifest.model_dump_json(),
+            layer_blobs={names[i]: blob for i, blob in blobs.items()},
+            layer_names=[names[i] for i in sorted(names)],
             secret_extras=secret_extras,
             # Enable real on-disk soma merge + soma-content death forensics in
             # the pod when the platform is configured with a soma root (docs
@@ -4476,7 +4602,14 @@ class Supervisor:
             # Same convention as the in-process handle: the spawning actor
             # is the owner (doc 17 money flows resolve through this).
             "owner_subject": actor,
+            "escalation_auto": escalation_auto,
         }
+        if self._lifecycle is not None:
+            self._lifecycle.upsert_spawn(
+                darwin_id=supervisor_id, opening_usdc=float(opening_usdc),
+                parent_id=parent_id, spawned_at=spawned_at,
+                escalation_auto=escalation_auto, owner_subject=actor,
+            )
         if parent_id:
             self._lineage_registry.add(
                 LineageEdge(
@@ -4513,6 +4646,26 @@ class Supervisor:
             open_escalations=0,
         )
 
+    def owner_of(self, darwin_id: str) -> str | None:
+        """The Darwin's owner subject, or None if unknown/anonymous."""
+        h = self._darwins.get(darwin_id)
+        owner = h.owner_subject if h is not None else (
+            self._k8s_handles.get(darwin_id, {}).get("owner_subject")
+        )
+        if owner is None and self._lifecycle is not None:
+            rec = self._lifecycle.get(darwin_id)
+            owner = rec.owner_subject if rec is not None else None
+        return None if owner in (None, "anonymous") else owner
+
+    def owners(self) -> dict[str, set[str]]:
+        """owner subject → Darwin ids (persisted rows + live handles)."""
+        out = self._lifecycle.owners() if self._lifecycle is not None else {}
+        for did in [*self._darwins, *self._k8s_handles]:
+            owner = self.owner_of(did)
+            if owner:
+                out.setdefault(owner, set()).add(did)
+        return out
+
     def _pod_signer(self, darwin_id: str) -> Any:
         """This k8s Darwin's signing account (built once; get-or-create by
         name, so a supervisor restart re-binds the same account)."""
@@ -4543,14 +4696,15 @@ class Supervisor:
                 snapshot = await self._k8s_driver.snapshot(did)
             except Exception:
                 snapshot = None
+            # Namespace annotations don't carry the owner; the lifecycle row
+            # does (owner-scoped money flows refuse anonymous).
+            row = self._lifecycle.get(did) if self._lifecycle is not None else None
             self._k8s_handles[did] = {
                 "spawned_at": spawned_at,
                 "parent_id": parent_id,
                 "snapshot": snapshot,
-                # Namespace annotations don't carry the owner; a re-adopted
-                # Darwin is anonymous-owned until tenancy bookkeeping is
-                # persisted (owner-scoped money flows refuse anonymous).
-                "owner_subject": "anonymous",
+                "owner_subject": (row.owner_subject if row else None) or "anonymous",
+                "escalation_auto": row.escalation_auto if row else None,
             }
             if parent_id:
                 try:
@@ -6562,15 +6716,23 @@ class Supervisor:
         return self._push_vapid_public_key
 
     def _wire_push_persistence(self, sink: Any) -> None:
-        """Hook the persistent push subscription store up to the live
-        WebPushNotificationSink (if both are present). Called at the tail
-        of ``__init__`` once both objects exist. No-op when the sink isn't
-        a Web Push one or there's no store."""
-        store = self._push_subscription_store
-        if store is None or sink is None:
+        """Hook the live WebPushNotificationSink (alone or inside a fan-out)
+        up to the owner resolver and the persistent subscription store.
+        Called at the tail of ``__init__`` once both objects exist. No-op
+        when there's no Web Push sink."""
+        if sink is None:
             return
+        # A fan-out (e.g. Slack + Web Push) wraps the push sink; wire it too.
+        for inner in getattr(sink, "_sinks", None) or ():
+            self._wire_push_persistence(inner)
         # Duck-typed — avoid importing the concrete class to keep the
         # supervisor independent of the [webpush] optional extra.
+        set_resolver = getattr(sink, "set_owner_resolver", None)
+        if callable(set_resolver):
+            set_resolver(self.owner_of)
+        store = self._push_subscription_store
+        if store is None:
+            return
         load = getattr(store, "load_into_sink", None)
         set_purge = getattr(sink, "set_subscription_purge", None)
         if not (callable(load) and callable(set_purge)):
@@ -7439,6 +7601,7 @@ class Supervisor:
                         parent_id=parent.darwin_id,
                         spawned_at=child_handle.spawned_at,
                         escalation_auto=child_handle.escalation_auto,
+                        owner_subject=child_handle.owner_subject,
                     )
                 except Exception:
                     pass

@@ -199,3 +199,33 @@ def _merkle_root_spilling(leaves: Iterator[str], *, tmp_dir: Path) -> str:
                 os.unlink(p)
             except OSError:
                 pass
+
+
+class FileCheckpointStore:
+    """The genome's latest node-boundary checkpoint as one JSON file,
+    replaced atomically — the pod's durable twin of ``MemoryCheckpointStore``
+    (``/data`` is the pod's PVC), so a restarted pod resumes the same life
+    instead of booting fresh."""
+
+    def __init__(self, path: str | os.PathLike) -> None:
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self.saves = 0
+
+    def save(self, darwin_id: str, node: str, state: dict) -> None:
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(
+            {"darwin_id": darwin_id, "node": node, "state": state},
+            # OrchestratorState dumps may hold frozensets (required_tags).
+            default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o),
+        ))
+        os.replace(tmp, self._path)
+        self.saves += 1
+
+    def load(self, darwin_id: str) -> dict | None:
+        if not self._path.exists():
+            return None
+        rec = json.loads(self._path.read_text())
+        if rec.get("darwin_id") != darwin_id:
+            return None  # another organism's checkpoint: never resume it
+        return {"node": rec["node"], "state": rec["state"]}

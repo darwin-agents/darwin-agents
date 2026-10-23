@@ -94,6 +94,8 @@ ORGANISM_DB_DSN_SECRET_KEY = "organism_db_dsn"
 # Secret key holding the pod's substrate settings (JSON): what the pod's own
 # ``serve`` parse needs to build its LLM / browser / sandbox / watch wallet.
 SUBSTRATE_SECRET_KEY = "substrate.json"
+# The platform signing public key (PEM) the pod verifies its DNA against.
+PLATFORM_PUBLIC_KEY_SECRET_KEY = "platform_public_key.pem"
 
 
 @dataclass(frozen=True)

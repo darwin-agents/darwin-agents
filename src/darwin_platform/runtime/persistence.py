@@ -160,7 +160,10 @@ CREATE TABLE IF NOT EXISTS darwin_lifecycle (
     quarantined           INTEGER NOT NULL DEFAULT 0,
     quarantine_reason     TEXT,
     quarantine_operator   TEXT,
-    quarantine_applied_ts {real}
+    quarantine_applied_ts {real},
+    owner_subject         TEXT,
+    payout_address        TEXT,
+    payout_address_set_at {real}
 );
 CREATE INDEX IF NOT EXISTS darwin_lifecycle_alive_idx ON darwin_lifecycle(alive);
 
@@ -342,7 +345,7 @@ CREATE TABLE IF NOT EXISTS processed_webhook_events (
 # The current schema version. Bump and add a migration each time the
 # table layout changes. The migration framework runs every step from
 # the persisted version up to this number on open.
-CURRENT_SCHEMA_VERSION: int = 12
+CURRENT_SCHEMA_VERSION: int = 13
 
 # Platform tables that carry a single ``darwin_id`` tenant column and are
 # therefore subject to row-level security (doc 07 §"Data isolation",
@@ -1773,7 +1776,8 @@ class LifecycleRecord:
         "darwin_id", "opening_usdc", "last_balance", "parent_id",
         "spawned_at", "alive", "killed", "kill_reason", "escalation_auto",
         "quarantined", "quarantine_reason", "quarantine_operator",
-        "quarantine_applied_ts",
+        "quarantine_applied_ts", "owner_subject", "payout_address",
+        "payout_address_set_at",
     )
 
     def __init__(
@@ -1792,6 +1796,9 @@ class LifecycleRecord:
         quarantine_reason: str | None = None,
         quarantine_operator: str | None = None,
         quarantine_applied_ts: float | None = None,
+        owner_subject: str | None = None,
+        payout_address: str | None = None,
+        payout_address_set_at: float | None = None,
     ) -> None:
         self.darwin_id = darwin_id
         self.opening_usdc = opening_usdc
@@ -1808,6 +1815,13 @@ class LifecycleRecord:
         self.quarantine_reason = quarantine_reason
         self.quarantine_operator = quarantine_operator
         self.quarantine_applied_ts = quarantine_applied_ts
+        # Who owns this Darwin (the spawning user). Persisted so ownership —
+        # dashboard access and every owner-scoped money flow — survives a
+        # supervisor restart (it used to fall back to "anonymous").
+        self.owner_subject = owner_subject
+        # Where harvests/sweeps may go in production (owner-set, screened).
+        self.payout_address = payout_address
+        self.payout_address_set_at = payout_address_set_at
 
     def to_json(self) -> dict:
         return {
@@ -1824,6 +1838,9 @@ class LifecycleRecord:
             "quarantine_reason": self.quarantine_reason,
             "quarantine_operator": self.quarantine_operator,
             "quarantine_applied_ts": self.quarantine_applied_ts,
+            "owner_subject": self.owner_subject,
+            "payout_address": self.payout_address,
+            "payout_address_set_at": self.payout_address_set_at,
         }
 
 
@@ -2178,6 +2195,14 @@ class PersistentWebhookEventStore:
             )
 
 
+_LIFECYCLE_COLS = (
+    "darwin_id, opening_usdc, last_balance, parent_id, spawned_at, alive, "
+    "killed, kill_reason, escalation_auto, quarantined, quarantine_reason, "
+    "quarantine_operator, quarantine_applied_ts, owner_subject, "
+    "payout_address, payout_address_set_at"
+)
+
+
 class PersistentLifecycleStore:
     """Backend-backed lifecycle table for runtime resume.
 
@@ -2196,6 +2221,7 @@ class PersistentLifecycleStore:
         parent_id: str | None,
         spawned_at: float,
         escalation_auto: str | None,
+        owner_subject: str | None = None,
     ) -> None:
         # On a fresh insert ``opening_usdc`` is the genesis treasury and is
         # the seed for ``last_balance``. On conflict — i.e. resume after
@@ -2208,15 +2234,20 @@ class PersistentLifecycleStore:
             self._backend.execute(
                 "INSERT INTO darwin_lifecycle "
                 "(darwin_id, opening_usdc, last_balance, parent_id, "
-                "spawned_at, alive, killed, kill_reason, escalation_auto) "
-                "VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?) "
+                "spawned_at, alive, killed, kill_reason, escalation_auto, "
+                "owner_subject) "
+                "VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?, ?) "
                 "ON CONFLICT(darwin_id) DO UPDATE SET "
                 "parent_id = excluded.parent_id, "
                 "alive = 1, killed = 0, kill_reason = NULL, "
-                "escalation_auto = excluded.escalation_auto",
+                "escalation_auto = excluded.escalation_auto, "
+                # The owner is a fact of birth: a resume never reassigns it.
+                "owner_subject = COALESCE(darwin_lifecycle.owner_subject, "
+                "excluded.owner_subject)",
                 (
                     darwin_id, float(opening_usdc), float(opening_usdc),
                     parent_id, float(spawned_at), escalation_auto,
+                    owner_subject,
                 ),
             )
 
@@ -2266,12 +2297,27 @@ class PersistentLifecycleStore:
                 ),
             )
 
+    def set_payout_address(
+        self, darwin_id: str, *, address: str, set_at: float,
+    ) -> None:
+        with self._backend:
+            self._backend.execute(
+                "UPDATE darwin_lifecycle SET payout_address = ?, "
+                "payout_address_set_at = ? WHERE darwin_id = ?",
+                (address, float(set_at), darwin_id),
+            )
+
+    def owners(self) -> dict[str, set[str]]:
+        """owner_subject → Darwin ids, to seed ownership after a restart."""
+        out: dict[str, set[str]] = {}
+        for rec in self.list_all():
+            if rec.owner_subject:
+                out.setdefault(rec.owner_subject, set()).add(rec.darwin_id)
+        return out
+
     def get(self, darwin_id: str) -> LifecycleRecord | None:
         row = self._backend.execute(
-            "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
-            "spawned_at, alive, killed, kill_reason, escalation_auto, "
-            "quarantined, quarantine_reason, quarantine_operator, "
-            "quarantine_applied_ts "
+            f"SELECT {_LIFECYCLE_COLS} "
             "FROM darwin_lifecycle WHERE darwin_id = ?",
             (darwin_id,),
         ).fetchone()
@@ -2281,20 +2327,14 @@ class PersistentLifecycleStore:
 
     def list_alive(self) -> list[LifecycleRecord]:
         rows = list(self._backend.execute(
-            "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
-            "spawned_at, alive, killed, kill_reason, escalation_auto, "
-            "quarantined, quarantine_reason, quarantine_operator, "
-            "quarantine_applied_ts "
+            f"SELECT {_LIFECYCLE_COLS} "
             "FROM darwin_lifecycle WHERE alive = 1 ORDER BY spawned_at ASC"
         ).fetchall())
         return [_lifecycle_from_row(r) for r in rows]
 
     def list_all(self) -> list[LifecycleRecord]:
         rows = list(self._backend.execute(
-            "SELECT darwin_id, opening_usdc, last_balance, parent_id, "
-            "spawned_at, alive, killed, kill_reason, escalation_auto, "
-            "quarantined, quarantine_reason, quarantine_operator, "
-            "quarantine_applied_ts "
+            f"SELECT {_LIFECYCLE_COLS} "
             "FROM darwin_lifecycle ORDER BY spawned_at ASC"
         ).fetchall())
         return [_lifecycle_from_row(r) for r in rows]
@@ -2324,6 +2364,13 @@ def _lifecycle_from_row(row) -> LifecycleRecord:
         quarantine_applied_ts=(
             float(_get("quarantine_applied_ts"))
             if _get("quarantine_applied_ts") is not None
+            else None
+        ),
+        owner_subject=_get("owner_subject"),
+        payout_address=_get("payout_address"),
+        payout_address_set_at=(
+            float(_get("payout_address_set_at"))
+            if _get("payout_address_set_at") is not None
             else None
         ),
     )
@@ -2571,7 +2618,23 @@ _MIGRATIONS: dict[int, Any] = {
     # so no ALTER needed; the bump just ensures opened DBs from older code
     # get the version row updated.
     12: lambda backend: _migrate_v12_enable_rls(backend),
+    13: lambda backend: _migrate_v13_owner_columns(backend),
 }
+
+
+def _migrate_v13_owner_columns(backend: _Backend) -> None:
+    """v13: persist each Darwin's owner + payout address on darwin_lifecycle,
+    so ownership and owner-scoped money flows survive a restart."""
+    real = "DOUBLE PRECISION" if backend.kind == "postgres" else "REAL"
+    for name, coldef in (
+        ("owner_subject", "TEXT"),
+        ("payout_address", "TEXT"),
+        ("payout_address_set_at", real),
+    ):
+        if not _column_exists(backend, "darwin_lifecycle", name):
+            backend.execute(
+                f"ALTER TABLE darwin_lifecycle ADD COLUMN {name} {coldef}"
+            )
 
 
 def _migrate_v12_enable_rls(backend: _Backend) -> None:

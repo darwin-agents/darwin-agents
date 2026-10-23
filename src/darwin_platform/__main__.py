@@ -1882,7 +1882,9 @@ def _serve(args: argparse.Namespace) -> int:
                     or os.environ.get("CLERK_AUDIENCE")
                 ),
             )
-            token_store = ClerkTokenStore(verifier=verifier)
+            # Seed ownership from the persisted owners so a restart doesn't
+            # 403 every owner on their own Darwins.
+            token_store = ClerkTokenStore(verifier=verifier, ownership=sup.owners())
 
     app = build_app(
         sup,
