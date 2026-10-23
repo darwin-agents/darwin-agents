@@ -23,9 +23,9 @@ export function TreasuryStrip({
   const balance = asNumber(status?.balance_usdc);
   const profit = asNumber(status?.profit_usdc);
   const generation = asNumber(status?.generation);
-  const spent = asNumber(billing?.infrastructure.gross_usdc);
+  const spent = asNumber(billing?.infrastructure?.gross_usdc);
   const unsettled = asNumber(status?.unsettled_usdc);
-  const harvested = asNumber(billing?.harvests.net_usdc);
+  const harvested = asNumber(billing?.harvests?.net_usdc);
 
   return (
     <Card className="flex flex-wrap items-center gap-x-8 gap-y-2 p-4">

@@ -100,10 +100,10 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
         <CardContent className="grid gap-4 sm:grid-cols-3">
           <BillingMetric
             label="Infrastructure spent"
-            value={formatUsdc(billing?.infrastructure.gross_usdc)}
+            value={formatUsdc(billing?.infrastructure?.gross_usdc)}
           />
-          <BillingMetric label="Harvested (net)" value={formatUsdc(billing?.harvests.net_usdc)} />
-          <BillingMetric label="Harvest fees" value={formatUsdc(billing?.harvests.fee_usdc)} />
+          <BillingMetric label="Harvested (net)" value={formatUsdc(billing?.harvests?.net_usdc)} />
+          <BillingMetric label="Harvest fees" value={formatUsdc(billing?.harvests?.fee_usdc)} />
         </CardContent>
       </Card>
 

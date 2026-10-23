@@ -103,32 +103,35 @@ function cspFor(nonce: string): string {
 
 const isPublic = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/terms", "/privacy"]);
 
-const clerkHandler = clerkMiddleware(async (auth, req) => {
-  if (isPublic(req)) return;
-  const { userId, redirectToSignIn } = await auth();
-  if (!userId) return redirectToSignIn();
-});
-
-export default async function middleware(req: NextRequest, event: NextFetchEvent) {
+/** Pass a fresh CSP nonce to the renderer via the *request* header (so Next
+ * stamps it onto its <script> tags) and set the same policy on the response.
+ * Clerk's script/connect/img domains are folded in by `cspFor`; Clerk's own
+ * script loads via 'strict-dynamic' from Next's nonced bootstrap. */
+function nextWithCsp(req: NextRequest): NextResponse {
   // btoa + crypto.randomUUID are both available in the Edge runtime.
   const nonce = isProd ? btoa(crypto.randomUUID()) : "";
   const csp = cspFor(nonce);
-
-  // Pass the nonce to the renderer via the *request* CSP header so Next
-  // stamps it onto its <script> tags. Clerk's own script/connect/img domains
-  // are folded into the policy by `cspFor` when CLERK_ENABLED (see the
-  // CLERK_* allowlists above); Clerk's script loads via 'strict-dynamic'
-  // from Next's nonced bootstrap.
   const requestHeaders = new Headers(req.headers);
   if (isProd) requestHeaders.set("content-security-policy", csp);
-
-  const res = CLERK_ENABLED
-    ? (((await clerkHandler(req, event)) as NextResponse | undefined) ??
-      NextResponse.next({ request: { headers: requestHeaders } }))
-    : NextResponse.next({ request: { headers: requestHeaders } });
-
+  const res = NextResponse.next({ request: { headers: requestHeaders } });
   res.headers.set("Content-Security-Policy", csp);
   return res;
+}
+
+// Returning our response from the handler is what makes Clerk use it (it
+// decorates it with its own headers). Clerk always returns a response, so a
+// fallback *after* clerkMiddleware never ran — the nonce never reached the
+// renderer and a production build blocked every script.
+const clerkHandler = clerkMiddleware(async (auth, req) => {
+  if (!isPublic(req)) {
+    const { userId, redirectToSignIn } = await auth();
+    if (!userId) return redirectToSignIn();
+  }
+  return nextWithCsp(req);
+});
+
+export default async function middleware(req: NextRequest, event: NextFetchEvent) {
+  return CLERK_ENABLED ? clerkHandler(req, event) : nextWithCsp(req);
 }
 
 export const config = {
