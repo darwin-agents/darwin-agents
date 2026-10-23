@@ -547,6 +547,12 @@ ENDPOINTS: dict[tuple[str, str], tuple[str, str | None]] = {
         "Which adapters / features are live (real vs fake): wallet, LLM, "
         "sandbox, browser, KYC, fiat, etc.",
     ),
+    ("GET", "/platform/money/capabilities"): (
+        "Get money rails",
+        "Which payment rails this deployment has wired (wallet provider + "
+        "network, fiat ramp, sanctions, KYC, omnibus, x402), each with a "
+        "`live` flag, plus the caller's operator scope.",
+    ),
     ("GET", "/platform/darwins/{darwin_id}/forensics"): (
         "List pod forensics",
         "Soma forensic snapshots captured for a Darwin's orchestrator pod.",
