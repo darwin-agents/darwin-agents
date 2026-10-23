@@ -2851,6 +2851,11 @@ class Supervisor:
             raise SupervisorError("harvest amount must be positive")
         if not destination:
             raise SupervisorError("harvest destination is required")
+        if self._is_k8s(darwin_id):
+            return await self._harvest_k8s(
+                darwin_id, amount_usdc=float(amount_usdc),
+                destination=destination, actor=actor,
+            )
         with span(
             "supervisor.harvest",
             darwin_id=darwin_id,
@@ -2898,6 +2903,80 @@ class Supervisor:
                 },
             )
             return {**wallet_row, "ledger": ledger_row}
+
+    async def _harvest_k8s(
+        self, did: str, *, amount_usdc: float, destination: str, actor: str,
+    ) -> dict[str, Any]:
+        """Harvest from a pod Darwin: the supervisor signs the net transfer
+        to the owner; the pod books it and accrues the fee for settlement."""
+        snap = await self._k8s_control_get(did, "/snapshot")
+        balance = float(snap.get("balance_usdc") or 0.0)
+        if amount_usdc > balance + 1e-9:
+            raise SupervisorError(
+                f"wallet refused harvest: ${amount_usdc:.2f} exceeds balance "
+                f"${balance:.2f}"
+            )
+        # Before the first perceive there is no baseline: all principal.
+        profit = (
+            balance - float(snap.get("profit_baseline_usdc") or 0.0)
+            if float(snap.get("starting_capital_usdc") or 0.0) > 0 else 0.0
+        )
+        fee = self._billing.policy.harvest_fee(amount_usdc, profit_usdc=profit)
+        net = amount_usdc - fee
+        # ponytail: the pod can still accrue a few cents of metering between
+        # this snapshot and booking the transfer; reserve first if it matters.
+        tx = (
+            await self._pod_transfer(did, to=destination, amount_usdc=net, purpose="harvest")
+            if net > 0 else ""
+        )
+        await self._k8s_control_post(did, "/wallet/harvest", {
+            "tx_hash": tx, "destination": destination,
+            "net_usdc": net, "fee_usdc": fee,
+        })
+        ledger_row = self._billing.record_harvest(
+            did, gross_usdc=amount_usdc, fee_usdc=fee, destination=destination,
+        )
+        self._audit.record(
+            actor=actor, action="harvest", darwin_id=did,
+            metadata={"amount_usdc": amount_usdc, "destination": destination,
+                      "fee_usdc": float(fee), "net_usdc": float(net),
+                      "tx_hash": tx, "driver": "k8s"},
+        )
+        return {
+            "gross_usdc": amount_usdc, "net_usdc": net, "fee_usdc": fee,
+            "destination": destination, "ts": float(self._clock()),
+            "tx_hash": tx, "ledger": ledger_row,
+        }
+
+    async def _k8s_close_out(self, did: str) -> None:
+        """On death: settle what's accrued, then sweep the rest to the
+        owner's payout address when one is set (else it stays in the wallet,
+        harvestable). Once per Darwin; audited + paged on failure."""
+        h = self._k8s_handles.get(did)
+        if h is None or h.get("closed_out") or self._pod_signer_factory is None:
+            return
+        h["closed_out"] = True
+        try:
+            snap = await self._k8s_control_get(did, "/snapshot")
+            await self._settle_k8s(did, h, snap, force=True)
+            row = self._lifecycle.get(did) if self._lifecycle is not None else None
+            dest = row.payout_address if row is not None else None
+            rest = round(float(snap.get("balance_usdc") or 0.0), 6)
+            if dest and rest > 0:
+                await self._pod_transfer(
+                    did, to=dest, amount_usdc=rest, purpose="sweep",
+                    movement={"sweep_out": {
+                        "destination": dest, "amount_usdc": rest,
+                        "ts": float(self._clock()),
+                    }},
+                )
+        except Exception as exc:  # noqa: BLE001
+            h["closed_out"] = False  # retried by the next maintenance pass
+            self._audit.record(
+                actor="platform.supervisor", action="close_out_failed",
+                darwin_id=did, metadata={"reason": str(exc)[:200]},
+            )
+            self._fleet_alert("close_out_failed", {"darwin_id": did, "reason": str(exc)[:200]})
 
     async def billing(self, darwin_id: str) -> dict[str, Any]:
         if not self._known(darwin_id):
@@ -3578,6 +3657,7 @@ class Supervisor:
             )
             if self._lifecycle is not None:
                 self._lifecycle.mark_killed(darwin_id, reason=reason)
+            await self._k8s_close_out(darwin_id)
             # Pull the pod's death-time code fingerprint and persist it to our
             # own forensics store BEFORE the pod is reaped — the pod's
             # filesystem is the only place it lives, so this is the durable
@@ -3754,6 +3834,18 @@ class Supervisor:
         it. The token value is never written to the audit log."""
         if decision not in ("approve", "deny", "data"):
             raise SupervisorError(f"unknown decision: {decision}")
+        if self._is_k8s(darwin_id):
+            out = dict(data or {})
+            await self._k8s_control_post(darwin_id, "/escalations/respond", {
+                "ticket": escalation_id, "decision": decision, "data": out,
+            })
+            self._router.mark_responded(escalation_id, decision, out)
+            self._audit.record(
+                actor=actor, action="respond_escalation", darwin_id=darwin_id,
+                metadata={"escalation_id": escalation_id, "decision": decision,
+                          "driver": "k8s"},
+            )
+            return
         with span(
             "supervisor.respond_escalation",
             darwin_id=darwin_id,
@@ -5162,6 +5254,7 @@ class Supervisor:
                     reason=getattr(snap, "death_reason", None) or "death",
                     actor="platform.maintenance",
                 )
+                await self._k8s_close_out(did)
         # LLM per-key spend (doc 13).
         self._reconcile_llm_from_snapshots(snaps)
         # Daily Merkle anchor (doc 29): collect each pod's audit root.

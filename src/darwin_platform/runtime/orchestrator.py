@@ -502,7 +502,7 @@ class OrchestratorState:
         if net_usdc > 0:
             self.wallet_expect(tx_hash, {"harvest": {
                 "destination": destination, "amount_usdc": float(net_usdc),
-                "kind": "owner_net", "ts": float(self.clock()),
+                "kind": "owner_net", "ts": float(self._clock()),
             }})
         if fee_usdc > 0:
             self.stack.wallet.accrue_harvest_fee(float(fee_usdc))
@@ -982,7 +982,21 @@ def _build_control_app(state: OrchestratorState, token: str):
             "darwin_platform.orchestrator needs the [platform] extra"
         ) from exc
 
-    app = FastAPI(title=f"darwin-orchestrator:{state.darwin_id}")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan(_app):
+        # Start the drive loop once uvicorn's event loop is up; stop it on
+        # shutdown.
+        state.start()
+        try:
+            yield
+        finally:
+            await state.stop()
+
+    app = FastAPI(
+        title=f"darwin-orchestrator:{state.darwin_id}", lifespan=_lifespan,
+    )
 
     def _require_token(authorization: str | None = Header(default=None)) -> None:
         # Defense in depth — even with NetworkPolicy locking ingress to
@@ -1291,10 +1305,6 @@ def _build_control_app(state: OrchestratorState, token: str):
             detail="reproduction is not available for pod-hosted Darwins yet",
         )
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await state.stop()
-
     return app
 
 
@@ -1487,12 +1497,6 @@ def main(argv: list[str] | None = None) -> int:
         soma_merger=soma_merger,
     )
     app = _build_control_app(state, token)
-
-    # Start the drive loop AFTER uvicorn brings the event loop up. The
-    # FastAPI lifespan "startup" hook is the right place.
-    @app.on_event("startup")
-    async def _startup() -> None:
-        state.start()
 
     uvicorn.run(
         app, host=args.host, port=args.control_port, log_level=args.log_level,
