@@ -40,7 +40,7 @@ same cluster:
 
 | Key                                          | Default                                              | Notes                                                                                                      |
 | -------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `image.repository`                           | `ghcr.io/quantium-rock/darwin-agent/darwin-platform` | Image registry path.                                                                                       |
+| `image.repository`                           | `ghcr.io/darwin-agents/darwin-agents/darwin-platform` | Image registry path.                                                                                       |
 | `image.tag`                                  | `""` → falls back to `Chart.appVersion`              | **Pin sha-XXXXXX in prod.**                                                                                |
 | `image.pullPolicy`                           | `IfNotPresent`                                       |                                                                                                            |
 | `image.pullSecrets`                          | `[]`                                                 | Add `imagePullSecrets` entries for private registries.                                                     |

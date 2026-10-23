@@ -9,7 +9,7 @@ image:
   # Default pulls from GHCR; the build.yml workflow pushes here on every
   # commit to main + every tag. Pin a sha-XXXXXX tag for production
   # rollouts — `latest` is for dev only.
-  repository: ghcr.io/quantium-rock/darwin-agent/darwin-platform
+  repository: ghcr.io/darwin-agents/darwin-agents/darwin-platform
   tag: ""  # Empty falls back to Chart.appVersion; set to sha-XXXXXX in prod.
   pullPolicy: IfNotPresent
   # imagePullSecrets if the image is private. Skip for public images.

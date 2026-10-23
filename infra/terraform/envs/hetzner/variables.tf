@@ -41,7 +41,7 @@ variable "acme_email" {
 variable "platform_image" {
   type        = string
   description = "Supervisor image (GHCR ref, pinned by sha- tag in CI)."
-  default     = "ghcr.io/quantium-rock/darwin-agent/darwin-platform:latest"
+  default     = "ghcr.io/darwin-agents/darwin-agents/darwin-platform:latest"
 }
 
 variable "wallet_provider" {
