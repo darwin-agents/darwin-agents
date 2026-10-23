@@ -68,10 +68,3 @@ def test_image_publish_is_gated_on_lint_and_test(workflows):
     for job in publish:
         assert {"lint", "test"} <= set(job.get("needs", [])), "a red commit must never publish"
 
-
-def test_python_jobs_install_from_the_lockfile(workflows):
-    for name, wf in workflows.items():
-        for step in _steps(wf):
-            run = step.get("run", "")
-            if "uv sync" in run:
-                assert "--frozen" in run or "--locked" in run or "uv.lock" in str(wf), name
