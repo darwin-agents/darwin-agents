@@ -33,6 +33,9 @@ topo_order_commits = true
 
 commit_parsers = [
   { message = "^docs(\\(.*\\))?: (update|add) CHANGELOG", skip = true },
+  # Changelog bookkeeping commits describe this file, not the product.
+  { message = "^docs(\\(.*\\))?: sync unreleased changelog", skip = true },
+  { message = "^docs\\(changelog\\)", skip = true },
   { message = "^chore\\(release\\)", skip = true },
   { message = "^chore\\(deps", skip = true },
   { message = "^chore\\(pr\\)", skip = true },
