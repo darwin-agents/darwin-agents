@@ -466,10 +466,39 @@ class K8sDarwinDriver:
             death_reason=data.get("death_reason"),
             llm_spend_usdc=float(data.get("llm_spend_usdc", 0.0) or 0.0),
             merkle_root=(data.get("merkle_root") or None),
+            crashed=(data.get("crashed") or None),
+            address=(data.get("wallet") or {}).get("address"),
+            profit_usdc=(
+                float(data.get("balance_usdc", 0.0) or 0.0)
+                - float(data.get("profit_baseline_usdc", 0.0) or 0.0)
+                if float(data.get("starting_capital_usdc", 0.0) or 0.0) > 0 else 0.0
+            ),
+            unsettled_usdc=float((data.get("wallet") or {}).get("unsettled_usdc") or 0.0),
         )
 
 
 # -- real adapters over kubernetes-python-client + httpx --------------------
+
+def _send_incluster_token(client) -> None:
+    """kubernetes-client 36 stores the in-cluster service-account token under
+    ``api_key["authorization"]`` but only sends ``api_key["BearerToken"]``, so
+    every request went out as ``system:anonymous`` (403 on spawn). Mirror the
+    token into the key that is sent, on every refresh (projected tokens
+    rotate). No-op on client versions that already agree."""
+    cfg = client.Configuration.get_default_copy()
+    if "authorization" not in cfg.api_key or "BearerToken" in cfg.api_key:
+        return
+    refresh = cfg.refresh_api_key_hook
+
+    def _refresh(c, _inner=refresh) -> None:
+        if _inner is not None:
+            _inner(c)
+        c.api_key["BearerToken"] = c.api_key.get("authorization", "")
+
+    _refresh(cfg)
+    cfg.refresh_api_key_hook = _refresh
+    client.Configuration.set_default(cfg)
+
 
 class _KubernetesClientAdapter:
     """Wraps the real ``kubernetes`` package. Constructed lazily so the
@@ -486,6 +515,7 @@ class _KubernetesClientAdapter:
         # Try in-cluster first; fall back to kubeconfig for local dev.
         try:
             config.load_incluster_config()
+            _send_incluster_token(client)
         except Exception:
             config.load_kube_config()
         self._core = client.CoreV1Api()

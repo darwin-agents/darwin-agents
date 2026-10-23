@@ -40,7 +40,7 @@ The genome assumes the soma is **adversarial on every hot path**. This assumptio
 | Forge audit records | Hash-chain verification on every boot and every anchor; tampered records cause `AuditError` → halt | DNA (`machinery/audit_logger.py`) | `tests/redteam/test_audit_tamper.py` |
 | Inflate fitness | Fitness inputs read from the ledger (reconciled against on-chain wallet), not from anything the soma reports; weights are DNA constants | DNA (`machinery/fitness.py`, `machinery/ledger.py`) | `test_fitness.py`, `test_ledger.py` |
 | Drain the treasury | Treasury policy engine in DNA; hard caps at the wallet level (Coinbase policy enforcement); sanctions screening on every outbound | DNA (`machinery/treasury_policy.py`) + platform (`sanctions.py`) | `test_treasury_policy.py`, `test_sanctions.py` |
-| Escape the sandbox | E2B microVMs (Firecracker-grade isolation); each neuron gets a fresh VM; orchestrator sandbox is rotated | Platform (infra layer) | Not testable in-process; covered by E2B's own security model |
+| Escape the sandbox | Generated code runs in a per-call E2B microVM (Firecracker-grade isolation); the orchestrator pod runs under a gVisor (default) or Kata RuntimeClass in its own namespace with default-deny NetworkPolicy | Platform (infra layer) | Not testable in-process; covered by E2B's and gVisor/Kata's own security models |
 | Exfiltrate secrets | Vault namespaces (Phase 2); per-Darwin AppRole; child tokens scoped by capability tags; signing key in platform process, never exposed | DNA (`machinery/vault.py`) + platform (`vault_admin.py`) | `test_vault.py`, `tests/redteam/` |
 | Prompt-inject the planner | `_untrusted.py` fences all world-derived text in `<untrusted_text>` markers; marker-forgery stripped; length-capped at 4000 chars | DNA (`_untrusted.py`) | `test_untrusted.py`, `tests/redteam/` |
 | Poisoned lesson layer | `lesson_distiller.py` rejects any lesson containing constitution-weakening language; lessons are data+hints, never code | DNA (`evolution/lesson_distiller.py`) | `test_reproduction.py`, `tests/redteam/` |
@@ -72,7 +72,7 @@ The genome assumes the soma is **adversarial on every hot path**. This assumptio
 | Surface | Assets at risk | Residual risk |
 | ------- | -------------- | ------------- |
 | Tenant escape (namespace breach) | Other users' data, wallets, vault secrets | Low if NetworkPolicy + Vault namespaces are correct; catastrophic if misconfigured |
-| Vault cross-read | KYC docs, credentials, API keys of other tenants | Low — Vault Enterprise enforces namespace isolation at the storage layer |
+| Vault cross-read | KYC docs, credentials, API keys of other tenants | Low — Vault enforces a per-Darwin path-scoped policy + AppRole (`src/darwin_platform/adapters/vault_namespace.py`); OSS edition, not Enterprise namespaces |
 | External API attack (unauthenticated) | Platform availability; data leakage via API bugs | Medium — standard web-app attack surface; mitigated by auth + rate limiting |
 | Insider abuse (operator) | All tenant data; signing key | Medium — mitigated by audit log (operator actions are hash-chained); signing key in HSM (Phase 2+) |
 | Hostile owner weaponization | Third parties targeted via the Darwin's neurons | Medium — egress proxy blocklist + sanctions screening; hard to prevent all creative misuse |

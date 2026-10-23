@@ -127,6 +127,7 @@ class FiatRamp(Protocol):
         amount_usd: float,
         payment_method: str,
         destination_darwin_id: str | None = None,
+        destination_address: str | None = None,
     ) -> FiatQuote: ...
 
     def confirm_deposit(
@@ -169,6 +170,7 @@ class StubFiatRamp:
 
     def deposit_quote(
         self, *, amount_usd, payment_method, destination_darwin_id=None,
+        destination_address=None,
     ) -> FiatQuote:
         if amount_usd <= 0:
             raise FiatRampError("amount_usd must be > 0")
@@ -276,6 +278,7 @@ class StripeFiatRamp:
 
     def deposit_quote(
         self, *, amount_usd, payment_method, destination_darwin_id=None,
+        destination_address=None,
     ) -> FiatQuote:
         if amount_usd <= 0:
             raise FiatRampError("amount_usd must be > 0")
@@ -428,7 +431,9 @@ class MoonPayFiatRamp:
         sell_widget_url: str = "https://sell.moonpay.com",
         api_base_url: str = "https://api.moonpay.com",
         base_currency_code: str = "usd",
-        quote_currency_code: str = "usdc",
+        # USDC on Base — the chain Darwins hold. (Plain "usdc" buys
+        # Ethereum-L1 USDC, which would land on the wrong chain.)
+        quote_currency_code: str = "usdc_base",
         fee_rate: float = 0.045,
         ttl_seconds: float = 300.0,
         webhook_tolerance_seconds: float = 300.0,
@@ -504,6 +509,7 @@ class MoonPayFiatRamp:
 
     def deposit_quote(
         self, *, amount_usd, payment_method, destination_darwin_id=None,
+        destination_address=None,
     ) -> FiatQuote:
         if amount_usd <= 0:
             raise FiatRampError("amount_usd must be > 0")
@@ -514,7 +520,9 @@ class MoonPayFiatRamp:
             "baseCurrencyCode": self._base_ccy,
             "baseCurrencyAmount": amount_usd,
             "currencyCode": self._quote_ccy,
-            "walletAddress": self._omnibus,
+            # Straight to the Darwin's own wallet when known; the chain
+            # watcher books it as a deposit there.
+            "walletAddress": destination_address or self._omnibus,
             "paymentMethod": payment_method or None,
             "externalTransactionId": quote_id,
             "externalCustomerId": destination_darwin_id or None,

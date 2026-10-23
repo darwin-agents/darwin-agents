@@ -162,10 +162,13 @@ async def test_escalation_register_emits_span(exporter) -> None:
         )
         await _wait_until(lambda: sup.router.get("T-trace") is not None)
         spans = exporter.get_finished_spans()
-        regs = _by_name(spans, "escalation.register")
-        assert regs, _names(spans)
-        s = regs[-1]
-        assert s.attributes["ticket_id"] == "T-trace"
+        # The live Darwin may register its own tickets meanwhile; pick ours.
+        regs = [
+            s for s in _by_name(spans, "escalation.register")
+            if s.attributes["ticket_id"] == "T-trace"
+        ]
+        assert len(regs) == 1, _names(spans)
+        s = regs[0]
         assert s.attributes["ticket_class"] == "approval"
         assert s.attributes["darwin_id"] == status.darwin_id
 

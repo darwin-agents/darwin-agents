@@ -1,14 +1,11 @@
-import { expect, mockBackend, signIn, test } from "../fixtures";
+import { expect, mockBackend, mockStatus, signIn, test } from "../fixtures";
 
 const DARWIN_ID = "alpha-001";
 
 test("anatomy canvas links to the timeline filtered by neuron", async ({ page }) => {
   await mockBackend(page, {
     "/darwins": () => ({ darwins: [DARWIN_ID] }),
-    [`/darwins/${DARWIN_ID}`]: () => ({
-      darwin_id: DARWIN_ID,
-      lifecycle: "alive",
-    }),
+    [`/darwins/${DARWIN_ID}`]: () => mockStatus(DARWIN_ID),
     [`/darwins/${DARWIN_ID}/anatomy`]: () => ({
       darwin_id: DARWIN_ID,
       orchestrator: { id: "orch", label: "Orchestrator", state: "alive", tick: 1 },
@@ -24,9 +21,7 @@ test("anatomy canvas links to the timeline filtered by neuron", async ({ page })
           version: null,
         },
       ],
-      edges: [
-        { from: "orch", to: "content.publisher", kind: "dispatch", active: true, weight: 1 },
-      ],
+      edges: [{ from: "orch", to: "content.publisher", kind: "dispatch", active: true, weight: 1 }],
       heatmap: { "content.publisher": 1 },
       dna: { generation: 0, layers: [] },
     }),
@@ -44,16 +39,10 @@ test("anatomy canvas links to the timeline filtered by neuron", async ({ page })
   await page.goto(`/darwins/${DARWIN_ID}/anatomy`);
 
   // Click the neuron node by its accessible label.
-  await page
-    .getByRole("button", { name: /Neuron publisher/ })
-    .click();
+  await page.getByRole("button", { name: /Neuron publisher/ }).click();
 
   // Side panel "View timeline for content.publisher" link.
-  await page
-    .getByRole("link", { name: /View timeline for content\.publisher/ })
-    .click();
+  await page.getByRole("link", { name: /View timeline for content\.publisher/ }).click();
 
-  await expect(page).toHaveURL(
-    /\/timeline\?neuron=content\.publisher$/,
-  );
+  await expect(page).toHaveURL(/\/timeline\?neuron=content\.publisher$/);
 });

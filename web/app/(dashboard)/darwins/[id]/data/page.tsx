@@ -30,21 +30,13 @@ import { ApiError, api } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type {
-  DarwinEvent,
-  LedgerEntry,
-  LineageNode,
-} from "@/lib/types";
+import type { DarwinEvent, LedgerEntry, LineageNode } from "@/lib/types";
 
 const BASE_TABS = ["lifecycle", "lineage", "ledger", "audit"] as const;
 const TABS = [...BASE_TABS, "organism"] as const;
 type Tab = (typeof TABS)[number];
 
-export default function DataPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function DataPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const pathname = usePathname();
@@ -59,13 +51,10 @@ export default function DataPage({
     staleTime: 5 * 60_000,
     retry: false,
   });
-  const visibleTabs: readonly Tab[] = caps?.organism_browser
-    ? TABS
-    : BASE_TABS;
+  const visibleTabs: readonly Tab[] = caps?.organism_browser ? TABS : BASE_TABS;
 
   const requested = sp.get("tab");
-  const tab: Tab =
-    (visibleTabs.find((t) => t === requested) ?? "lifecycle") as Tab;
+  const tab: Tab = (visibleTabs.find((t) => t === requested) ?? "lifecycle") as Tab;
 
   const setTab = (next: Tab) => {
     const qs = new URLSearchParams(sp.toString());
@@ -142,36 +131,32 @@ function LineageTab({ id }: { id: string }) {
   if (q.isLoading) return <Skeleton className="h-48 w-full" />;
   if (!q.data) return <Empty>No lineage data.</Empty>;
 
-  const flat: Array<{ relation: string; node: LineageNode }> = [];
-  if (q.data.root) flat.push({ relation: "self", node: q.data.root });
-  for (const a of q.data.ancestors ?? []) flat.push({ relation: "ancestor", node: a });
-  walkDescendants(q.data.descendants ?? q.data.root?.children ?? [], "descendant", flat);
-
-  if (flat.length === 0) return <Empty>No lineage edges.</Empty>;
+  const flat: Array<{ relation: string; darwin_id: string; alive: boolean; budget?: number }> = [
+    { relation: `self (gen ${q.data.generation})`, darwin_id: q.data.darwin_id, alive: true },
+    ...q.data.ancestors.map((a) => ({ relation: "ancestor", ...a })),
+  ];
+  walkDescendants(q.data.descendants, flat);
 
   return (
     <Table
-      cols={["relation", "darwin_id", "generation", "parent_id", "fitness", "lifecycle"]}
-      rows={flat.map(({ relation, node }) => [
-        relation,
-        node.darwin_id,
-        node.generation ?? "—",
-        node.parent_id ?? "—",
-        node.fitness ?? "—",
-        node.lifecycle ?? "—",
-      ])}
+      cols={["relation", "darwin_id", "alive", "budget_usdc"]}
+      rows={flat.map((r) => [r.relation, r.darwin_id, r.alive ? "yes" : "no", r.budget ?? "—"])}
     />
   );
 }
 
 function walkDescendants(
   nodes: LineageNode[],
-  relation: string,
-  out: Array<{ relation: string; node: LineageNode }>,
+  out: Array<{ relation: string; darwin_id: string; alive: boolean; budget?: number }>,
 ) {
   for (const n of nodes) {
-    out.push({ relation, node: n });
-    if (n.children?.length) walkDescendants(n.children, "descendant", out);
+    out.push({
+      relation: "descendant",
+      darwin_id: n.darwin_id,
+      alive: n.alive,
+      budget: n.budget_usdc,
+    });
+    if (n.children?.length) walkDescendants(n.children, out);
   }
 }
 
@@ -308,8 +293,8 @@ function OrganismTab({ id }: { id: string }) {
   if (tables.length === 0) {
     return (
       <Empty>
-        No tables in this Darwin&apos;s organism database — it may not have
-        written any business data yet.
+        No tables in this Darwin&apos;s organism database — it may not have written any business
+        data yet.
       </Empty>
     );
   }
@@ -319,9 +304,7 @@ function OrganismTab({ id }: { id: string }) {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-[var(--color-muted-foreground)]">
-          Table:
-        </span>
+        <span className="text-xs text-[var(--color-muted-foreground)]">Table:</span>
         {tables.map((t) => (
           <button
             key={t}
@@ -342,9 +325,7 @@ function OrganismTab({ id }: { id: string }) {
           id={id}
           table={active}
           offset={offset}
-          onOffset={(next) =>
-            setParam("organism_offset", next > 0 ? String(next) : null)
-          }
+          onOffset={(next) => setParam("organism_offset", next > 0 ? String(next) : null)}
         />
       ) : (
         <Empty>Pick a table to read a page of rows.</Empty>
@@ -409,16 +390,15 @@ function OrganismError({ error }: { error: unknown }) {
   if (error instanceof ApiError && error.isForbidden) {
     return (
       <Empty>
-        The organism data browser is operator-scoped. Your token lacks the
-        platform-operator role.
+        The organism data browser is operator-scoped. Your token lacks the platform-operator role.
       </Empty>
     );
   }
   if (error instanceof ApiError && error.status === 409) {
     return (
       <Empty>
-        This Darwin has no organism database — tenant namespaces aren&apos;t
-        provisioned for it (single-tenant / in-process deployment).
+        This Darwin has no organism database — tenant namespaces aren&apos;t provisioned for it
+        (single-tenant / in-process deployment).
       </Empty>
     );
   }
@@ -441,7 +421,7 @@ function KeyValueTable({ rows }: { rows: Array<[string, unknown]> }) {
           {rows.map(([k, v]) => (
             <tr key={k} className="border-b border-[var(--color-border)] last:border-b-0">
               <td className="mono px-3 py-1.5 text-[var(--color-muted-foreground)]">{k}</td>
-              <td className="mono break-all px-3 py-1.5">
+              <td className="mono px-3 py-1.5 break-all">
                 {typeof v === "object" ? JSON.stringify(v) : String(v)}
               </td>
             </tr>
@@ -480,7 +460,10 @@ function Table({
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={cols.length} className="px-3 py-6 text-center text-[var(--color-muted-foreground)]">
+              <td
+                colSpan={cols.length}
+                className="px-3 py-6 text-center text-[var(--color-muted-foreground)]"
+              >
                 No rows.
               </td>
             </tr>
@@ -517,7 +500,7 @@ function ExpandableRow({
         style={{ cursor: expandable ? "pointer" : undefined }}
       >
         {cells.map((c, i) => (
-          <td key={i} className="mono break-all px-3 py-1.5">
+          <td key={i} className="mono px-3 py-1.5 break-all">
             {c === null || c === undefined ? "—" : String(c)}
           </td>
         ))}
@@ -525,7 +508,7 @@ function ExpandableRow({
       {open && raw && (
         <tr>
           <td colSpan={cols} className="bg-[var(--color-background)] p-0">
-            <pre className="mono max-h-72 overflow-auto whitespace-pre-wrap break-all px-3 py-2 text-[11px]">
+            <pre className="mono max-h-72 overflow-auto px-3 py-2 text-[11px] break-all whitespace-pre-wrap">
               {JSON.stringify(raw, null, 2)}
             </pre>
           </td>
@@ -558,7 +541,7 @@ function Pager({
           type="button"
           disabled={!hasPrev}
           onClick={() => onChange(Math.max(0, offset - pageSize))}
-          className="rounded-md border border-[var(--color-border)] px-2 py-1 disabled:opacity-50 enabled:hover:bg-[var(--color-muted)]"
+          className="rounded-md border border-[var(--color-border)] px-2 py-1 enabled:hover:bg-[var(--color-muted)] disabled:opacity-50"
         >
           ← Prev
         </button>
@@ -566,7 +549,7 @@ function Pager({
           type="button"
           disabled={!hasNext}
           onClick={() => onChange(offset + pageSize)}
-          className="rounded-md border border-[var(--color-border)] px-2 py-1 disabled:opacity-50 enabled:hover:bg-[var(--color-muted)]"
+          className="rounded-md border border-[var(--color-border)] px-2 py-1 enabled:hover:bg-[var(--color-muted)] disabled:opacity-50"
         >
           Next →
         </button>

@@ -1,5 +1,7 @@
 # Phase 2 — multi-tenant alpha build plan
 
+> **Status (2026-10):** code complete — the remaining Phase 2 exit items are operator gates (soaks, drills, pen-test, audit), tracked in [`32-pre-mainnet-gates.md`](32-pre-mainnet-gates.md) and [`BACKLOG.md`](BACKLOG.md). The build substituted several picks named below: CloudNativePG for Aurora, k3s on Hetzner for EKS (`infra/terraform/envs/hetzner`), OSS Vault with per-Darwin policy + AppRole for Enterprise namespaces, a PWA with W3C Web Push for the Expo/FCM mobile app, Clerk only (no WorkOS), and Jaeger for Honeycomb. The plan text is kept as written; corrections are inline.
+
 Phase 1 proved one Darwin can evolve, reproduce, and earn real money. Phase 2 opens the platform to real users — a handful of internal and friendly alpha testers — each running their own fully isolated Darwin. This is the biggest infrastructure step in the project: from "one operator running a test organism" to "multiple principals trusting us with money and data."
 
 This doc is the concrete build plan. It maps from the roadmap (`docs/overview/06-roadmap-and-phases.md` Phase 2) and the infrastructure design (`docs/overview/07-deployment-and-infrastructure.md` Phase 2) to specific deliverables, module changes, and acceptance criteria.
@@ -82,7 +84,7 @@ All outbound traffic from Darwin namespaces flows through a cluster-wide egress 
 - **Enforces** per-Darwin bandwidth quotas (default 10 GB/day, 2× burst).
 - **Strips** internal headers before forwarding to the external world.
 
-Implementation: Envoy proxy with a dynamic blocklist sidecar reading from the supervisor's configuration. The blocklist is updated by operator action (`POST /platform/blocklist`).
+Implementation (as built): a Python egress gateway, `src/darwin_platform/infra/egress_proxy.py`, deployed by the Helm chart (`templates/egress-proxy.yaml`, `egressProxy.enabled`). It admits only allowlisted destinations, logs every attempt, and exposes `POST /revoke` so kill and quarantine cut a Darwin's traffic. There is no `POST /platform/blocklist`; fleet-wide blocks are `POST /platform/fleet/block_counterparty` and `/block_category`.
 
 ### E2B sandbox lifecycle
 
@@ -169,11 +171,11 @@ The harvest scheduler (`harvest_scheduler.py`) already exists. Phase 2 wires it 
 ### Architecture
 
 ```
-Next.js app (Vercel or EKS)  →  Darwin Platform API (FastAPI :8000)
+Next.js app (Vercel)         →  Darwin Platform API (FastAPI :8000)
                               →  WebSocket feed for real-time updates
 ```
 
-Auth: **Clerk** (or WorkOS) for user identity → the platform issues a scoped bearer token (scope=owner, owned_darwins=[...]) that the dashboard passes to the API.
+Auth: **Clerk** for user identity → the platform issues a scoped bearer token (scope=owner, owned_darwins=[...]) that the dashboard passes to the API.
 
 ### Screens (Phase 2 MVP)
 
@@ -191,9 +193,9 @@ Auth: **Clerk** (or WorkOS) for user identity → the platform issues a scoped b
 
 ### Mobile (escalation push)
 
-A minimal Expo / React Native app (or progressive web app) for:
+A minimal Expo / React Native app (or progressive web app) for: *(as built: the PWA path, folded into `web/` — manifest, service worker, `/notifications` opt-in page; see `BACKLOG.md` "Mobile escalation app — done via PWA")*
 
-- Push notifications on new escalations (FCM / APNs).
+- Push notifications on new escalations (FCM / APNs). *(As built: W3C Web Push + VAPID via `WebPushNotificationSink`, `--push-provider webpush`; subscriptions on `/me/push-subscriptions`.)*
 - Approve/deny/provide-data inline from the notification.
 - Quick-glance Darwin status (alive, balance, open escalations).
 
@@ -245,7 +247,7 @@ The billing service (`billing.py`) already meters wallet debits. Phase 2 adds:
 
 | Layer    | Tool                   | Phase 2 change                                                             |
 | -------- | ---------------------- | -------------------------------------------------------------------------- |
-| Traces   | Honeycomb (via OTLP)   | Replace Jaeger with Honeycomb for production; Jaeger remains for local dev |
+| Traces   | Honeycomb (via OTLP)   | Replace Jaeger with Honeycomb for production; Jaeger remains for local dev. *(As built: not migrated — OTLP goes to the OTel collector + Jaeger.)* |
 | Metrics  | Prometheus + Grafana   | Grafana Cloud for dashboards; custom Darwin fleet dashboard                |
 | Logs     | CloudWatch + structlog | Structured JSON; per-Darwin log group; 90-day retention                    |
 | Alerting | PagerDuty              | On-call rotation across founding team; escalation policy                   |
@@ -267,7 +269,7 @@ The audit log is already hash-chained per-Darwin. Phase 2 adds daily Merkle root
 | 3   | Audit chain break                   | Halt Darwin; identify gap; backfill from checkpoint; human review before resume      |
 | 4   | E2B fleet down                      | All Darwins enter degraded mode; notify owners; await E2B recovery                   |
 | 5   | LiteLLM unhealthy                   | Auto-failover to backup replica; if all down, Darwins degrade to cheaper tiers       |
-| 6   | Escalation delivery failure         | FCM/SES retry; if persistent, fall back to email; notify owner via secondary channel |
+| 6   | Escalation delivery failure         | FCM/SES retry; if persistent, fall back to email; notify owner via secondary channel. *(As built: Web Push with dead subscriptions (404/410) purged; Slack / webhook sinks fan out alongside; no automatic email fallback is wired.)* |
 | 7   | Tenant isolation suspected          | Immediate kill of suspect Darwins; lock affected namespaces; third-party forensics   |
 | 8   | KYC provider outage                 | New spawns blocked; existing Darwins unaffected; queue until recovery                |
 | 9   | Coinbase wallet API outage          | Darwins pause all payments; escalate spending decisions to owners                    |
@@ -304,13 +306,13 @@ src/
     tenancy/namespace_provisioner.py      NEW  — K8s + Vault namespace + organism DB lifecycle
     observability/drift_detector.py       NEW  — Behavior drift anomaly detection (rolling 7d profile)
     observability/merkle_anchor.py        NEW  — Daily Merkle root → public chain anchoring
-    escalations/notification_fcm.py       NEW  — FCM push notification sink
+    escalations/notification_fcm.py       NEW  — FCM push notification sink (built, not wired; superseded by notification_webpush.py)
     runtime/supervisor.py                 MOD  — Phase 2 services injection + helper accessors
     api.py                                MOD  — data browser endpoint, billing statements, KYC status
-    security/auth.py                      MOD  — Clerk/WorkOS integration (replace in-memory tokens)
+    security/clerk.py                     NEW  — Clerk JWT verification (ClerkTokenStore)
     payments/billing.py                   MOD  — daily reconciliation, monthly invoicing
     observability/monitoring.py           MOD  — drift detector integration, tighter quotas
-    escalations/escalation.py             MOD  — FCM sink wiring, ticket classification enrichment
+    escalations/escalation.py             MOD  — push sink wiring, ticket classification enrichment
     adapters/wallet.py                    MOD  — Coinbase CDP API for wallet provisioning
     adapters/vault_backend.py             MOD  — Vault Enterprise namespace creation
 
@@ -329,13 +331,13 @@ src/
       ws.ts                       WebSocket real-time feed
       auth.ts                     Clerk integration
 
-  mobile/                         NEW  — Expo/RN escalation app (minimal)
+  mobile/                         NEW  — Expo/RN escalation app (minimal) — not created; the PWA lives in web/
     src/
       PushHandler.tsx
       EscalationCard.tsx
       StatusWidget.tsx
 
-  infra/                          NEW  — Terraform IaC
+  infra/                          NEW  — Terraform IaC (as built: cloud-agnostic modules + envs/local and envs/hetzner; see overview/07)
     modules/
       eks/
       aurora-platform/
@@ -375,7 +377,7 @@ Per `docs/overview/06-roadmap-and-phases.md`:
 | --------------------- | ----- | -------------------------------------------------------------------------------------------------------------- |
 | **A — Isolation**     | 16–20 | K8s namespace provisioner, Vault Enterprise migration, egress proxy, per-Darwin DBs, internal pen-test         |
 | **B — Payments**      | 17–22 | Stripe integration, KYC (Persona), real wallet provisioning (CDP API), sanctions provider, harvest withdrawals |
-| **C — Dashboard**     | 18–24 | Next.js app (all screens), Clerk auth, WebSocket feed, mobile push (Expo)                                      |
+| **C — Dashboard**     | 18–24 | Next.js app (all screens), Clerk auth, WebSocket feed, mobile push (PWA)                                      |
 | **D — Ops maturity**  | 20–26 | Honeycomb migration, Merkle anchoring, runbooks, on-call, backup/DR drill, drift detector                      |
 | **E — Security gate** | 24–28 | External audit, legal review of KYC/AML, SOC 2 readiness                                                       |
 
@@ -383,4 +385,4 @@ Tracks A and B are the critical path — without isolation and payments, no exte
 
 ## After Phase 2
 
-When the definition of done is met, the next doc is **Phase 3 — public beta** (`23-phase-three-public-beta-build-plan.md`): public waitlist, expanded neuron catalog, cross-lineage learning, multi-region, and the long-term architecture experiments.
+When the definition of done is met, the next doc is **Phase 3 — public beta** (not yet written; doc 23 is the data-model reference): public waitlist, expanded neuron catalog, cross-lineage learning, multi-region, and the long-term architecture experiments.

@@ -9,7 +9,7 @@ image:
   # Default pulls from GHCR; the build.yml workflow pushes here on every
   # commit to main + every tag. Pin a sha-XXXXXX tag for production
   # rollouts — `latest` is for dev only.
-  repository: ghcr.io/quantium-rock/darwin-agent/darwin-platform
+  repository: ghcr.io/darwin-agents/darwin-agents/darwin-platform
   tag: ""  # Empty falls back to Chart.appVersion; set to sha-XXXXXX in prod.
   pullPolicy: IfNotPresent
   # imagePullSecrets if the image is private. Skip for public images.
@@ -305,8 +305,8 @@ extraArgs: []
 # `in-process` (default): every Darwin is an asyncio.Task in the
 # supervisor pod. Right for dev + single-tenant deploys.
 # `k8s`: each Darwin gets its own `darwin-{id}` namespace + orchestrator
-# pod (`runtimeClassName: kata`) + LanceDB sidecar + NetworkPolicy
-# constraining egress to the platform egress proxy. The supervisor pod
+# pod (`runtimeClassName: kata`) + a /data PVC + NetworkPolicy
+# constraining egress (egress proxy, or public HTTPS only). The supervisor pod
 # manages those resources via the kubernetes API and drives lifecycle
 # over HTTP RPC. Doc-08's production posture.
 driver:
@@ -333,10 +333,8 @@ driver:
       limits:
         cpu: 1000m
         memory: 1Gi
-  # LanceDB sidecar — lightweight vector store the genome's memory
-  # layer writes through. PVC per Darwin.
-  lancedb:
-    image: "lancedb/lancedb:latest"
+  # Per-Darwin durable /data PVC: audit log, checkpoint, wallet feed.
+  data:
     storageSize: 1Gi
     storageClass: ""  # empty → cluster default
 

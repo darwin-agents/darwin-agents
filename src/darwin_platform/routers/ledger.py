@@ -18,6 +18,7 @@ from fastapi import (
 )
 
 from ..runtime.supervisor import SupervisorError, UnknownDarwin
+from .models import BillingSummary
 from ..security.auth import (
     OWNER,
     PLATFORM_OPERATOR,
@@ -106,7 +107,7 @@ async def darwin_billing(
     darwin_id: str,
     request: Request,
     ctx: AuthContext = Depends(get_auth),
-) -> dict[str, Any]:
+) -> BillingSummary:
     _require_scope(ctx, OWNER)
     _require_owns(ctx, darwin_id)
     try:

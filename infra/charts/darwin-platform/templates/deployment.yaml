@@ -87,10 +87,9 @@ spec:
             - --k8s-namespace-prefix={{ .Values.driver.namespacePrefix }}
             - --k8s-runtime-class={{ .Values.driver.runtimeClassName }}
             - --k8s-egress-proxy-namespace={{ .Values.platformDataNamespace.name }}
-            - --k8s-lancedb-image={{ .Values.driver.lancedb.image }}
-            - --k8s-lancedb-storage-size={{ .Values.driver.lancedb.storageSize }}
-            {{- if .Values.driver.lancedb.storageClass }}
-            - --k8s-lancedb-storage-class={{ .Values.driver.lancedb.storageClass }}
+            - --k8s-data-storage-size={{ .Values.driver.data.storageSize }}
+            {{- if .Values.driver.data.storageClass }}
+            - --k8s-data-storage-class={{ .Values.driver.data.storageClass }}
             {{- end }}
             {{- if .Values.driver.orchestrator.image.repository }}
             - --k8s-orchestrator-image={{ .Values.driver.orchestrator.image.repository }}:{{ default (include "darwin-platform.imageTag" .) .Values.driver.orchestrator.image.tag }}

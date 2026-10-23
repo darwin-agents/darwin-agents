@@ -506,7 +506,8 @@ async def test_router_uses_pluggable_sink() -> None:
             {"ticket": "T-sink", "neuron": "x", "ticket_class": "info"}
         )
         await _wait_until(lambda: "T-sink" in calls)
-        assert calls == ["T-sink"]
+        # The live Darwin may post its own tickets meanwhile; only ours matters.
+        assert calls.count("T-sink") == 1
     finally:
         await sup.shutdown()
 
@@ -524,3 +525,33 @@ async def test_shutdown_kills_remaining(supervisor: Supervisor) -> None:
     # Calling spawn after shutdown is refused.
     with pytest.raises(SupervisorError):
         await supervisor.spawn()
+
+
+async def test_drive_crash_is_surfaced_and_resume_restarts() -> None:
+    """A drive-loop exception used to leave a Darwin reporting alive while
+    frozen. It must show in status + audit, and ``resume`` restarts it."""
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status = await sup.spawn(opening_usdc=60.0, escalation_auto=None)
+        did = status.darwin_id
+        h = sup._darwins[did]  # noqa: SLF001
+        await _wait_until(lambda: h.runtime.state.tick >= 2)
+
+        real_run = h.runtime.run
+
+        async def boom(**_kw):
+            raise RuntimeError("injected")
+
+        h.runtime.run = boom
+        await _wait_until(lambda: h.task.done())
+        st = await sup.status(did)
+        assert st.crashed == "RuntimeError: injected"
+        assert sup.audit_log.entries(darwin_id=did, action="drive_crashed")
+
+        h.runtime.run = real_run
+        await sup.resume(did, actor="owner")
+        assert (await sup.status(did)).crashed is None
+        t = h.runtime.state.tick
+        await _wait_until(lambda: h.runtime.state.tick > t)
+    finally:
+        await sup.shutdown()

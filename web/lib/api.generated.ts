@@ -517,6 +517,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/darwins/{darwin_id}/payout-address": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set payout address
+         * @description Where this Darwin's harvests and closing sweep go: a checksummed, sanctions-screened USDC address. In production it is the only allowed destination, usable 24h after it was set.
+         */
+        put: operations["set_payout_address_darwins__darwin_id__payout_address_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/darwins/{darwin_id}/harvest_rules": {
         parameters: {
             query?: never;
@@ -1479,6 +1499,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/platform/money/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get money rails
+         * @description Which payment rails this deployment has wired (wallet provider + network, fiat ramp, sanctions, KYC, omnibus, x402), each with a `live` flag, plus the caller's operator scope.
+         */
+        get: operations["money_capabilities_platform_money_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/platform/darwins/{darwin_id}/forensics": {
         parameters: {
             query?: never;
@@ -1824,10 +1864,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/store/{darwin_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Storefront offer
+         * @description What this Darwin sells, its USDC price, and the x402 payment requirements (paid straight to the Darwin's own wallet). Public.
+         */
+        get: operations["store_info_store__darwin_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/{darwin_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Buy a report
+         * @description x402 v2: without a PAYMENT-SIGNATURE header returns 402 + PAYMENT-REQUIRED; with a valid payment the Darwin writes the report, the payment settles, and the report is returned with PAYMENT-RESPONSE. A report that can't be produced is never charged. Public — the payment is the authorization.
+         */
+        post: operations["buy_report_store__darwin_id__report_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AlertRow */
+        AlertRow: {
+            /** Darwin Id */
+            darwin_id: string;
+            /** Kind */
+            kind: string;
+            /** Severity */
+            severity: string;
+            /** Suggested Level */
+            suggested_level: number;
+            /** Detail */
+            detail?: {
+                [key: string]: unknown;
+            };
+            /** Ts */
+            ts: number;
+        };
         /**
          * AmendmentRequest
          * @description A platform amendment layer to ship via forced reproduction (doc 02).
@@ -1848,10 +1945,52 @@ export interface components {
              */
             kill_parent_reason: string;
         };
+        /** BillingHarvests */
+        BillingHarvests: {
+            /** Gross Usdc */
+            gross_usdc: number;
+            /** Net Usdc */
+            net_usdc: number;
+            /** Fee Usdc */
+            fee_usdc: number;
+            /** Events */
+            events: number;
+            /** History Tail */
+            history_tail?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** BillingInfrastructure */
+        BillingInfrastructure: {
+            /** Gross Usdc */
+            gross_usdc: number;
+            /** Provider Cost Usdc */
+            provider_cost_usdc: number;
+            /** Platform Revenue Usdc */
+            platform_revenue_usdc: number;
+            /** Events */
+            events: number;
+        };
+        /** BillingSummary */
+        BillingSummary: {
+            /** Darwin Id */
+            darwin_id: string;
+            infrastructure: components["schemas"]["BillingInfrastructure"];
+            harvests: components["schemas"]["BillingHarvests"];
+            /** Total Platform Revenue Usdc */
+            total_platform_revenue_usdc: number;
+        };
         /** BlockCounterpartyRequest */
         BlockCounterpartyRequest: {
             /** Address */
             address: string;
+        };
+        /** DarwinAlerts */
+        DarwinAlerts: {
+            /** Darwin Id */
+            darwin_id: string;
+            /** Alerts */
+            alerts: components["schemas"]["AlertRow"][];
         };
         /**
          * DarwinFiatPayoutRequest
@@ -1884,6 +2023,57 @@ export interface components {
              * @default fiat_payout_leg2_failed
              */
             reason: string;
+        };
+        /** DarwinStatus */
+        DarwinStatus: {
+            /** Darwin Id */
+            darwin_id: string;
+            /** Generation */
+            generation: number;
+            /** Parent Id */
+            parent_id: string | null;
+            /** L0 Version */
+            l0_version: string;
+            /** Birth Ts */
+            birth_ts: number;
+            /** Spawned At */
+            spawned_at: number;
+            /** Alive */
+            alive: boolean;
+            /** Paused */
+            paused: boolean;
+            /** Killed */
+            killed: boolean;
+            /** Quarantined */
+            quarantined: boolean;
+            /** Quarantine Reason */
+            quarantine_reason: string | null;
+            /** Death Reason */
+            death_reason: string | null;
+            /** Balance Usdc */
+            balance_usdc: number;
+            /** Tick */
+            tick: number;
+            /** Days Elapsed */
+            days_elapsed: number;
+            /** Open Escalations */
+            open_escalations: number;
+            /** Crashed */
+            crashed?: string | null;
+            /** Address */
+            address?: string | null;
+            /**
+             * Profit Usdc
+             * @default 0
+             */
+            profit_usdc: number;
+            /**
+             * Unsettled Usdc
+             * @default 0
+             */
+            unsettled_usdc: number;
+            /** Payout Address */
+            payout_address?: string | null;
         };
         /** DisabledCategoriesRequest */
         DisabledCategoriesRequest: {
@@ -1976,7 +2166,7 @@ export interface components {
         /** KYCWebhookRequest */
         KYCWebhookRequest: {
             /** Subject */
-            subject: string;
+            subject?: string | null;
             /** Inquiry Id */
             inquiry_id: string;
         };
@@ -1987,6 +2177,37 @@ export interface components {
              * @default owner kill
              */
             reason: string;
+        };
+        /** LineageAncestor */
+        LineageAncestor: {
+            /** Darwin Id */
+            darwin_id: string;
+            /** Alive */
+            alive: boolean;
+        };
+        /** LineageNode */
+        LineageNode: {
+            /** Darwin Id */
+            darwin_id: string;
+            /** Budget Usdc */
+            budget_usdc: number;
+            /** Spawned At */
+            spawned_at: number;
+            /** Alive */
+            alive: boolean;
+            /** Children */
+            children?: components["schemas"]["LineageNode"][];
+        };
+        /** LineageTree */
+        LineageTree: {
+            /** Darwin Id */
+            darwin_id: string;
+            /** Generation */
+            generation: number;
+            /** Ancestors */
+            ancestors: components["schemas"]["LineageAncestor"][];
+            /** Descendants */
+            descendants: components["schemas"]["LineageNode"][];
         };
         /**
          * OmnibusCreditRequest
@@ -2009,6 +2230,15 @@ export interface components {
              * @default owner paused
              */
             reason: string;
+        };
+        /**
+         * PayoutAddressRequest
+         * @description Checksummed USDC address (e.g. an exchange deposit address) for this
+         *     Darwin's harvests and closing sweep.
+         */
+        PayoutAddressRequest: {
+            /** Address */
+            address: string;
         };
         /**
          * PreApprovalRequest
@@ -2095,6 +2325,11 @@ export interface components {
              */
             reason: string;
         };
+        /** ReportOrder */
+        ReportOrder: {
+            /** Topic */
+            topic: string;
+        };
         /** ReproductionBlockRequest */
         ReproductionBlockRequest: {
             /** Blocked */
@@ -2130,10 +2365,9 @@ export interface components {
             opening_usdc: number;
             /**
              * Escalation Auto
-             * @description Unattended owner-response policy for the fake inbox: 'approve' | 'deny' | null. None means a real owner (or test) must respond via the respond_escalation endpoint.
-             * @default approve
+             * @description Unattended owner-response policy: 'approve' | 'deny' | null. Default null: the owner must respond via the respond_escalation endpoint. 'approve' auto-approves every ticket (spend, captcha, KYC) and is meant for unattended dev/sim runs.
              */
-            escalation_auto: string | null;
+            escalation_auto?: string | null;
             /** Parent Id */
             parent_id?: string | null;
             /**
@@ -2301,9 +2535,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["DarwinStatus"];
                 };
             };
             /** @description Validation Error */
@@ -2747,9 +2979,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["LineageTree"];
                 };
             };
             /** @description Validation Error */
@@ -3086,9 +3316,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["BillingSummary"];
                 };
             };
             /** @description Validation Error */
@@ -3149,6 +3377,45 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["HarvestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_payout_address_darwins__darwin_id__payout_address_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayoutAddressRequest"];
             };
         };
         responses: {
@@ -5203,6 +5470,39 @@ export interface operations {
             };
         };
     };
+    money_capabilities_platform_money_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_soma_forensics_platform_darwins__darwin_id__forensics_get: {
         parameters: {
             query?: never;
@@ -5445,9 +5745,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["DarwinAlerts"];
                 };
             };
             /** @description Validation Error */
@@ -5766,6 +6064,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    store_info_store__darwin_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    buy_report_store__darwin_id__report_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                darwin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportOrder"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

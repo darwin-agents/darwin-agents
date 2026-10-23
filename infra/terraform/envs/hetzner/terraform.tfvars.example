@@ -22,7 +22,7 @@ agent_count  = 2          # 1 control-plane + this many workers
 # allowed_admin_cidrs = ["203.0.113.4/32"]
 
 # --- platform ---------------------------------------------------------------
-platform_image  = "ghcr.io/quantium-rock/darwin-agent/darwin-platform:latest"
+platform_image  = "ghcr.io/darwin-agents/darwin-agents/darwin-platform:latest"
 wallet_provider = "cdp"   # cdp | local-vault | web3
 
 # litellm_master_key    = "sk-..."           # or TF_VAR_litellm_master_key

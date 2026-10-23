@@ -21,6 +21,8 @@ E2B is *not* mocked locally — we use real E2B sandboxes pointed at our dev pro
 
 Coinbase Agentic Wallets in **testnet (Base Sepolia)** with mock USDC. No real money in phase 0.
 
+> **As built (2026-10):** `make docker-up` brings up supervisor, web dashboard, Postgres 16, Redis 7, LiteLLM, Prometheus, OTel collector, Jaeger and Alertmanager (`infra/docker/docker-compose.yml`) — no Vault container. Provider keys come from the repo-root `.env` (copied from `.env.example`), not `.env.local`. E2B is used only when `E2B_API_KEY` is set; empty falls back to `FakeSandbox`. For the Kubernetes path, `make dev` runs a kind cluster with CNPG + Vault + LiteLLM + the supervisor (`infra/terraform/envs/local`).
+
 ### Dev cloud
 
 A single dev environment in AWS, region us-east-1:
@@ -195,6 +197,8 @@ Walking through what runs in EKS, by namespace:
 
 A Darwin namespace is provisioned by the supervisor on spawn and torn down on death.
 
+> **As built (2026-10):** the cluster is k3s on Hetzner (`infra/terraform/envs/hetzner`), not EKS. A `darwin-<id>` namespace holds one orchestrator Deployment pod (RuntimeClass `gvisor` by default, `kata` optional) with neurons in-process, a `/data` PVC (audit log, checkpoint, wallet feed), a soma PVC, a ConfigMap, a Secret, a Service and a default-deny NetworkPolicy that also allows DNS, LiteLLM and Postgres (`src/darwin_platform/k8s/manifests.py`). Generated code runs in E2B; there are no per-dispatch neuron microVMs and no LanceDB sidecar (LanceDB is an embedded library, `--episodic-memory lancedb`).
+
 ## Terraform layout
 
 **In the repo today** (`infra/terraform/`):
@@ -222,7 +226,7 @@ infra/terraform/
 | EKS / dev cloud | `envs/local` (kind) or `envs/hetzner` (k3s) | **Shipped** — cloud-agnostic, not AWS-specific |
 | Aurora platform DB | CloudNativePG (`modules/cnpg`) | **Shipped** |
 | ElastiCache Redis | — | **Not in TF** — Redis in Compose only; LiteLLM cache stripped in TF configs |
-| HCP / Enterprise Vault | `vault` (dev) / `vault-prod` (raft, manual unseal) | **Shipped** — no KMS auto-unseal yet |
+| HCP / Enterprise Vault | `vault` (dev) / `vault-prod` (raft, manual unseal) | **Shipped** — auto-unseal and Postgres PITR are wired as opt-in Hetzner vars (`vault_seal_config_hcl`, `database_backup_*`), default off (doc 32 §B1–B2) |
 | LiteLLM proxy | `modules/litellm` | **Shipped** |
 | Egress proxy (phase 2) | Helm chart templates; **disabled** in current TF deploys | **Partial** |
 | `envs/staging`, `prod-us-east`, … | — | **Planned** — add sibling envs over `platform-stack` |
@@ -293,8 +297,8 @@ Anything missing these for sustained periods triggers paging and a review.
 
 - Kubernetes operator framework for Darwin lifecycle (premature; the supervisor handles it directly)
 - Service mesh (Istio/Linkerd) — premature; mTLS within cluster handled by AWS PrivateLink and SGs
-- Self-hosted log aggregation — we use Honeycomb + CloudWatch
+- Self-hosted log aggregation — we use Honeycomb + CloudWatch *(as built: neither is integrated; traces go OTLP → collector + Jaeger, metrics to Prometheus)*
 - A custom event store — Postgres handles the audit log well at our scale
-- Multi-cloud — we are AWS-first; GCP at most for some Gemini-routed work
+- Multi-cloud — we are AWS-first; GCP at most for some Gemini-routed work *(as built: the stack is provider-neutral and production runs on Hetzner Cloud)*
 
 The infrastructure stays boring on purpose, until it actively hurts us.

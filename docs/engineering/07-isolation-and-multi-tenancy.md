@@ -40,6 +40,8 @@ We considered three sandboxing tiers:
 
 Each neuron invocation runs in a fresh E2B microVM. The orchestrator itself runs in a longer-lived per-Darwin microVM (replaced on soma mutation or at scheduled rotation). Cold start ~100–500ms, well within Darwin's heartbeat budget.
 
+> **As built (2026-10):** with `--driver k8s` each Darwin's orchestrator is one Deployment pod in its own `darwin-<id>` namespace, run under a sandboxed RuntimeClass — `gvisor` (runsc) by default on the Hetzner k3s nodes, `kata` microVMs where nodes support nested virtualisation (`infra/terraform/envs/hetzner/main.tf`, `kata_enabled`). Neurons execute in-process inside that pod; E2B is used per call for untrusted code execution (mutation eval, code-running neurons) via `--e2b-api-key`, which production requires (`src/darwin_platform/__main__.py`). With `--driver in-process` a Darwin is an asyncio task in the supervisor.
+
 For execution-sandbox comparison see [`14-sandboxing-e2b.md`](14-sandboxing-e2b.md).
 
 ## Network isolation
@@ -69,9 +71,9 @@ There are two distinct classes of data, with different ownership:
 
 **Vector store.** LanceDB per Darwin (lightweight enough to make this practical). Holds episodic memory and semantic-search indexes.
 
-**Vault (KYC docs, account credentials, payment methods).** HashiCorp Vault with one **Vault namespace per Darwin**. The orchestrator and neurons authenticate via short-lived tokens scoped to their namespace; cross-namespace reads are syntactically impossible. See the dedicated section below.
+**Vault (KYC docs, account credentials, payment methods).** HashiCorp Vault with one **Vault namespace per Darwin**. The orchestrator and neurons authenticate via short-lived tokens scoped to their namespace; cross-namespace reads are syntactically impossible. See the dedicated section below. *As built:* on OSS Vault the "namespace" is a per-Darwin path-scoped policy plus AppRole on a shared KV mount (`darwins/{id}/*`), enforced by Vault itself (`src/darwin_platform/adapters/vault_namespace.py`); Vault Enterprise namespaces are not used.
 
-**Event log.** Shared append-only Postgres table partitioned by `darwin_id` and `month`. Reads are RLS-gated. Writes are append-only via a stored procedure that hash-chains the entry; direct INSERTs are revoked.
+**Event log.** Shared append-only Postgres table partitioned by `darwin_id` and `month`. Reads are RLS-gated. Writes are append-only via a stored procedure that hash-chains the entry; direct INSERTs are revoked. *As built:* the genome hash-chains each record itself; the platform stores them in `darwin_audit_records` (keyed `darwin_id, seq`, not partitioned; RLS from schema v12) or, for k8s pods, in a JSONL file on the pod's `/data` PVC (`src/darwin_platform/runtime/audit_sink.py`).
 
 ## The owner-agent shared vault
 

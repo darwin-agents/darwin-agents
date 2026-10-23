@@ -17,7 +17,11 @@ import { formatTimestamp, formatUsdc } from "@/lib/format";
 export default function BillingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
 
-  const { data: billing, isError: billingError, error: billingErr } = useQuery({
+  const {
+    data: billing,
+    isError: billingError,
+    error: billingErr,
+  } = useQuery({
     queryKey: queryKeys.billing(id),
     queryFn: () => api.billing(id),
     refetchInterval: 60_000,
@@ -33,8 +37,23 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
     refetchInterval: 60_000,
   });
 
+  const { data: status } = useQuery({
+    queryKey: queryKeys.darwin(id),
+    queryFn: () => api.getDarwin(id),
+    refetchInterval: 30_000,
+  });
+
   const entries = ledger?.entries ?? [];
-  const csvUrl = api.ledgerCsvUrl(id);
+  const downloadCsv = async () => {
+    const csv = await api.ledgerCsv(id);
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a = Object.assign(document.createElement("a"), {
+      href: url,
+      download: `darwin-${id}-ledger.csv`,
+    });
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6">
@@ -49,15 +68,9 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
       {ledgerError && <QueryError error={ledgerErr} what="the ledger" />}
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <BillingMetric label="Balance" value={formatUsdc(billing?.balance_usdc)} />
-        <BillingMetric
-          label="Burn / hr"
-          value={billing?.burn_rate_usdc_per_hour !== undefined ? formatUsdc(-Math.abs(billing.burn_rate_usdc_per_hour)) : "—"}
-        />
-        <BillingMetric
-          label="Ledger entries"
-          value={ledger ? String(ledger.total) : "—"}
-        />
+        <BillingMetric label="Balance" value={formatUsdc(status?.balance_usdc)} />
+        <BillingMetric label="Profit" value={formatUsdc(status?.profit_usdc)} />
+        <BillingMetric label="Unsettled fees" value={formatUsdc(status?.unsettled_usdc)} />
       </div>
 
       <Card>
@@ -70,11 +83,8 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
           </div>
           <div className="flex items-center gap-2">
             <FiatDialog darwinId={id} />
-            <Button asChild variant="outline" size="sm">
-              {/* External-style anchor so the browser uses Content-Disposition. */}
-              <a href={csvUrl} download={`darwin-${id}-ledger.csv`}>
-                <Download className="mr-1 size-4" /> Ledger CSV
-              </a>
+            <Button variant="outline" size="sm" onClick={downloadCsv}>
+              <Download className="mr-1 size-4" /> Ledger CSV
             </Button>
           </div>
         </CardHeader>
@@ -85,12 +95,15 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
 
       <Card>
         <CardHeader>
-          <CardTitle>Cost breakdown</CardTitle>
+          <CardTitle>Costs and harvests</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-3">
-          <BillingMetric label="LLM" value={formatUsdc(billing?.llm_cost_usdc)} />
-          <BillingMetric label="Sandbox" value={formatUsdc(billing?.sandbox_cost_usdc)} />
-          <BillingMetric label="Browser" value={formatUsdc(billing?.browser_cost_usdc)} />
+          <BillingMetric
+            label="Infrastructure spent"
+            value={formatUsdc(billing?.infrastructure?.gross_usdc)}
+          />
+          <BillingMetric label="Harvested (net)" value={formatUsdc(billing?.harvests?.net_usdc)} />
+          <BillingMetric label="Harvest fees" value={formatUsdc(billing?.harvests?.fee_usdc)} />
         </CardContent>
       </Card>
 
@@ -116,10 +129,7 @@ export default function BillingPage({ params }: { params: Promise<{ id: string }
               </thead>
               <tbody>
                 {entries.slice(0, 50).map((e) => (
-                  <tr
-                    key={`${e.seq}-${e.ts}`}
-                    className="border-t border-[var(--color-border)]"
-                  >
+                  <tr key={`${e.seq}-${e.ts}`} className="border-t border-[var(--color-border)]">
                     <td className="mono px-4 py-2 text-xs text-[var(--color-muted-foreground)]">
                       {formatTimestamp(e.ts)}
                     </td>
@@ -148,7 +158,7 @@ function BillingMetric({ label, value }: { label: string; value: string }) {
   return (
     <Card>
       <CardContent className="p-4">
-        <div className="text-[11px] uppercase tracking-wide text-[var(--color-muted-foreground)]">
+        <div className="text-[11px] tracking-wide text-[var(--color-muted-foreground)] uppercase">
           {label}
         </div>
         <div className="mono mt-1 text-xl font-semibold">{value}</div>

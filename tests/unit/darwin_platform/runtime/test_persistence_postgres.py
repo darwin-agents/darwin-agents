@@ -371,6 +371,12 @@ async def test_supervisor_billing_policy_override_postgres():
     )
     try:
         status = await sup.spawn(opening_usdc=200.0, actor="alice")
+        h = sup._darwins[status.darwin_id]  # noqa: SLF001
+        while h.runtime.state.tick < 1:
+            await asyncio.sleep(0.01)
+        # The fee is on profit: earn first, and don't reproduce on it.
+        await sup.set_reproduction_block(status.darwin_id, blocked=True)
+        h.stack.wallet.credit(150.0, "affiliate_network")
         result = await sup.harvest(
             status.darwin_id, amount_usdc=100.0,
             destination="bank://x", actor="alice",

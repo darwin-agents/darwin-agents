@@ -1,4 +1,6 @@
-# Simulation tier — the 90-day cross-engine bit-for-bit parity sim.
+# Slow tiers — everything marked `slow` (doc 26): the 90-day cross-engine
+# bit-for-bit parity sim, the e2e tier (real `darwin-platform serve`
+# subprocesses), and the performance tier (latency / memory budgets).
 #
 # Doc 18 testing strategy: "simulation tests run nightly". We schedule
 # this weekly (cheap) and also fire on main pushes so a regression in
@@ -43,5 +45,9 @@ jobs:
       - name: Install deps
         run: uv sync --all-extras --dev
 
-      - name: Run simulation tier
+      - name: Run slow tiers (simulation, e2e, performance)
+        # Shared runners are noisier than a laptop: give the performance
+        # budgets 3x headroom (scaling-ratio checks are unaffected).
+        env:
+          DARWIN_PERF_SCALE: "3"
         run: uv run pytest -m slow -v

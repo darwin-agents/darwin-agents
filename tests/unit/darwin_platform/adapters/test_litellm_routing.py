@@ -20,7 +20,6 @@ import pytest
 
 from darwin_dna.machinery.llm_router import (
     LLMBudgetExhausted,
-    LLMError,
     LLMRouter,
     Tier,
 )

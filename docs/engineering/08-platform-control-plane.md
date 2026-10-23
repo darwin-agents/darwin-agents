@@ -15,14 +15,14 @@ The platform is the "habitat" that hosts Darwins. It is intentionally boring inf
    ┌──────────┐         ┌────────────┐               ┌──────────────┐
    │ Web app  │         │ REST/WS    │               │ Webhooks     │
    │ Next.js  │         │ FastAPI    │               │ (Stripe,     │
-   │ (dash)   │         │ (control)  │               │  Coinbase,   │
-   └────┬─────┘         └─────┬──────┘               │  email)      │
+   │ (dash)   │         │ (control)  │               │  MoonPay,    │
+   └────┬─────┘         └─────┬──────┘               │  KYC)        │
         │                     │                       └──────┬──────┘
         └──────────┬──────────┴──────────────────────────────┘
                    ▼
          ┌──────────────────────┐         ┌─────────────────────────┐
          │  Auth & Identity     │         │  Notification bus       │
-         │  (Clerk / WorkOS)    │         │  (push / email / webhook│
+         │  (Clerk)             │         │  (Web Push / webhook)   │
          └──────────┬───────────┘         └─────────────────────────┘
                     │
                     ▼
@@ -52,28 +52,118 @@ The platform is the "habitat" that hosts Darwins. It is intentionally boring inf
 
 ## The Darwin Supervisor
 
-The supervisor is the only component that has the right to touch a Darwin's lifecycle. It exposes a small, well-tested API:
+The supervisor is the only component that has the right to touch a Darwin's lifecycle. Its HTTP surface is a FastAPI app built by `darwin_platform.api.build_app`, split into domain routers under `src/darwin_platform/routers/`. The lifecycle core:
 
 ```
-POST   /darwins                          → spawn
-GET    /darwins/{id}                     → status
-POST   /darwins/{id}/pause               → pause
-POST   /darwins/{id}/resume              → resume
-POST   /darwins/{id}/kill                → kill (irreversible)
-POST   /darwins/{id}/reproduce/force     → force reproduction (rare)
-POST   /darwins/{id}/escalations/{eid}/respond → user responds to escalation
-GET    /darwins/{id}/lineage             → ancestry tree
-GET    /darwins/{id}/ledger              → financial ledger
-GET    /darwins/{id}/events              → event log (paginated)
+POST   /darwins                                   → spawn
+GET    /darwins/{id}                              → status
+POST   /darwins/{id}/pause | /resume              → pause / resume
+POST   /darwins/{id}/kill                         → kill (irreversible)
+POST   /darwins/{id}/reproduce/force              → force reproduction (rare)
+POST   /darwins/{id}/escalations/{eid}/respond    → owner responds to an escalation
+GET    /darwins/{id}/lineage | /ledger | /events  → ancestry, ledger, audit events (cursor-paged)
+WS     /darwins/{id}/stream                       → live anatomy / status / timeline feed
 ```
 
-Internal-only:
+Operator-only levers include `POST /platform/darwins/{id}/quarantine`, the fleet-wide `POST /platform/fleet/{pause,resume,spend_lock,block_category,block_counterparty}`, `POST /platform/wallets/{id}/policy`, and `POST /platform/signing/rotate`. New DNA layers are signed internally at reproduction — there is no public "sign a layer" endpoint.
 
-```
-POST   /platform/darwins/{id}/quarantine → suspend pending review (compliance)
-POST   /platform/signing/dna             → sign a new DNA layer
-POST   /platform/wallets/{id}/policy     → update spend policy
-```
+### Full route reference
+
+Generated from `build_app()` (one row per path; methods merged). **Scope**: `owner` requires the owner scope, `(owns)` additionally requires that the caller owns the Darwin, `operator` requires `platform_operator` (which implies every scope), `any token` accepts any valid token, `public` needs none. `/docs`, `/redoc`, and `/openapi.json` exist only with `--enable-docs`, which is the interactive, always-current version of this table.
+
+| Method | Path | Router | Scope |
+| ------ | ---- | ------ | ----- |
+| GET/POST | `/darwins` | `darwins` | owner |
+| GET | `/darwins/{darwin_id}` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/pause` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/resume` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/kill` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/reproduce/force` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/controls/spend_lock` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/controls/reproduction_block` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/controls/disabled_neurons` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/controls/disabled_categories` | `darwins` | owner (owns) |
+| GET | `/darwins/{darwin_id}/controls` | `darwins` | owner (owns) |
+| GET | `/darwins/{darwin_id}/anatomy` | `darwins` | owner (owns) |
+| GET | `/darwins/{darwin_id}/lineage` | `darwins` | owner (owns) |
+| GET | `/darwins/{darwin_id}/lineage/tree` | `darwins` | owner (owns) |
+| GET | `/darwins/{darwin_id}/events` | `darwins` | owner (owns) |
+| POST | `/darwins/{darwin_id}/escalations/{escalation_id}/respond` | `escalations` | owner (owns) |
+| GET | `/escalations` | `escalations` | owner (owns) |
+| GET | `/darwins/{darwin_id}/escalations` | `escalations` | owner (owns) |
+| GET | `/darwins/{darwin_id}/escalations/{escalation_id}` | `escalations` | owner (owns) |
+| WS | `/darwins/{darwin_id}/stream` | `stream` | owner (owns) |
+| GET | `/darwins/{darwin_id}/ledger` | `ledger` | owner (owns) |
+| GET | `/darwins/{darwin_id}/ledger.csv` | `ledger` | owner (owns) |
+| GET | `/darwins/{darwin_id}/ledger/summary` | `ledger` | owner (owns) |
+| GET | `/darwins/{darwin_id}/billing` | `ledger` | owner (owns) |
+| GET | `/platform/billing` | `ledger` | operator |
+| POST | `/darwins/{darwin_id}/harvest` | `harvest` | owner (owns) |
+| PUT | `/darwins/{darwin_id}/payout-address` | `harvest` | owner (owns) |
+| GET/POST | `/darwins/{darwin_id}/harvest_rules` | `harvest` | owner (owns) |
+| DELETE | `/darwins/{darwin_id}/harvest_rules/{rule_id}` | `harvest` | owner (owns) |
+| GET/POST/DELETE | `/platform/darwins/{darwin_id}/resource_throttle` | `throttle` | operator |
+| GET/POST/DELETE | `/platform/darwins/{darwin_id}/throttle` | `throttle` | operator |
+| POST | `/platform/fiat/deposit_quote` | `fiat` | owner (owns) |
+| POST | `/platform/fiat/confirm_deposit` | `fiat` | owner (owns) |
+| POST | `/platform/fiat/withdraw` | `fiat` | operator |
+| POST | `/darwins/{darwin_id}/fiat_payment` | `fiat` | operator |
+| POST | `/darwins/{darwin_id}/fiat_payment/refund` | `fiat` | operator |
+| POST | `/platform/kyc/start` | `kyc` | owner |
+| GET | `/platform/kyc/status` | `kyc` | owner |
+| POST | `/platform/kyc/webhook` | `kyc` | owner |
+| POST | `/webhooks/stripe` | `webhooks` | public — provider-signed |
+| POST | `/webhooks/moonpay` | `webhooks` | public — provider-signed |
+| POST | `/webhooks/kyc` | `webhooks` | public — provider-signed |
+| POST | `/platform/freelancers` | `freelancers` | operator |
+| DELETE | `/platform/freelancers/{owner_subject}/{freelancer_id}` | `freelancers` | operator |
+| GET | `/platform/freelancers/{owner_subject}` | `freelancers` | operator |
+| GET/POST | `/me/freelancers` | `me` | owner |
+| DELETE | `/me/freelancers/{freelancer_id}` | `me` | owner |
+| GET | `/me/push-vapid-public-key` | `me` | owner |
+| GET/POST/DELETE | `/me/push-subscriptions` | `me` | owner |
+| POST | `/darwins/{darwin_id}/omnibus/fund` | `omnibus` | operator |
+| POST | `/platform/omnibus/credit` | `omnibus` | operator |
+| POST | `/platform/fleet/pause` | `fleet` | operator |
+| POST | `/platform/fleet/resume` | `fleet` | operator |
+| POST | `/platform/fleet/spend_lock` | `fleet` | operator |
+| POST | `/platform/fleet/block_category` | `fleet` | operator |
+| POST | `/platform/fleet/block_counterparty` | `fleet` | operator |
+| POST/DELETE | `/platform/darwins/{darwin_id}/quarantine` | `fleet` | operator |
+| GET | `/darwins/{darwin_id}/proposals` | `proposals` | owner (owns) |
+| POST | `/platform/darwins/{darwin_id}/proposals/{name}/admit` | `proposals` | operator |
+| POST | `/platform/darwins/{darwin_id}/proposals/{name}/reject` | `proposals` | operator |
+| GET/POST/DELETE | `/darwins/{darwin_id}/vault` | `vault` | owner (owns) |
+| POST | `/platform/vault/sweep` | `vault` | operator |
+| GET/POST | `/platform/wallets/{darwin_id}/policy` | `wallets` | operator |
+| PUT/DELETE | `/platform/wallets/{darwin_id}/preapprovals/{rule_id}` | `wallets` | operator |
+| GET | `/platform/wallets/{darwin_id}/preapprovals` | `wallets` | operator |
+| GET | `/darwins/{darwin_id}/browser/sessions` | `resources` | owner (owns) |
+| GET | `/platform/browser/stats` | `resources` | operator |
+| GET | `/darwins/{darwin_id}/resources` | `resources` | owner (owns) |
+| DELETE | `/darwins/{darwin_id}/resources/{resource_id}` | `resources` | owner (owns) |
+| GET | `/platform/resources` | `resources` | operator |
+| GET | `/platform/capabilities` | `platform` | any token |
+| GET | `/platform/money/capabilities` | `platform` | any token |
+| GET | `/platform/darwins/{darwin_id}/forensics` | `platform` | operator |
+| GET | `/platform/darwins/{darwin_id}/forensics/{snapshot_id}` | `platform` | operator |
+| GET | `/platform/darwins/{darwin_id}/organism/tables` | `platform` | operator |
+| GET | `/platform/darwins/{darwin_id}/organism/tables/{table}/rows` | `platform` | operator |
+| GET | `/platform/sms/verification-code` | `platform` | operator |
+| POST | `/platform/darwins/{darwin_id}/reproduce_with_amendment` | `platform` | operator |
+| GET | `/darwins/{darwin_id}/alerts` | `alerts` | owner (owns) |
+| GET | `/platform/alerts` | `alerts` | operator |
+| POST | `/platform/signing/rotate` | `signing` | operator |
+| GET | `/platform/signing/public_key` | `signing` | operator |
+| GET | `/platform/audit` | `audit` | operator |
+| GET | `/platform/staging/status` | `audit` | operator |
+| GET | `/platform/staging/history` | `audit` | any token |
+| GET | `/platform/snapshot` | `audit` | operator |
+| GET | `/healthz` | `ops` | public |
+| GET | `/readyz` | `ops` | public (`503` on HA followers) |
+| GET | `/metrics` | `ops` | public |
+| GET | `/store/{darwin_id}` | `store` | public — x402 offer |
+| POST | `/store/{darwin_id}/report` | `store` | public — x402 payment (`402` without one) |
 
 Every endpoint writes to the audit log before mutating state. The supervisor is the single writer for Darwin lifecycle transitions; nothing else has that grant.
 
@@ -88,7 +178,7 @@ When a neuron files an escalation:
    - **KYC-class** → up to 72 hours, then auto-fail
    - **Approval-class** (spend, action category) → up to 24 hours, then auto-deny
    - **Information-class** (Darwin needs an answer) → up to 7 days
-4. Notification fires: push notification to the user's app, email, optionally SMS for time-critical.
+4. Notification fires through the configured sinks (fan-out): W3C Web Push to the owner's installed PWA, Slack, and generic JSON webhooks; CRITICAL monitor alerts can also page PagerDuty. (An SMTP email sink exists in `observability/sinks.py` but has no CLI flag yet.)
 5. The user opens the escalation in their dashboard, sees the context, and resolves: approve / deny / provide data.
 6. The response is signed by the user's session and posted to the supervisor.
 7. The supervisor wakes the paused neuron with the response.
@@ -154,7 +244,7 @@ The Timeline reads from the event log, with a fast indexed view per Darwin. Stre
 
 **Anatomy (organism map).** A live, animated organism diagram showing the Darwin's structural shape. The orchestrator (the "first cell") sits in the center; neurons branch out as connected cells; active neurons pulse or glow; connections between neurons show in-flight data flow. As a Darwin self-modifies and adds new strategies or specialized neurons, the anatomy grows new branches. The lineage tree (parents above, children below) is a separate but related visualization accessible from this view. This is the **what does it look like** view.
 
-The Anatomy reads from the platform's view of the Darwin's current neuron registry, in-flight task graph (LangGraph state), and recent activity heatmap. Re-renders animate smoothly; new neurons appear with growth animations; dying neurons fade. Implementation will probably use D3 or React Flow with a force-directed layout — see [`../frontend/05-anatomy-canvas.md`](../frontend/05-anatomy-canvas.md).
+The Anatomy reads from the platform's view of the Darwin's current neuron registry, in-flight task graph (LangGraph state), and recent activity heatmap. Re-renders animate smoothly; new neurons appear with growth animations; dying neurons fade. As built it is a hand-rolled SVG component (`web/components/anatomy/`), no graph library — see [`../frontend/05-anatomy-canvas.md`](../frontend/05-anatomy-canvas.md).
 
 Together: the **Anatomy** answers "what is this organism", the **Timeline** answers "what is it doing". The two views are linked — clicking a neuron on the Anatomy filters the Timeline to that neuron's activity; clicking an action in the Timeline highlights the responsible neuron in the Anatomy.
 
@@ -169,7 +259,7 @@ We don't charge a monthly subscription. The platform earns money when the user e
 
 ## Observability
 
-The whole platform emits OpenTelemetry traces. Every interesting event (spawn, kill, neuron dispatch, payment, escalation, mutation proposal, reproduction) is a span. Spans are tagged with `darwin_id`, `lineage_root_id`, `generation`, and per-event metadata. We use Honeycomb (or equivalent) to query.
+The whole platform emits OpenTelemetry traces. Every interesting event (spawn, kill, neuron dispatch, payment, escalation, mutation proposal, reproduction) is a span. Spans are tagged with `darwin_id`, `lineage_root_id`, `generation`, and per-event metadata. `serve --otlp-endpoint` exports them over OTLP/HTTP to an OpenTelemetry collector, which forwards to Jaeger in the bundled stacks; any OTLP backend works. Metrics are Prometheus text on `/metrics` (alert rules and a Grafana dashboard ship in `infra/`).
 
 The audit log is structurally separate from traces. Traces are sampled and rotated; the audit log is permanent and hash-chained. We do not delete audit entries even when a Darwin dies; we retain them per the platform's data-retention policy (which is set by law in each jurisdiction we operate in).
 
@@ -182,12 +272,12 @@ The `src/darwin_platform/` package is organised as bounded contexts. Each subpac
 | `runtime/`       | Per-Darwin lifecycle: `Supervisor`, `Orchestrator`, `DarwinDriver` Protocol, persistence, leader election.                                                   |
 | `tenancy/`       | Multi-tenant isolation: `NamespaceProvisioner` (K8s + Vault + DB), `ProvisioningService`, `VaultAdminService`, cross-pollination.                            |
 | `payments/`      | Money flow: `BillingService`, `OmnibusWallet`, `StripeRampService`, `HarvestScheduler`, sanctions screeners.                                                 |
-| `security/`      | `auth` (bearer tokens + scopes), `KYCService`, `PlatformSigner` + `KMSSigningService`, key rotation, vault watermarking.                                     |
+| `security/`      | `auth` (bearer tokens + scopes), `KYCService`, `PlatformSigner` + `KMSSigningService` (Vault Transit via `HvacTransitBackend` in production), Clerk JWT verification, key rotation, vault watermarking. |
 | `observability/` | `tracing`, `Monitor` + detectors, `OperatorAuditLog`, `DriftDetector`, `MerkleAnchorPublisher`, `snapshot`, notification + alert sinks.                      |
-| `escalations/`   | `EscalationRouter`, `NotificationSink` Protocol, `FCMNotificationSink` for mobile push.                                                                      |
+| `escalations/`   | `EscalationRouter`, `NotificationSink` Protocol, `WebPushNotificationSink` (PWA, VAPID — the wired path), legacy `FCMNotificationSink` (not wired).            |
 | `evolution/`     | Phase-1 sandboxed patch staging: `PatchStagingService`, `EvalRunner`. (Not to be confused with `darwin_dna.evolution`, the genome's reproduction machinery.) |
 | `infra/`         | Substrate-level resource controls: `egress_proxy` + `BandwidthQuota`, `ThrottleService`, `BrowserCacheService`.                                              |
-| `adapters/`      | External-system adapters: `wallet`, `vault`, `browser`, `sandbox`, `litellm_transport`, `x402`, fiat ramps, chain SDKs.                                      |
+| `adapters/`      | External-system adapters: wallet (`web3_chain`, `coinbase_cdp`, `multichain`, Solana/Stellar SDKs), Vault (`hvac_vault`, `vault_namespace`), browser (`browser`, `browser_use_cloud`, `stagehand`), `sandbox` (E2B), LiteLLM transport + admin, `x402` + facilitator, fiat ramps (Stripe, MoonPay), `twilio_sms`, `price_oracle`, `lancedb_memory`, organism DB. |
 | `k8s/`           | K8s manifest builders + `K8sDarwinDriver`.                                                                                                                   |
 
-`api.py` (HTTP routes) and `__main__.py` (CLI entry point) stay at the package root since they cross-cut every subpackage.
+`api.py` (the `build_app` factory), `routers/` (one module per API domain — the route table above), `client/` (the typed Python SDK), and `__main__.py` (the `darwin-platform` CLI) sit at the package root since they cross-cut every subpackage.

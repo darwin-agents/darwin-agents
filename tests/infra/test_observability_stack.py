@@ -1,30 +1,30 @@
-"""The local observability infra wires together (doc 22): Prometheus →
-Alertmanager, the OTel collector receives the supervisor's spans, and the
-alert rules target real exposed metric names.
+"""The observability stack wires together (doc 22): Prometheus →
+Alertmanager, the OTel collector receives the supervisor's spans and exports
+to Jaeger, and every metric an alert rule or Grafana panel queries is one
+the supervisor's ``/metrics`` endpoint actually emits.
 
-These are pure config-shape tests (yaml.safe_load) — no docker required. They
-guard against the compose/prometheus wiring silently drifting apart.
+Config-shape tests (yaml.safe_load / json) plus one in-process render of
+``/metrics`` — no docker required. They guard against the dashboards,
+alerts, and the code silently drifting apart.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import pytest
 
 yaml = pytest.importorskip("yaml")
 
-
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for p in here.parents:
-        if (p / "infra").is_dir() and (p / "src").is_dir():
-            return p
-    raise AssertionError("repo root not found")
+_REPO = Path(__file__).resolve().parents[2]
+_DOCKER = _REPO / "infra" / "docker"
+_DASHBOARD = _REPO / "infra" / "grafana" / "darwin-platform-dashboard.json"
 
 
 def _load(rel: str):
-    return yaml.safe_load((_repo_root() / "infra" / "docker" / rel).read_text())
+    return yaml.safe_load((_DOCKER / rel).read_text())
 
 
 def test_prometheus_routes_to_alertmanager_and_loads_rules():
@@ -100,3 +100,54 @@ def test_compose_runs_collector_and_alertmanager_and_points_supervisor_at_otlp()
     # Prometheus mounts the rules + alertmanager mounts its config.
     assert any("alerting_rules.yml" in v for v in svc["prometheus"]["volumes"])
     assert any("alertmanager.yml" in v for v in svc["alertmanager"]["volumes"])
+
+
+# -- metrics contract: queries ↔ the code ------------------------------------
+@pytest.fixture(scope="module")
+def emitted_metrics() -> set[str]:
+    """Metric families the supervisor exposes with one live Darwin, read
+    from the Prometheus ``# TYPE`` lines of a real ``/metrics`` render."""
+    pytest.importorskip("fastapi")
+    httpx = pytest.importorskip("httpx")
+    import asyncio
+
+    from darwin_platform import Supervisor
+    from darwin_platform.api import build_app
+
+    async def render() -> str:
+        sup = Supervisor(heartbeat_seconds=0.0)
+        transport = httpx.ASGITransport(app=build_app(sup))
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                await c.post("/darwins", json={"opening_usdc": 60.0})
+                return (await c.get("/metrics")).text
+        finally:
+            await sup.shutdown()
+
+    text = asyncio.run(render())
+    return set(re.findall(r"^# TYPE (\S+)", text, flags=re.MULTILINE))
+
+
+def _referenced(text: str) -> set[str]:
+    return set(re.findall(r"darwin_platform_[a-z_]+", text))
+
+
+def test_alert_rules_only_query_emitted_metrics(emitted_metrics):
+    referenced = _referenced((_DOCKER / "alerting_rules.yml").read_text())
+    assert referenced, "alert rules should query platform metrics"
+    assert referenced <= emitted_metrics, f"alerts on unknown metrics: {referenced - emitted_metrics}"
+
+
+def test_grafana_dashboard_only_queries_emitted_metrics(emitted_metrics):
+    dashboard = json.loads(_DASHBOARD.read_text())
+    assert dashboard.get("panels"), "dashboard has no panels"
+    referenced = _referenced(_DASHBOARD.read_text())
+    assert referenced <= emitted_metrics, f"panels on unknown metrics: {referenced - emitted_metrics}"
+
+
+def test_every_alert_rule_is_actionable():
+    for group in _load("alerting_rules.yml")["groups"]:
+        for rule in group["rules"]:
+            name = rule.get("alert", "<recording rule>")
+            assert rule.get("labels", {}).get("severity") in {"info", "warning", "critical"}, name
+            assert rule.get("annotations", {}).get("summary"), f"{name} has no summary annotation"

@@ -113,6 +113,16 @@ class KYCVerdict:
         }
 
 
+def _verdict_from_json(d: dict[str, Any]) -> KYCVerdict:
+    return KYCVerdict(
+        subject=d["subject"], status=KYCStatus(d["status"]),
+        tier=KYCTier(d.get("tier", KYCTier.STANDARD.value)),
+        inquiry_id=d.get("inquiry_id", ""), reason=d.get("reason", ""),
+        verified_at=float(d.get("verified_at") or 0.0),
+        expires_at=d.get("expires_at"), is_adult=bool(d.get("is_adult", True)),
+    )
+
+
 @dataclass(frozen=True)
 class KYCWebhookEvent:
     """A provider webhook callback, after its signature has been verified.
@@ -660,6 +670,10 @@ class KYCService:
     retention_seconds: float = 365.0 * 86400.0  # 1 year default
     clock: Callable[[], float] = field(default=time.time)
     _verdicts: dict[str, KYCVerdict] = field(default_factory=dict, init=False)
+    # inquiry_id → the subject who started it. The authority on whose verdict
+    # an inquiry is: nobody can attach another person's approval to themselves.
+    _inquiries: dict[str, str] = field(default_factory=dict, init=False)
+    _store: Any = field(default=None, init=False)
     _audit_recorder: (
         Callable[[str, str, dict[str, Any]], None] | None
     ) = field(default=None, init=False)
@@ -672,6 +686,22 @@ class KYCService:
         supervisor binds its own ``OperatorAuditLog.record`` partial."""
         self._audit_recorder = recorder
 
+    def attach_store(self, store: Any) -> None:
+        """Persist verdicts + inquiry bindings (``save_verdict``,
+        ``bind_inquiry``, ``load``), so a restart doesn't turn every
+        verified user back into UNKNOWN."""
+        self._store = store
+        verdicts, inquiries = store.load()
+        self._verdicts.update(
+            {s: _verdict_from_json(v) for s, v in verdicts.items()}
+        )
+        self._inquiries.update(inquiries)
+
+    def _remember(self, subject: str, verdict: KYCVerdict) -> None:
+        self._verdicts[subject] = verdict
+        if self._store is not None:
+            self._store.save_verdict(subject, verdict.to_json())
+
     def start_inquiry(
         self, *, subject: str, tier: KYCTier = KYCTier.STANDARD,
         actor: str = "platform",
@@ -681,6 +711,11 @@ class KYCService:
         except KYCError as exc:
             self._audit("kyc_start_failed", actor, {"subject": subject, "reason": str(exc)})
             raise
+        inquiry_id = str(out.get("inquiry_id") or "")
+        if inquiry_id:
+            self._inquiries[inquiry_id] = subject
+            if self._store is not None:
+                self._store.bind_inquiry(inquiry_id, subject)
         self._audit("kyc_started", actor, {
             "subject": subject, "inquiry_id": out.get("inquiry_id"),
             "tier": tier.value,
@@ -690,8 +725,22 @@ class KYCService:
     def refresh_status(
         self, *, subject: str, inquiry_id: str, actor: str = "platform",
     ) -> KYCVerdict:
-        """Poll the provider, cache the verdict, record the transition."""
+        """Poll the provider, cache the verdict, record the transition.
+
+        The verdict only ever lands on the subject who started the inquiry:
+        an unknown inquiry, or one started by (or attributed by the provider
+        to) someone else, is refused — so an approved inquiry cannot unlock
+        another account."""
+        owner = self._inquiries.get(inquiry_id)
+        if owner is None:
+            raise KYCError(f"unknown KYC inquiry {inquiry_id!r}")
+        if subject != owner:
+            raise KYCError(f"KYC inquiry {inquiry_id!r} belongs to another subject")
         verdict = self.provider.poll_inquiry(inquiry_id)
+        if verdict.subject and verdict.subject != owner:
+            raise KYCError(
+                f"provider attributes inquiry {inquiry_id!r} to another subject"
+            )
         # Apply retention (only meaningful when verdict is APPROVED).
         if verdict.status == KYCStatus.APPROVED and verdict.expires_at is None:
             verdict = KYCVerdict(
@@ -703,7 +752,7 @@ class KYCService:
                 is_adult=verdict.is_adult,
             )
         previous = self._verdicts.get(subject)
-        self._verdicts[subject] = verdict
+        self._remember(subject, verdict)
         if previous is None or previous.status != verdict.status:
             self._audit("kyc_status_changed", actor, {
                 "subject": subject,
@@ -738,7 +787,8 @@ class KYCService:
         (Onfido attributes the run server-side)."""
         if not event.inquiry_id:
             raise KYCError("KYC webhook event has no inquiry id")
-        subject = event.subject
+        # Our own binding first (survives restarts); then the event / a poll.
+        subject = self._inquiries.get(event.inquiry_id) or event.subject
         if not subject:
             # Onfido: discover the subject by polling, then cache under it.
             polled = self.provider.poll_inquiry(event.inquiry_id)
@@ -804,13 +854,13 @@ class KYCService:
             # is the authoritative gate, and we mutate it unconditionally.
             pass
         existing = self._verdicts.get(subject)
-        self._verdicts[subject] = KYCVerdict(
+        self._remember(subject, KYCVerdict(
             subject=subject, status=KYCStatus.REJECTED,
             tier=existing.tier if existing else KYCTier.STANDARD,
             inquiry_id=existing.inquiry_id if existing else "",
             reason=f"revoked: {reason}",
             verified_at=self.clock(),
-        )
+        ))
         self._audit("kyc_revoked", actor, {"subject": subject, "reason": reason})
 
     def all_verdicts(self) -> list[KYCVerdict]:

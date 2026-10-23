@@ -12,11 +12,10 @@
  * Ingress that fronts the API on the kind host port (see ingress.tf).
  *
  * Posture: the local stack runs the chart's k8s driver mode but strips
- * the production extras the chart enables by default — no egress proxy,
- * no per-Darwin NetworkPolicies, no LanceDB sidecar (no public image),
- * no real Kata isolation (envs/local installs a runc-backed `kata`
- * RuntimeClass shim). Those map to the `*.enabled = false` /
- * `lancedb.image = ""` values below. Everything the chart's k8s args
+ * the production extras the chart enables by default — no egress proxy
+ * (pods get direct public HTTPS), no real Kata isolation (envs/local
+ * installs a runc-backed `kata` RuntimeClass shim). Those map to the
+ * `*.enabled = false` values below. Everything the chart's k8s args
  * leave implicit (`--k8s-namespace-prefix`, `--k8s-runtime-class`,
  * `--k8s-egress-proxy-namespace`) resolves to the supervisor's CLI
  * defaults, which match what this module used to pass by hand.
@@ -123,11 +122,6 @@ resource "helm_release" "platform" {
           repository = local.orchestrator_repository
           tag        = local.orchestrator_tag
         }
-      }
-      # No public lancedb image → skip the sidecar (the orchestrator
-      # falls back to the deterministic in-memory EpisodicMemory).
-      lancedb = {
-        image = ""
       }
     }
 

@@ -83,7 +83,9 @@ class OrchestratorState(BaseModel):
     policy_violations: int = 0
 
     # evolution
-    profit_baseline_usdc: float = 0.0  # balance at last reproduction
+    profit_baseline_usdc: float = 0.0  # capital in play since last reproduction
+    # How many wallet movements _rebase_profit has applied to the baseline.
+    funding_cursor: int = 0
     starting_capital_usdc: float = 0.0
     reproduce: bool = False
     # Platform-set force flag (doc 08 POST /darwins/{id}/reproduce/force;

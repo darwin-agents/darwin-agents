@@ -8,9 +8,7 @@ import { test, expect } from "@playwright/test";
  * Does NOT exercise a real sign-in — that needs a provisioned Clerk test
  * user which lives outside the harness.
  */
-test("middleware redirects unauthenticated requests to /sign-in", async ({
-  page,
-}) => {
+test("middleware redirects unauthenticated requests to /sign-in", async ({ page }) => {
   const res = await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page).toHaveURL(/\/sign-in/);
   // Ensure we actually came through the middleware (not a JS-only redirect).

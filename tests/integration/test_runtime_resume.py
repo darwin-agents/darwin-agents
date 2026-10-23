@@ -546,3 +546,21 @@ async def test_v3_db_upgrades_through_v6_with_data(tmp_path):
     finally:
         await sup.shutdown(kill_running=False)
         sup._persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_owner_survives_restart(tmp_path):
+    """Ownership used to live only in memory: after a restart every owner got
+    403 on their own Darwins and owner-scoped money flows refused them."""
+    db = tmp_path / "platform.db"
+    sup_a = Supervisor(persistence_path=str(db))
+    status = await sup_a.spawn(opening_usdc=50.0, actor="user_alice")
+    await sup_a.shutdown(kill_running=False)
+    sup_a._persistence.close()
+
+    sup_b = Supervisor(persistence_path=str(db))
+    await sup_b.ensure_leader_started()
+    assert sup_b.owner_of(status.darwin_id) == "user_alice"
+    assert status.darwin_id in sup_b.owners()["user_alice"]
+    await sup_b.shutdown(kill_running=False)
+    sup_b._persistence.close()

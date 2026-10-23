@@ -162,7 +162,12 @@ async def test_full_lifecycle_audit_trail(supervisor: Supervisor) -> None:
 
     log = supervisor.audit_log
     # Every action in this sequence shows up in the audit chain, in order.
-    actions = [e.action for e in log.entries(darwin_id=status.darwin_id)]
+    # Platform-actor entries (e.g. auto-decided escalations from the live
+    # Darwin) may interleave; only the human actors' trail is asserted.
+    actions = [
+        e.action for e in log.entries(darwin_id=status.darwin_id)
+        if e.actor in ("alice@dwn", "ops@dwn")
+    ]
     assert actions == [
         "spawn", "pause", "resume",
         "set_wallet_policy", "harvest", "kill",

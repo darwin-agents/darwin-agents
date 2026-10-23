@@ -32,6 +32,7 @@ from .deps import (
 from .models import (
     HarvestRequest,
     HarvestRuleRequest,
+    PayoutAddressRequest,
 )
 
 router = APIRouter(tags=["Harvest"])
@@ -53,6 +54,25 @@ async def harvest(
             amount_usdc=req.amount_usdc,
             destination=req.destination,
             actor=_actor(ctx),
+        )
+    except UnknownDarwin as exc:
+        raise HTTPException(404, str(exc))
+    except SupervisorError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.put("/darwins/{darwin_id}/payout-address")
+async def set_payout_address(
+    darwin_id: str,
+    request: Request,
+    req: PayoutAddressRequest,
+    ctx: AuthContext = Depends(get_auth),
+) -> dict[str, Any]:
+    _require_scope(ctx, OWNER)
+    _require_owns(ctx, darwin_id)
+    try:
+        return await _sup(request).set_payout_address(
+            darwin_id, address=req.address, actor=_actor(ctx),
         )
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))

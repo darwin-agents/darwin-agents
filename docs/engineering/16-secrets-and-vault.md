@@ -40,6 +40,8 @@ Vault Enterprise's namespaces give us hard per-tenant isolation that's enforced 
 
 A neuron requesting `darwins/other_darwin_id/...` gets a syntactic refusal from Vault. Cross-namespace reads are not a policy decision; they're impossible.
 
+> **As built (2026-10):** the platform runs the OSS edition and uses the path-based fallback described under "Operational notes": a per-Darwin policy granting only `<mount>/data/darwins/{id}/*` (plus the matching `metadata` paths) and AppRoles bound to it, created at spawn and revoked on death (`src/darwin_platform/adapters/vault_namespace.py`, enabled with `--tenant-namespaces`). Vault still refuses another Darwin's paths, but via policy rather than Enterprise namespaces. Pods log in with their own AppRole (`DARWIN_VAULT_ROLE_ID` / `DARWIN_VAULT_SECRET_ID`), never the fleet token.
+
 ## The platform UI's read access
 
 The user's dashboard needs to display what's in the vault — at minimum, the metadata (what kinds of credentials exist, when each was created, by whom). For some classes (Darwin-acquired account credentials, Darwin-provisioned databases) the UI may also display the credentials themselves so the user can copy them out.
@@ -126,7 +128,7 @@ We may use AWS Secrets Manager for *platform-level* secrets (the platform's own 
 ## Operational notes
 
 - **Vault rotation:** all platform-issued credentials rotate on a 90-day schedule; user-provided credentials rotate at user pace; Darwin-acquired credentials rotate when the Darwin's reflect node decides to (it's a learnable behavior).
-- **Sealing:** Vault is auto-unsealed via KMS (cloud HSM-equivalent). Manual unseal keys are split and held by named platform operators.
+- **Sealing:** Vault is auto-unsealed via KMS (cloud HSM-equivalent). Manual unseal keys are split and held by named platform operators. *As built:* auto-unseal is optional in the Hetzner env (`vault_seal_config_hcl`, empty = manual unseal; `infra/terraform/envs/hetzner/variables.tf`) and still an open operator gate (doc 32 §B2).
 - **Backups:** Vault is backed up daily; restores have been tested quarterly.
 - **Cost:** Vault Enterprise (or HCP Vault Dedicated) is several thousand a month minimum. Acceptable cost-of-doing-business; the alternatives are worse.
 

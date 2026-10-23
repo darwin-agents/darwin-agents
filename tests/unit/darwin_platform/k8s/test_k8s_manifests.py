@@ -12,7 +12,6 @@ import json
 
 from darwin_platform.k8s.manifests import (
     CONTROL_API_PORT,
-    LANCEDB_PORT,
     NAMESPACE_LABEL_DARWIN_ID,
     NAMESPACE_LABEL_MANAGED_BY,
     POD_LABEL_COMPONENT,
@@ -312,7 +311,7 @@ def test_secret_base64_encodes_token():
 
 
 def test_pvc_uses_storage_class_when_set():
-    cfg = DarwinPodConfig(lancedb_storage_class="ssd-fast", lancedb_storage_size="2Gi")
+    cfg = DarwinPodConfig(data_storage_class="ssd-fast", data_storage_size="2Gi")
     pvc = build_pvc(darwin_id=DARWIN_ID, namespace=NS, config=cfg)
     assert pvc["spec"]["storageClassName"] == "ssd-fast"
     assert pvc["spec"]["resources"]["requests"]["storage"] == "2Gi"
@@ -326,7 +325,7 @@ def test_service_selects_orchestrator_pods():
     assert svc["spec"]["ports"][0]["port"] == CONTROL_API_PORT
 
 
-def test_deployment_runs_orchestrator_under_kata_with_lancedb_sidecar():
+def test_deployment_runs_orchestrator_under_kata_with_durable_data():
     cfg = _config()
     d = build_deployment(
         darwin_id=DARWIN_ID, namespace=NS, config=cfg,
@@ -334,15 +333,14 @@ def test_deployment_runs_orchestrator_under_kata_with_lancedb_sidecar():
     )
     pod = d["spec"]["template"]["spec"]
     assert pod["runtimeClassName"] == "kata"
-    names = [c["name"] for c in pod["containers"]]
-    assert names == ["orchestrator", "lancedb"]
-    # Orchestrator must mount the DNA ConfigMap and the control Secret
-    mounts = {m["name"] for m in pod["containers"][0]["volumeMounts"]}
-    assert {"darwin-dna", "darwin-control"} <= mounts
-    # LanceDB sidecar binds the PVC.
-    sidecar = pod["containers"][1]
-    assert sidecar["ports"][0]["containerPort"] == LANCEDB_PORT
-    assert any(m["name"] == "darwin-lancedb" for m in sidecar["volumeMounts"])
+    assert [c["name"] for c in pod["containers"]] == ["orchestrator"]
+    # DNA ConfigMap, control Secret, and the PVC-backed /data (audit log,
+    # checkpoint, wallet feed survive a pod restart).
+    mounts = {m["name"]: m["mountPath"] for m in pod["containers"][0]["volumeMounts"]}
+    assert {"darwin-dna", "darwin-control"} <= set(mounts)
+    assert mounts["darwin-data"] == "/data"
+    vols = {v["name"]: v for v in pod["volumes"]}
+    assert vols["darwin-data"]["persistentVolumeClaim"]["claimName"] == "darwin-data"
     # CLI args carry the per-Darwin opening_usdc + token path.
     args = pod["containers"][0]["args"]
     assert "--darwin-id" in args and DARWIN_ID in args
@@ -353,51 +351,36 @@ def test_deployment_runs_orchestrator_under_kata_with_lancedb_sidecar():
     assert sc["capabilities"]["drop"] == ["ALL"]
 
 
-def test_deployment_forwards_wallet_provider_to_orchestrator_args():
-    """Step (3): the supervisor's --wallet-provider choice must reach the
-    per-Darwin orchestrator pod so each Darwin uses the same backend."""
-    cfg = DarwinPodConfig(
-        orchestrator_image="myrepo/darwin:1.0",
-        runtime_class_name="kata",
-        platform_data_namespace="platform-data",
-        postgres_namespace="data",
-        postgres_pod_label_key="app",
-        postgres_pod_label_value="postgres",
-        wallet_provider="local-vault",
-    )
+def test_deployment_forwards_heartbeat():
+    """A pod defaulting to a 5ms heartbeat would make ~200 paid LLM calls/s."""
     d = build_deployment(
-        darwin_id=DARWIN_ID, namespace=NS, config=cfg,
-        opening_usdc=100.0, escalation_auto="approve",
+        darwin_id=DARWIN_ID, namespace=NS,
+        config=DarwinPodConfig(heartbeat_seconds=7.5),
+        opening_usdc=100.0, escalation_auto=None,
     )
     args = d["spec"]["template"]["spec"]["containers"][0]["args"]
-    assert "--wallet-provider" in args
-    assert args[args.index("--wallet-provider") + 1] == "local-vault"
+    assert args[args.index("--heartbeat-seconds") + 1] == "7.5"
+    assert args[args.index("--escalation-auto") + 1] == "none"
 
 
-def test_deployment_default_wallet_provider_is_cdp():
-    """Matches the supervisor CLI default — production-safe out of the box."""
-    cfg = _config()
-    d = build_deployment(
-        darwin_id=DARWIN_ID, namespace=NS, config=cfg,
-        opening_usdc=100.0, escalation_auto="approve",
-    )
-    args = d["spec"]["template"]["spec"]["containers"][0]["args"]
-    assert args[args.index("--wallet-provider") + 1] == "cdp"
+def test_pod_args_overlay_substrate_on_full_serve_namespace(tmp_path):
+    """The pod builds its substrate from a full ``serve`` namespace overlaid
+    with the supervisor-forwarded settings — every flag present."""
+    import json
 
+    from darwin_platform.runtime.orchestrator import _pod_args
 
-def test_orchestrator_argparse_accepts_wallet_provider():
-    """The orchestrator-pod CLI must accept the flag the manifest forwards."""
-    from darwin_platform.runtime.orchestrator import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args([
-        "--darwin-id", "x",
-        "--manifest-path", "/etc/m.json",
-        "--layer-blob-dir", "/etc",
-        "--layer-names-path", "/etc/n.json",
-        "--wallet-provider", "local-vault",
-    ])
-    assert args.wallet_provider == "local-vault"
+    path = tmp_path / "substrate.json"
+    path.write_text(json.dumps({
+        "wallet_provider": "watch", "wallet_address": "0x" + "a" * 40,
+        "network": "mainnet", "e2b_api_key": "e2b-x",
+    }))
+    ns = _pod_args(path)
+    assert ns.wallet_provider == "watch"
+    assert ns.network == "mainnet"
+    assert ns.e2b_api_key == "e2b-x"
+    assert ns.cdp_api_key_id is None  # pods never get signing credentials
+    assert _pod_args(tmp_path / "absent.json").wallet_provider is None
 
 
 def test_deployment_threads_database_url_secret_ref():
@@ -493,3 +476,27 @@ def test_extra_env_lands_on_orchestrator_container():
     # The built-ins also still present.
     assert env_names["DARWIN_ID"] == "abc123"
     assert env_names["DARWIN_NAMESPACE"] == "darwin-abc123"
+
+
+def test_network_policy_without_proxy_allows_public_https_and_llm_only():
+    """No egress proxy (the Hetzner default): pods may reach LiteLLM in its
+    namespace and public HTTPS — never cluster-private or metadata ranges."""
+    cfg = DarwinPodConfig(platform_data_namespace="", llm_namespace="litellm")
+    egress = build_network_policy(
+        darwin_id=DARWIN_ID, namespace=NS, config=cfg,
+    )["spec"]["egress"]
+    blocks = [p["ipBlock"] for r in egress for p in r["to"] if "ipBlock" in p]
+    assert blocks == [{
+        "cidr": "0.0.0.0/0",
+        "except": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                   "169.254.0.0/16", "100.64.0.0/10"],
+    }]
+    https = next(r for r in egress if any("ipBlock" in p for p in r["to"]))
+    assert https["ports"] == [{"protocol": "TCP", "port": 443}]
+    llm = next(
+        r for r in egress for p in r["to"]
+        if p.get("namespaceSelector", {}).get("matchLabels", {}).get(
+            "kubernetes.io/metadata.name") == "litellm"
+    )
+    assert llm["ports"] == [{"protocol": "TCP", "port": 4000}]
+    assert "platform-data" not in str(egress)

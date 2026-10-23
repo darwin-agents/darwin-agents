@@ -34,7 +34,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 test.beforeAll(async () => {
   // Stack must be up — fail fast with a clear message instead of 20
   // per-tab timeouts.
-  const ready = await fetch(`${API}/readyz`).then((r) => r.ok).catch(() => false);
+  const ready = await fetch(`${API}/readyz`)
+    .then((r) => r.ok)
+    .catch(() => false);
   if (!ready) throw new Error(`platform API not ready at ${API} — run scripts/dev-up.sh first`);
 
   // Reuse a live Darwin when one exists; spawn otherwise.
@@ -146,9 +148,7 @@ test("global surfaces are live", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Escalations" })).toBeVisible();
 
   await visit(page, "/operator");
-  await expect(
-    page.getByRole("heading", { name: "Operator console" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Operator console" })).toBeVisible();
 
   await visit(page, "/freelancers");
   await expect(page.getByRole("heading", { name: "Freelancers" })).toBeVisible();
