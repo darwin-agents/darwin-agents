@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from darwin_platform.runtime.supervisor import Supervisor, SupervisorError
+from darwin_platform.runtime.supervisor import Supervisor
 from darwin_platform.tenancy.namespace_provisioner import (
     NamespaceProvisioner,
     StubK8sBackend,

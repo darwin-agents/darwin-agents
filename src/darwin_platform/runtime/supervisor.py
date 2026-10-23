@@ -36,7 +36,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_dna.hyperparameters import DEFAULT_HYPERPARAMETERS

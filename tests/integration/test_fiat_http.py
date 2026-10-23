@@ -162,7 +162,7 @@ async def test_fiat_routes_audit_logged():
 async def test_stripe_webhook_confirms_then_idempotent_replay():
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
-    stripe = pytest.importorskip("stripe")
+    pytest.importorskip("stripe")
     import hashlib
     import hmac
     import json

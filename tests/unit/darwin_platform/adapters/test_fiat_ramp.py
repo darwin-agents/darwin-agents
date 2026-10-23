@@ -180,7 +180,6 @@ class _HTTPStub:
         return types.SimpleNamespace(status_code=self.status, text=self.body)
 
 
-import base64 as _b64
 import hashlib as _hashlib
 import hmac as _hmac
 import urllib.parse as _urlparse
