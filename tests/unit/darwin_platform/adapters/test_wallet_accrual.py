@@ -1,0 +1,151 @@
+"""RealWallet off-chain metering accrual + chain-derived movement feed.
+
+A stub chain + reader model the real thing: transfers we sign land as
+Transfer logs a block later, anyone else's inbound transfer likewise. Every
+check reconciles the wallet's feed through the genome's own ledger, the way
+``perceive`` does each heartbeat.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from darwin_dna.machinery.ledger import Ledger, treasury_delta
+from darwin_platform.adapters.wallet import RealWallet, WalletError
+
+ME = "0x" + "a" * 40
+FEE = "0x" + "f" * 40
+OWNER = "0x" + "b" * 40
+PAYER = "0x" + "c" * 40
+
+
+class _Chain:
+    """Signs for ME; every transfer becomes a log in the next block."""
+
+    def __init__(self, opening: float) -> None:
+        self.block = 100
+        self.logs: list[dict] = []
+        self.balances = {self.block: opening}
+        self.n = 0
+
+    def _land(self, frm: str, to: str, amount: float) -> str:
+        self.n += 1
+        tx = f"0x{self.n:064x}"
+        self.block += 1
+        prev = self.balances[max(self.balances)]
+        delta = (amount if to == ME else 0.0) - (amount if frm == ME else 0.0)
+        self.balances[self.block] = prev + delta
+        self.logs.append({"tx_hash": tx, "block": self.block, "log_index": 0,
+                          "from": frm, "to": to, "amount_usdc": amount})
+        return tx
+
+    # ChainClient
+    def address(self) -> str:
+        return ME
+
+    def balance_usdc(self) -> float:
+        return self.balances[max(self.balances)]
+
+    def transfer(self, *, to: str, amount_usdc: float, memo: str) -> dict:
+        return {"tx_hash": self._land(ME, to, amount_usdc)}
+
+    # UsdcReader
+    def head(self) -> int:
+        return self.block
+
+    def balance_at(self, block: int) -> float:
+        return self.balances[max(b for b in self.balances if b <= block)]
+
+    def transfers(self, lo: int, hi: int) -> list[dict]:
+        return [lg for lg in self.logs if lo <= lg["block"] <= hi]
+
+
+def _wallet(chain: _Chain, path=None) -> RealWallet:
+    return RealWallet(chain, clock=lambda: 1_000.0, reader=chain,
+                      fee_address=FEE, state_path=path, confirmations=0)
+
+
+def _reconciles(w: RealWallet, opening: float) -> None:
+    feed = w.movements()
+    led = Ledger("d")
+    led.seed_opening(opening, ts=0.0)
+    led.journal_new(feed, now=1.0)
+    led.reconcile(w.balance_usdc(), 1e-9)
+    assert opening + sum(treasury_delta(mv) for mv in feed) == pytest.approx(
+        w.balance_usdc()
+    )
+
+
+def test_metering_accrues_then_one_settlement_without_drift() -> None:
+    chain = _Chain(100.0)
+    w = _wallet(chain)
+    for _ in range(3):
+        w.debit(0.5, "llm:reasoning")
+    assert chain.logs == []  # nothing on-chain per call
+    assert w.balance_usdc() == pytest.approx(98.5)
+    assert w.unsettled_usdc == pytest.approx(1.5)
+    _reconciles(w, 100.0)
+
+    assert w.settle(min_usdc=1.0)["amount_usdc"] == pytest.approx(1.5)
+    assert w.settle(min_usdc=1.0) is None  # one in flight at a time
+    n = len(w.movements())  # sync sees the settlement: no new row
+    assert w.unsettled_usdc == 0.0
+    assert w.balance_usdc() == pytest.approx(98.5)
+    assert len(w.movements()) == n
+    _reconciles(w, 100.0)
+
+
+def test_inbound_is_a_deposit_unless_labelled_revenue() -> None:
+    chain = _Chain(10.0)
+    w = _wallet(chain)
+    w.movements()  # first sync pins the opening block
+    chain._land(PAYER, ME, 5.0)
+    paid = chain._land(PAYER, ME, 2.0)
+    w.credit(2.0, "x402:order-1", tx_hash=paid)
+    credits = [mv["credit"] for mv in w.movements() if "credit" in mv]
+    assert [c["from"] for c in credits] == [f"deposit:{PAYER}", "x402:order-1"]
+    _reconciles(w, 10.0)
+    with pytest.raises(WalletError, match="tx hash"):
+        w.credit(1.0, "x402:unbacked")
+
+
+def test_harvest_is_one_transfer_and_fee_accrues() -> None:
+    chain = _Chain(50.0)
+    w = _wallet(chain)
+    w.movements()
+    w.harvest_to_owner(destination=OWNER, net_usdc=8.0, fee_usdc=2.0)
+    assert [lg["to"] for lg in chain.logs] == [OWNER]
+    assert w.unsettled_usdc == pytest.approx(2.0)
+    kinds = [mv["harvest"]["kind"] for mv in w.movements() if "harvest" in mv]
+    assert sorted(kinds) == ["owner_net", "platform_fee"]
+    assert w.balance_usdc() == pytest.approx(40.0)
+    _reconciles(w, 50.0)
+
+
+def test_unknown_outbound_is_booked_not_drift() -> None:
+    chain = _Chain(20.0)
+    w = _wallet(chain)
+    w.movements()
+    chain._land(ME, PAYER, 3.0)  # e.g. a key used outside the platform
+    assert any("unattributed_out" in mv for mv in w.movements())
+    _reconciles(w, 20.0)
+
+
+def test_state_survives_restart_and_a_torn_tail(tmp_path) -> None:
+    path = tmp_path / "wallet.jsonl"
+    chain = _Chain(30.0)
+    w = _wallet(chain, path)
+    w.movements()
+    w.debit(1.25, "llm:fast")
+    chain._land(PAYER, ME, 4.0)
+    w.movements()
+    w.debit(0.25, "llm:fast")
+    with path.open("a") as f:
+        f.write('{"mvs": [{"debit"')  # crash mid-write
+
+    again = _wallet(chain, path)
+    assert again.movements() == w.movements()
+    assert again.unsettled_usdc == pytest.approx(1.5)
+    assert again.spent_lifetime_usdc() == pytest.approx(1.5)
+    assert again.balance_usdc() == pytest.approx(w.balance_usdc())
+    _reconciles(again, 30.0)

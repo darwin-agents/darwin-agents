@@ -29,12 +29,15 @@ process — it lives in the ChainClient's secured backend.
 
 from __future__ import annotations
 
+import json
+import os
 from collections import deque
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from darwin_dna.constitution import OwnerSoftCaps, PreApprovalRule
 from darwin_dna.hyperparameters import HARD_CAPS
-from darwin_dna.machinery.ledger import DEPOSIT_PREFIX
+from darwin_dna.machinery.ledger import DEPOSIT_PREFIX, movement_leg
 
 
 class WalletError(Exception):
@@ -99,9 +102,21 @@ class RealWallet:
     chain doesn't owe us. The real chain owns the authoritative balance;
     we expose it via ``balance_usdc``.
 
-    Movements feed: every successful chain operation appends a row to the
-    local ledger in the same shape as :class:`FakeWallet.movements` so the
-    genome's perceive node can journal + reconcile against it unchanged.
+    Movements feed: rows in the same shape as :class:`FakeWallet.movements`
+    so the genome's perceive node journals + reconciles them unchanged.
+
+    Metering is an off-chain accrual: ``debit()`` (LLM, compute) and the
+    harvest fee are booked at once and added to ``unsettled``; one periodic
+    ``settle()`` transfer to the platform fee address pays them. So
+    ``balance = on-chain balance − unsettled`` and the ledger matches it by
+    construction — never one on-chain transaction per LLM call.
+
+    With a ``reader`` (:class:`~darwin_platform.adapters.web3_chain.UsdcReader`)
+    the chain is the single source of movements: ``sync()`` books every
+    confirmed inbound transfer as a credit (revenue only when a hint says
+    so, else a deposit) and every outbound one as the row ``expect`` /
+    ``_record_out`` registered for its tx, reading the balance at the same
+    block. ``state_path`` makes the feed and accrual survive restarts.
     """
 
     def __init__(
@@ -114,6 +129,10 @@ class RealWallet:
         wait_for_confirmation: bool = False,
         confirmation_timeout_s: float = 60.0,
         min_confirmations: int = 1,
+        reader=None,
+        fee_address: str | None = None,
+        state_path: str | os.PathLike | None = None,
+        confirmations: int = 2,
     ) -> None:
         if not isinstance(chain, ChainClient):
             raise TypeError("RealWallet requires a ChainClient")
@@ -153,6 +172,174 @@ class RealWallet:
         # legal_financial / over-threshold spend skips escalation.
         self._preapprovals: dict[str, PreApprovalRule] = {}
         self._preapproval_persister = None
+        self._reader = reader
+        self._fee_address = fee_address
+        self._confirmations = max(0, int(confirmations))
+        # Metered spend + fees booked but not yet paid on-chain.
+        self._unsettled = 0.0
+        # Last block the movement feed + balance were read at (reader mode).
+        self._synced_block: int | None = None
+        self._synced_balance = 0.0
+        self.stale = False  # last sync() failed; serving the prior snapshot
+        # tx_hash → the movement row to book when sync() sees that outbound tx.
+        self._hints: dict[str, dict] = {}
+        # inbound tx_hash → credit source (e.g. "x402:<order>" = revenue).
+        self._credit_sources: dict[str, str] = {}
+        # settlement tx_hash → submit time; at most one in flight.
+        self._settling: dict[str, float] = {}
+        self._state_path = Path(state_path) if state_path else None
+        self._load_state()
+
+    # -- durable state (one append-only JSONL log) --------------------------
+    # Each line is ``{"mvs": [rows], "s": state-after}``: feed rows and the
+    # accrual / sync cursor they imply land in ONE write, so a crash can
+    # never leave them disagreeing (which would read as drift and kill the
+    # Darwin). A torn last line is dropped on load.
+    # ponytail: the whole feed stays in memory and the log only grows;
+    # compact (snapshot + truncate) when a Darwin's feed gets large.
+    _STATE = (
+        "_unsettled", "_synced_block", "_synced_balance", "_hints",
+        "_credit_sources", "_settling", "_spent_today", "_spent_lifetime",
+        "_today", "_last_revenue_ts",
+    )
+
+    def _load_state(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        state = None
+        with self._state_path.open() as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    break  # torn tail from a crash mid-write
+                self.ledger.extend(rec["mvs"])
+                state = rec["s"]
+        for name in self._STATE:
+            if state and name[1:] in state:
+                setattr(self, name, state[name[1:]])
+
+    def _write(self, *mvs: dict) -> None:
+        """Append ``mvs`` to the feed and persist the state after them."""
+        self.ledger.extend(mvs)
+        if self._state_path is None:
+            return
+        rec = {"mvs": list(mvs), "s": {n[1:]: getattr(self, n) for n in self._STATE}}
+        with self._state_path.open("a") as f:
+            f.write(json.dumps(rec) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+    def _record_out(self, tx_hash: str, mv: dict) -> None:
+        """Book an outbound transfer we submitted. With a reader, sync()
+        books it when the chain shows it (so feed and balance stay pinned
+        to the same block); without one, book it now."""
+        if self._reader is not None and tx_hash:
+            self.expect(tx_hash, mv)
+        else:
+            self._write(mv)
+
+    def expect(self, tx_hash: str, mv: dict) -> None:
+        """Register the row to book when outbound ``tx_hash`` confirms. Used
+        when someone else (the supervisor, for a pod's watch wallet) signs."""
+        movement_leg(mv)  # validate shape now, not at sync time
+        self._hints[str(tx_hash).lower()] = mv
+        self._write()
+
+    def _pending_out(self) -> float:
+        return sum(float(movement_leg(mv)[1]["amount_usdc"]) for mv in self._hints.values())
+
+    def _available(self) -> float:
+        """Spendable now: balance less outbound transfers not yet booked."""
+        return self.balance_usdc() - self._pending_out()
+
+    # -- chain sync ------------------------------------------------------------
+    def sync(self) -> None:
+        """Book confirmed on-chain transfers and re-read the balance at the
+        same block. Inbound → credit (source from ``credit(tx_hash=…)``,
+        else ``deposit:<from>``); outbound → its registered row, or a
+        settlement when it pays the fee address, else ``unattributed_out``.
+        An RPC failure keeps the prior snapshot and sets ``stale``."""
+        if self._reader is None:
+            return
+        try:
+            block = self._reader.head() - self._confirmations
+            if self._synced_block is not None and block <= self._synced_block:
+                return
+            logs = (
+                [] if self._synced_block is None
+                else self._reader.transfers(self._synced_block + 1, block)
+            )
+            balance = self._reader.balance_at(block)
+        except Exception:
+            self.stale = True
+            return
+        self.stale = False
+        now = float(self._clock())
+        me = self.address().lower()
+        fee = (self._fee_address or "").lower()
+        rows: list[dict] = []
+        for log in logs:
+            tx, amt = log["tx_hash"].lower(), float(log["amount_usdc"])
+            if log["to"] == me and log["from"] != me:
+                src = self._credit_sources.pop(tx, None) or f"{DEPOSIT_PREFIX}{log['from']}"
+                if not src.startswith(DEPOSIT_PREFIX):
+                    self._last_revenue_ts = now
+                rows.append({"credit": {"from": src, "amount_usdc": amt,
+                                        "ts": now, "tx_hash": tx}})
+            elif log["from"] == me and log["to"] != me:
+                hinted = self._hints.pop(tx, None)
+                if hinted is not None:
+                    kind, payload = movement_leg(hinted)
+                    rows.append({kind: {**payload, "amount_usdc": amt, "tx_hash": tx}})
+                elif fee and log["to"] == fee:
+                    # Pays accrual already booked: no new row, unless it
+                    # overpaid (then the excess is a real expense).
+                    self._settling.pop(tx, None)
+                    paid = min(amt, self._unsettled)
+                    self._unsettled -= paid
+                    if amt - paid > 1e-9:
+                        rows.append({"debit": {
+                            "to": log["to"], "amount_usdc": amt - paid,
+                            "memo": "settlement:excess", "kind": "metered",
+                            "ts": now, "tx_hash": tx,
+                        }})
+                else:
+                    rows.append({"unattributed_out": {
+                        "destination": log["to"], "amount_usdc": amt,
+                        "ts": now, "tx_hash": tx,
+                    }})
+        self._synced_block, self._synced_balance = block, float(balance)
+        self._write(*rows)
+
+    def settle(self, *, min_usdc: float = 1.0, timeout_s: float = 600.0) -> dict | None:
+        """Pay the accrued metering to the fee address in one transfer once
+        it reaches ``min_usdc``. At most one settlement in flight; one that
+        never shows on-chain within ``timeout_s`` is forgotten (retried)."""
+        now = float(self._clock())
+        self._settling = {
+            tx: ts for tx, ts in self._settling.items() if now - ts < timeout_s
+        }
+        amount = round(self._unsettled, 6)
+        if not self._fee_address or self._settling or amount < min_usdc:
+            return None
+        try:
+            tx = self._chain.transfer(
+                to=self._fee_address, amount_usdc=amount, memo="settlement",
+            )
+        except Exception as exc:
+            raise WalletError(f"settlement transfer failed: {exc}") from exc
+        tx_hash = str(tx.get("tx_hash", "")) if isinstance(tx, dict) else ""
+        if self._reader is None:
+            self._unsettled -= amount
+        elif tx_hash:
+            self._settling[tx_hash.lower()] = now
+        self._write()
+        return {"tx_hash": tx_hash, "amount_usdc": amount}
+
+    @property
+    def unsettled_usdc(self) -> float:
+        return round(self._unsettled, 6)
 
     def _day(self) -> str:
         import time as _t
@@ -166,11 +353,17 @@ class RealWallet:
 
     # -- WalletPort (read) -------------------------------------------------
     def balance_usdc(self) -> float:
-        """Chain is the authoritative source. The platform's bookkeeping
-        is for accounting only; it must NOT be the spend-decision input."""
-        return float(self._chain.balance_usdc())
+        """The chain's balance less accrued, unsettled metering. With a
+        reader, the balance at the last synced block (the same block the
+        feed is complete to), so feed and balance always reconcile."""
+        if self._reader is None:
+            return float(self._chain.balance_usdc()) - self._unsettled
+        if self._synced_block is None:
+            self.sync()
+        return round(self._synced_balance - self._unsettled, 6)
 
     def movements(self) -> list[dict]:
+        self.sync()
         return self.ledger
 
     def spent_today_usdc(self) -> float:
@@ -204,12 +397,22 @@ class RealWallet:
     def debit(self, amount_usdc: float, memo: str) -> None:
         """Metered gateway debit (LLM tokens, compute) — the platform's
         gateway billing the Darwin's virtual key. Doesn't go through
-        treasury_policy (it's a utility bill, like FakeWallet's debit)."""
-        self._debit(amount_usdc, "platform.gateway", memo, kind="metered")
+        treasury_policy (it's a utility bill, like FakeWallet's debit).
+        Booked now and paid by the next ``settle()``, not on-chain per call."""
+        amount = self._check_caps(amount_usdc)
+        if amount > self._available() + 1e-9:
+            raise WalletError(f"insufficient funds: ${amount:.6f}")
+        self._spent_today += amount
+        self._spent_lifetime += amount
+        if amount > 0:
+            self._recent.append(amount)
+        self._unsettled += amount
+        self._write({"debit": {
+            "to": self._fee_address or "platform.fee", "amount_usdc": amount,
+            "memo": memo, "kind": "metered", "ts": float(self._clock()),
+        }})
 
-    def _debit(
-        self, amount_usdc: float, to: str, memo: str, *, kind: str
-    ) -> dict:
+    def _check_caps(self, amount_usdc: float) -> float:
         self._roll()
         amount = float(amount_usdc)
         if amount < 0:
@@ -227,8 +430,14 @@ class RealWallet:
             raise WalletError(
                 f"wallet lifetime cap: ${self._spent_lifetime + amount:.2f} > ${life_cap:.2f}"
             )
+        return amount
+
+    def _debit(
+        self, amount_usdc: float, to: str, memo: str, *, kind: str
+    ) -> dict:
+        amount = self._check_caps(amount_usdc)
         # Balance check against the chain — authoritative.
-        if amount > self._chain.balance_usdc() + 1e-9:
+        if amount > self._available() + 1e-9:
             raise WalletError(
                 f"insufficient on-chain funds: ${amount:.2f}"
             )
@@ -264,7 +473,7 @@ class RealWallet:
             "to": to, "amount_usdc": amount, "memo": memo,
             "kind": kind, "ts": float(self._clock()),
         }
-        self.ledger.append({"debit": row})
+        self._record_out(tx_hash, {"debit": row})
         out = {"tx_hash": tx_hash, **row}
         if confirmation is not None:
             out["confirmation"] = confirmation
@@ -297,7 +506,9 @@ class RealWallet:
         return receipt
 
     # -- credit (incoming revenue) ----------------------------------------
-    def credit(self, amount_usdc: float, source: str) -> None:
+    def credit(
+        self, amount_usdc: float, source: str, *, tx_hash: str | None = None,
+    ) -> None:
         """Real revenue lands on-chain (incoming USDC transfer to the
         adapter's address). The platform calls this when it observes
         such a transfer — we record locally so the genome's perceive
@@ -307,9 +518,19 @@ class RealWallet:
         amount = float(amount_usdc)
         if amount < 0:
             raise WalletError("negative credit")
+        if self._reader is not None:
+            # Chain-derived feed: a credit can only label a real inbound
+            # transfer (sync() books it); an unbacked one is refused.
+            if not tx_hash:
+                raise WalletError(
+                    "credit needs the on-chain tx hash of the inbound transfer"
+                )
+            self._credit_sources[str(tx_hash).lower()] = source
+            self._write()
+            return
         if not source.startswith(DEPOSIT_PREFIX):  # a top-up is not revenue
             self._last_revenue_ts = float(self._clock())
-        self.ledger.append(
+        self._write(
             {"credit": {"from": source, "amount_usdc": amount,
                         "ts": float(self._clock())}}
         )
@@ -325,7 +546,7 @@ class RealWallet:
         gross = net + fee
         if gross <= 0:
             raise WalletError("harvest amount is zero")
-        if gross > self._chain.balance_usdc() + 1e-9:
+        if gross > self._available() + 1e-9:
             raise WalletError(
                 f"harvest of ${gross:.2f} exceeds on-chain balance"
             )
@@ -340,31 +561,26 @@ class RealWallet:
                     f"destination {destination!r}: {verdict.reason or 'refused'}"
                 )
         ts = float(self._clock())
-        # Two real transfers: one to the owner, one to the platform's
-        # fee address. A real implementation would batch via a multisend
-        # or a small contract to make these atomic; here we issue them
-        # sequentially and accept the (small) window between them.
-        try:
-            if net > 0:
-                self._chain.transfer(
+        # One real transfer (net → owner). The fee is accrued like metering
+        # and paid by the next settlement, so a harvest is a single tx.
+        tx_hash = ""
+        if net > 0:
+            try:
+                tx = self._chain.transfer(
                     to=destination, amount_usdc=net, memo="harvest:owner",
                 )
-            if fee > 0:
-                self._chain.transfer(
-                    to="platform.fee",  # ChainClient may resolve symbolically
-                    amount_usdc=fee, memo="harvest:platform_fee",
-                )
-        except Exception as exc:
-            raise WalletError(f"harvest chain transfer failed: {exc}") from exc
-        if net > 0:
-            self.ledger.append({"harvest": {
+            except Exception as exc:
+                raise WalletError(f"harvest chain transfer failed: {exc}") from exc
+            tx_hash = str(tx.get("tx_hash", "")) if isinstance(tx, dict) else ""
+            self._record_out(tx_hash, {"harvest": {
                 "destination": destination, "amount_usdc": net,
                 "kind": "owner_net", "ts": ts,
             }})
         if fee > 0:
-            self.ledger.append({"harvest": {
-                "destination": "platform.fee", "amount_usdc": fee,
-                "kind": "platform_fee", "ts": ts,
+            self._unsettled += fee
+            self._write({"harvest": {
+                "destination": self._fee_address or "platform.fee",
+                "amount_usdc": fee, "kind": "platform_fee", "ts": ts,
             }})
         return {
             "gross_usdc": gross, "net_usdc": net, "fee_usdc": fee,
@@ -499,10 +715,10 @@ class RealWallet:
         to the owning user. That call lives in the supervisor's spawn
         observation flow, not here."""
         amount = float(amount_usdc)
-        if amount > self._chain.balance_usdc() + 1e-9:
+        if amount > self._available() + 1e-9:
             raise WalletError("reproduction budget exceeds on-chain balance")
         try:
-            self._chain.transfer(
+            tx = self._chain.transfer(
                 to=destination,
                 amount_usdc=amount,
                 memo="reproduction:omnibus_transfer",
@@ -511,12 +727,13 @@ class RealWallet:
             raise WalletError(
                 f"reproduction transfer failed: {exc}"
             ) from exc
-        self.ledger.append(
+        self._record_out(
+            str(tx.get("tx_hash", "")) if isinstance(tx, dict) else "",
             {"reproduction_transfer": {
                 "amount_usdc": amount,
                 "destination": destination,
                 "ts": float(self._clock()),
-            }}
+            }},
         )
 
     def transfer_out_for_fiat_payout(
@@ -529,10 +746,10 @@ class RealWallet:
         second leg performs the fiat-side withdraw and records the
         payout in the omnibus ledger."""
         amount = float(amount_usdc)
-        if amount > self._chain.balance_usdc() + 1e-9:
+        if amount > self._available() + 1e-9:
             raise WalletError("fiat payout exceeds on-chain balance")
         try:
-            self._chain.transfer(
+            tx = self._chain.transfer(
                 to=destination,
                 amount_usdc=amount,
                 memo="fiat_payout:omnibus_transfer",
@@ -541,12 +758,13 @@ class RealWallet:
             raise WalletError(
                 f"fiat payout transfer failed: {exc}"
             ) from exc
-        self.ledger.append(
+        self._record_out(
+            str(tx.get("tx_hash", "")) if isinstance(tx, dict) else "",
             {"fiat_payout_transfer": {
                 "amount_usdc": amount,
                 "destination": destination,
                 "ts": float(self._clock()),
-            }}
+            }},
         )
 
     def sweep_to(
@@ -565,7 +783,7 @@ class RealWallet:
                     "ts": float(self._clock()), "tx_hash": ""}
         if not destination:
             raise WalletError("sweep requires a destination")
-        if amount > self._chain.balance_usdc() + 1e-9:
+        if amount > self._available() + 1e-9:
             raise WalletError(
                 f"sweep amount ${amount:.2f} exceeds on-chain balance"
             )
@@ -583,5 +801,5 @@ class RealWallet:
             "ts": float(self._clock()),
             "tx_hash": str(tx_hash),
         }
-        self.ledger.append({"sweep_out": row})
+        self._record_out(str(tx_hash), {"sweep_out": dict(row)})
         return row
