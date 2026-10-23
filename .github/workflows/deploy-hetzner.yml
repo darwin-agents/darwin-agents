@@ -116,6 +116,8 @@ jobs:
           else
             TAG="${{ github.event.inputs.image_tag }}"
           fi
+          # build.yml's semver tags drop the leading "v" (v0.0.6 → 0.0.6).
+          case "$TAG" in v[0-9]*) TAG="${TAG#v}" ;; esac
           # GHCR image names must be lowercase.
           REPO="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/$REPO/darwin-platform:$TAG" >> "$GITHUB_OUTPUT"
