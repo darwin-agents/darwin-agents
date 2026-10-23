@@ -24,6 +24,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { DarwinHeader } from "@/components/darwin/darwin-header";
 import { TreasuryStrip } from "@/components/darwin/treasury-strip";
 import { EscalationList } from "@/components/darwin/escalation-list";
+import { MoneyCard } from "@/components/darwin/money-card";
 import { EventTable } from "@/components/timeline/event-table";
 
 export default function DarwinPage({ params }: { params: Promise<{ id: string }> }) {
@@ -63,11 +64,7 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
         <SubNav href={`/darwins/${id}/billing`} icon={Receipt} label="Billing & ledger" />
         <SubNav href={`/darwins/${id}/summary`} icon={FileText} label="Tax summary" />
         {caps?.is_operator && (
-          <SubNav
-            href={`/darwins/${id}/preapprovals`}
-            icon={ShieldCheck}
-            label="Pre-approvals"
-          />
+          <SubNav href={`/darwins/${id}/preapprovals`} icon={ShieldCheck} label="Pre-approvals" />
         )}
         {caps?.is_operator && (
           <SubNav href={`/darwins/${id}/payments`} icon={CreditCard} label="Payments" />
@@ -88,6 +85,7 @@ export default function DarwinPage({ params }: { params: Promise<{ id: string }>
         <EventTable darwinId={id} />
         <div className="space-y-4">
           <EscalationList darwinId={id} />
+          <MoneyCard darwinId={id} />
         </div>
       </div>
     </div>

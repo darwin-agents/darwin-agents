@@ -10,6 +10,7 @@
  */
 import { getAuthToken } from "./auth";
 import type {
+  StoreInfo,
   AlertsResponse,
   BillingResponse,
   DarwinEvent,
@@ -69,6 +70,9 @@ import type {
 const BASE_URL =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL) ||
   "http://localhost:8000";
+
+/** The API origin the browser talks to (e.g. for shareable storefront URLs). */
+export const API_BASE_URL = BASE_URL;
 
 const CLIENT_HEADER = "X-Darwin-Client";
 const CLIENT_VERSION = "web/0.1.0";
@@ -234,20 +238,20 @@ export const api = {
       tier?: string;
     } = {},
   ) =>
-    apiFetch<EventsResponse & { next_cursor?: number | null }>(
-      `/darwins/${id}/events`,
-      {
-        query: {
-          limit: params.limit ?? 100,
-          offset: params.since === undefined && params.cursor === undefined ? (params.offset ?? 0) : undefined,
-          since: params.since,
-          cursor: params.cursor,
-          kind: params.kind,
-          neuron_id: params.neuron_id,
-          tier: params.tier,
-        },
+    apiFetch<EventsResponse & { next_cursor?: number | null }>(`/darwins/${id}/events`, {
+      query: {
+        limit: params.limit ?? 100,
+        offset:
+          params.since === undefined && params.cursor === undefined
+            ? (params.offset ?? 0)
+            : undefined,
+        since: params.since,
+        cursor: params.cursor,
+        kind: params.kind,
+        neuron_id: params.neuron_id,
+        tier: params.tier,
       },
-    ),
+    }),
 
   // Anatomy (M3-A)
   anatomy: (id: string) =>
@@ -287,7 +291,8 @@ export const api = {
     apiFetch<LedgerResponse>(`/darwins/${id}/ledger`, {
       query: { limit: params.limit ?? 100, offset: params.offset ?? 0 },
     }),
-  ledgerCsvUrl: (id: string) => buildUrl(`/darwins/${id}/ledger.csv`),
+  // Through apiFetch so the bearer token is sent (a plain <a href> can't).
+  ledgerCsv: (id: string) => apiFetch<string>(`/darwins/${id}/ledger.csv`),
   billing: (id: string) => apiFetch<BillingResponse>(`/darwins/${id}/billing`),
   // Jurisdiction-neutral accounting summary (docs 05, 17). `year` (UTC) scopes
   // to a tax year; omit for lifetime. Owner-scoped — not a statutory form.
@@ -335,10 +340,11 @@ export const api = {
     data?: Record<string, unknown>,
   ) => {
     const body: EscalationResponseRequest = { decision, data: data ?? null };
-    return apiFetch<{ status: string }>(
-      `/darwins/${id}/escalations/${escalationId}/respond`,
-      { method: "POST", body, mutating: true },
-    );
+    return apiFetch<{ status: string }>(`/darwins/${id}/escalations/${escalationId}/respond`, {
+      method: "POST",
+      body,
+      mutating: true,
+    });
   },
 
   // Lineage
@@ -360,6 +366,16 @@ export const api = {
       idempotencyKey,
       mutating: true,
     }),
+
+  // Where harvests + the closing sweep go (checksummed; usable after 24h).
+  setPayoutAddress: (id: string, address: string) =>
+    apiFetch<{ payout_address: string; usable_from: number }>(`/darwins/${id}/payout-address`, {
+      method: "PUT",
+      body: { address },
+      mutating: true,
+    }),
+  // The x402 storefront offer (public): what this Darwin sells, its price.
+  storeInfo: (id: string) => apiFetch<StoreInfo>(`/store/${id}`),
 
   listHarvestRules: (id: string) =>
     apiFetch<{ darwin_id: string; rules: Array<Record<string, unknown>> }>(
@@ -438,10 +454,11 @@ export const api = {
   listPreapprovals: (id: string) =>
     apiFetch<PreApprovalRule[]>(`/platform/wallets/${id}/preapprovals`),
   setPreapproval: (id: string, ruleId: string, req: PreApprovalRequest) =>
-    apiFetch<PreApprovalRule>(
-      `/platform/wallets/${id}/preapprovals/${ruleId}`,
-      { method: "PUT", body: req, mutating: true },
-    ),
+    apiFetch<PreApprovalRule>(`/platform/wallets/${id}/preapprovals/${ruleId}`, {
+      method: "PUT",
+      body: req,
+      mutating: true,
+    }),
   revokePreapproval: (id: string, ruleId: string) =>
     apiFetch<{ revoked: boolean; rule_id: string }>(
       `/platform/wallets/${id}/preapprovals/${ruleId}`,
@@ -464,8 +481,7 @@ export const api = {
     ),
 
   // Freelancer registry — owner self-serve (uses ctx.subject implicitly).
-  listMyFreelancers: () =>
-    apiFetch<FreelancerDestination[]>("/me/freelancers"),
+  listMyFreelancers: () => apiFetch<FreelancerDestination[]>("/me/freelancers"),
   registerMyFreelancer: (req: RegisterFreelancerRequest) =>
     apiFetch<FreelancerDestination>("/me/freelancers", {
       method: "POST",
@@ -473,10 +489,10 @@ export const api = {
       mutating: true,
     }),
   revokeMyFreelancer: (freelancerId: string) =>
-    apiFetch<{ revoked: boolean; freelancer_id: string }>(
-      `/me/freelancers/${freelancerId}`,
-      { method: "DELETE", mutating: true },
-    ),
+    apiFetch<{ revoked: boolean; freelancer_id: string }>(`/me/freelancers/${freelancerId}`, {
+      method: "DELETE",
+      mutating: true,
+    }),
 
   // Darwin → fiat payout (and refund / omnibus fund retry)
   darwinFiatPayment: (id: string, req: DarwinFiatPayoutRequest) =>
@@ -504,26 +520,18 @@ export const api = {
 
   // Deployment capabilities — the dashboard gates organism/forensics tabs on
   // this so they're hidden when the deployment (or token) can't serve them.
-  capabilities: () =>
-    apiFetch<PlatformCapabilities>("/platform/capabilities"),
+  capabilities: () => apiFetch<PlatformCapabilities>("/platform/capabilities"),
 
   // Money rails — which payment rails this deployment has wired (wallet/
   // network/fiat/sanctions/kyc/omnibus/x402), each with a live-vs-fallback
   // flag. Same manifest fed to each Darwin's planner; rendered on the operator
   // console.
-  moneyCapabilities: () =>
-    apiFetch<MoneyCapabilities>("/platform/money/capabilities"),
+  moneyCapabilities: () => apiFetch<MoneyCapabilities>("/platform/money/capabilities"),
 
   // Organism (business) DB — read through the SELECT-only dashboard role.
   organismTables: (id: string) =>
-    apiFetch<OrganismTablesResponse>(
-      `/platform/darwins/${id}/organism/tables`,
-    ),
-  organismRows: (
-    id: string,
-    table: string,
-    params: { limit?: number; offset?: number } = {},
-  ) =>
+    apiFetch<OrganismTablesResponse>(`/platform/darwins/${id}/organism/tables`),
+  organismRows: (id: string, table: string, params: { limit?: number; offset?: number } = {}) =>
     apiFetch<OrganismRowsResponse>(
       `/platform/darwins/${id}/organism/tables/${encodeURIComponent(table)}/rows`,
       { query: { limit: params.limit ?? 50, offset: params.offset ?? 0 } },
@@ -531,9 +539,7 @@ export const api = {
 
   // Death-time soma forensics — index (metadata) + per-snapshot manifest.
   forensics: (id: string) =>
-    apiFetch<ForensicSnapshotListResponse>(
-      `/platform/darwins/${id}/forensics`,
-    ),
+    apiFetch<ForensicSnapshotListResponse>(`/platform/darwins/${id}/forensics`),
   forensicSnapshot: (id: string, snapshotId: string) =>
     apiFetch<ForensicManifest>(
       `/platform/darwins/${id}/forensics/${encodeURIComponent(snapshotId)}`,
@@ -545,8 +551,7 @@ export const api = {
   /* -------------------------------------------------------------------------
    * Proposals — neuron-mutation review. Owner reads; operator decides.
    * --------------------------------------------------------------------- */
-  listProposals: (id: string) =>
-    apiFetch<ProposalsResponse>(`/darwins/${id}/proposals`),
+  listProposals: (id: string) => apiFetch<ProposalsResponse>(`/darwins/${id}/proposals`),
   admitProposal: (id: string, name: string) =>
     apiFetch<{ admitted: string }>(
       `/platform/darwins/${id}/proposals/${encodeURIComponent(name)}/admit`,
@@ -561,8 +566,7 @@ export const api = {
   /* -------------------------------------------------------------------------
    * Operator: per-Darwin throttles (LLM tiers + resource kinds)
    * --------------------------------------------------------------------- */
-  getThrottle: (id: string) =>
-    apiFetch<ThrottleResponse>(`/platform/darwins/${id}/throttle`),
+  getThrottle: (id: string) => apiFetch<ThrottleResponse>(`/platform/darwins/${id}/throttle`),
   setThrottle: (id: string, req: SetThrottleRequest) =>
     apiFetch<{ tier: string; max_daily_calls: number; throttles: LlmThrottleMap }>(
       `/platform/darwins/${id}/throttle`,
@@ -575,9 +579,7 @@ export const api = {
       mutating: true,
     }),
   getResourceThrottle: (id: string) =>
-    apiFetch<ResourceThrottleResponse>(
-      `/platform/darwins/${id}/resource_throttle`,
-    ),
+    apiFetch<ResourceThrottleResponse>(`/platform/darwins/${id}/resource_throttle`),
   setResourceThrottle: (id: string, req: SetResourceThrottleRequest) =>
     apiFetch<ResourceThrottleRow>(`/platform/darwins/${id}/resource_throttle`, {
       method: "POST",
@@ -585,10 +587,11 @@ export const api = {
       mutating: true,
     }),
   deleteResourceThrottle: (id: string, kind?: string) =>
-    apiFetch<{ removed: ResourceThrottleRow[] }>(
-      `/platform/darwins/${id}/resource_throttle`,
-      { method: "DELETE", query: { kind }, mutating: true },
-    ),
+    apiFetch<{ removed: ResourceThrottleRow[] }>(`/platform/darwins/${id}/resource_throttle`, {
+      method: "DELETE",
+      query: { kind },
+      mutating: true,
+    }),
 
   /* -------------------------------------------------------------------------
    * Operator: quarantine + wallet spend policy
@@ -605,8 +608,7 @@ export const api = {
       query: { operator },
       mutating: true,
     }),
-  getWalletPolicy: (id: string) =>
-    apiFetch<WalletPolicy>(`/platform/wallets/${id}/policy`),
+  getWalletPolicy: (id: string) => apiFetch<WalletPolicy>(`/platform/wallets/${id}/policy`),
   setWalletPolicy: (id: string, req: WalletPolicy) =>
     apiFetch<WalletPolicy>(`/platform/wallets/${id}/policy`, {
       method: "POST",
@@ -634,21 +636,22 @@ export const api = {
       mutating: true,
     }),
   fleetBlockCategory: (category: string) =>
-    apiFetch<{ category: string; blocked_on: string[] }>(
-      "/platform/fleet/block_category",
-      { method: "POST", body: { category }, mutating: true },
-    ),
+    apiFetch<{ category: string; blocked_on: string[] }>("/platform/fleet/block_category", {
+      method: "POST",
+      body: { category },
+      mutating: true,
+    }),
   fleetBlockCounterparty: (address: string) =>
-    apiFetch<{ address: string; blocked: boolean }>(
-      "/platform/fleet/block_counterparty",
-      { method: "POST", body: { address }, mutating: true },
-    ),
+    apiFetch<{ address: string; blocked: boolean }>("/platform/fleet/block_counterparty", {
+      method: "POST",
+      body: { address },
+      mutating: true,
+    }),
 
   /* -------------------------------------------------------------------------
    * Operator: patch staging (Path-C verdicts) + signing key
    * --------------------------------------------------------------------- */
-  stagingStatus: () =>
-    apiFetch<StagingStatusResponse>("/platform/staging/status"),
+  stagingStatus: () => apiFetch<StagingStatusResponse>("/platform/staging/status"),
   stagingHistory: (limit = 50) =>
     apiFetch<StagingHistoryResponse>("/platform/staging/history", {
       query: { limit },
@@ -661,21 +664,18 @@ export const api = {
       kill_parent_reason?: string;
     },
   ) =>
-    apiFetch<{ status: string }>(
-      `/platform/darwins/${id}/reproduce_with_amendment`,
-      { method: "POST", body: req, mutating: true },
-    ),
-  signingPublicKey: () =>
-    apiFetch<SigningPublicKeyResponse>("/platform/signing/public_key"),
+    apiFetch<{ status: string }>(`/platform/darwins/${id}/reproduce_with_amendment`, {
+      method: "POST",
+      body: req,
+      mutating: true,
+    }),
+  signingPublicKey: () => apiFetch<SigningPublicKeyResponse>("/platform/signing/public_key"),
   rotateSigningKey: (drainWindowSeconds?: number) =>
-    apiFetch<{ retired_public_key_pem: string; drain_until: number }>(
-      "/platform/signing/rotate",
-      {
-        method: "POST",
-        body: { drain_window_seconds: drainWindowSeconds ?? null },
-        mutating: true,
-      },
-    ),
+    apiFetch<{ retired_public_key_pem: string; drain_until: number }>("/platform/signing/rotate", {
+      method: "POST",
+      body: { drain_window_seconds: drainWindowSeconds ?? null },
+      mutating: true,
+    }),
 
   /* -------------------------------------------------------------------------
    * KYC — owner-initiated identity verification
@@ -693,16 +693,14 @@ export const api = {
    * Push subscriptions (doc 22 — PWA escalation companion)
    * --------------------------------------------------------------------- */
 
-  getPushVapidPublicKey: () =>
-    apiFetch<VapidPublicKeyResponse>("/me/push-vapid-public-key"),
+  getPushVapidPublicKey: () => apiFetch<VapidPublicKeyResponse>("/me/push-vapid-public-key"),
   registerPushSubscription: (req: PushSubscriptionRequest) =>
     apiFetch<{
       owner_subject: string;
       endpoint_origin: string;
       registered: boolean;
     }>("/me/push-subscriptions", { method: "POST", body: req, mutating: true }),
-  listPushSubscriptions: () =>
-    apiFetch<PushSubscriptionRow[]>("/me/push-subscriptions"),
+  listPushSubscriptions: () => apiFetch<PushSubscriptionRow[]>("/me/push-subscriptions"),
   revokePushSubscription: (req: RevokePushSubscriptionRequest) =>
     apiFetch<{ revoked: boolean }>("/me/push-subscriptions", {
       method: "DELETE",

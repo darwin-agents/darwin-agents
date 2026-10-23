@@ -1,3 +1,4 @@
+import type { DarwinStatus } from "../lib/types";
 /**
  * Shared fixtures for Darwin E2E tests (dev-token project).
  *
@@ -9,8 +10,7 @@
  */
 import { test as base, expect, type Page } from "@playwright/test";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 /** Must match the token the webServer was started with. */
 const DEV_TOKEN = "e2e-dev-token";
@@ -19,21 +19,13 @@ export async function signIn(page: Page): Promise<void> {
   // First visit primes localStorage on the right origin; `load` (not
   // networkidle — Next's HMR WebSocket keeps "network" busy in dev).
   await page.goto("/", { waitUntil: "load" });
-  await page.evaluate(
-    (token) => window.localStorage.setItem("darwin_dev_token", token),
-    DEV_TOKEN,
-  );
+  await page.evaluate((token) => window.localStorage.setItem("darwin_dev_token", token), DEV_TOKEN);
   await page.goto("/", { waitUntil: "load" });
   // Wait for DevAuthProvider hydration to flip past the "Loading…" placeholder.
-  await page
-    .getByText("Loading…", { exact: true })
-    .waitFor({ state: "hidden", timeout: 45_000 });
+  await page.getByText("Loading…", { exact: true }).waitFor({ state: "hidden", timeout: 45_000 });
 }
 
-export type MockHandler = (req: {
-  method: string;
-  url: URL;
-}) => Promise<unknown> | unknown;
+export type MockHandler = (req: { method: string; url: URL }) => Promise<unknown> | unknown;
 
 export interface BackendHandlers {
   [pathOrPattern: string]: MockHandler;
@@ -47,10 +39,7 @@ export interface BackendHandlers {
  *
  * `/healthz` and `/readyz` are silently 200'd regardless of handlers.
  */
-export async function mockBackend(
-  page: Page,
-  handlers: BackendHandlers,
-): Promise<void> {
+export async function mockBackend(page: Page, handlers: BackendHandlers): Promise<void> {
   await page.route(`${API_BASE}/**/*`, async (route) => {
     const req = route.request();
     const url = new URL(req.url());
@@ -78,6 +67,35 @@ export async function mockBackend(
     }
     return route.fulfill({ status: 200, body: "{}" });
   });
+}
+
+/** A complete `GET /darwins/{id}` body in the backend's real shape (the
+ *  generated type), so mocks can't drift from what the API returns. */
+export function mockStatus(darwin_id: string, overrides: Partial<DarwinStatus> = {}): DarwinStatus {
+  return {
+    darwin_id,
+    generation: 0,
+    parent_id: null,
+    l0_version: "0.0.6",
+    birth_ts: 1_700_000_000,
+    spawned_at: 1_700_000_000,
+    alive: true,
+    paused: false,
+    killed: false,
+    quarantined: false,
+    quarantine_reason: null,
+    death_reason: null,
+    balance_usdc: 10,
+    tick: 1,
+    days_elapsed: 0,
+    open_escalations: 0,
+    crashed: null,
+    address: "0x" + "a".repeat(40),
+    profit_usdc: 0,
+    unsettled_usdc: 0,
+    payout_address: null,
+    ...overrides,
+  } as DarwinStatus;
 }
 
 export const test = base.extend({});

@@ -20,24 +20,23 @@ export function TreasuryStrip({
   status: DarwinStatus | undefined;
   billing: BillingResponse | undefined;
 }) {
-  const balance =
-    asNumber(status?.balance_usdc) ?? asNumber(status?.treasury_usdc) ?? asNumber(billing?.balance_usdc);
-  const burn = asNumber(billing?.burn_rate_usdc_per_hour);
+  const balance = asNumber(status?.balance_usdc);
+  const profit = asNumber(status?.profit_usdc);
   const generation = asNumber(status?.generation);
-  const llm = asNumber(billing?.llm_cost_usdc);
-  const sandbox = asNumber(billing?.sandbox_cost_usdc);
-  const browser = asNumber(billing?.browser_cost_usdc);
+  const spent = asNumber(billing?.infrastructure.gross_usdc);
+  const unsettled = asNumber(status?.unsettled_usdc);
+  const harvested = asNumber(billing?.harvests.net_usdc);
 
   return (
     <Card className="flex flex-wrap items-center gap-x-8 gap-y-2 p-4">
       <Metric label="Treasury" value={formatUsdc(balance)} mono />
-      <Metric label="Burn / hr" value={burn !== undefined ? formatSignedUsdc(-Math.abs(burn)) : "—"} />
+      <Metric label="Profit" value={profit !== undefined ? formatSignedUsdc(profit) : "—"} />
       <Metric label="Generation" value={generation !== undefined ? `gen ${generation}` : "—"} />
       <div className="flex-1" />
-      <div className="flex items-center gap-4 text-xs text-[var(--color-muted-foreground)]">
-        <span>LLM {formatUsdc(llm)}</span>
-        <span>Sandbox {formatUsdc(sandbox)}</span>
-        <span>Browser {formatUsdc(browser)}</span>
+      <div className="flex flex-wrap items-center gap-4 text-xs text-[var(--color-muted-foreground)]">
+        <span>Spent {formatUsdc(spent)}</span>
+        <span>Unsettled {formatUsdc(unsettled)}</span>
+        <span>Harvested {formatUsdc(harvested)}</span>
       </div>
     </Card>
   );
@@ -46,7 +45,7 @@ export function TreasuryStrip({
 function Metric({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex flex-col">
-      <span className="text-[11px] uppercase tracking-wide text-[var(--color-muted-foreground)]">
+      <span className="text-[11px] tracking-wide text-[var(--color-muted-foreground)] uppercase">
         {label}
       </span>
       <span className={mono ? "mono text-lg font-semibold" : "text-lg font-semibold"}>{value}</span>

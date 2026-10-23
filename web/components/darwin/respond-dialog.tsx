@@ -47,16 +47,13 @@ export function RespondDialog({
     mutationFn: () => {
       if (!ticket) throw new Error("no ticket");
       const payload: Record<string, unknown> | undefined =
-        decision === "data"
-          ? safeParse(dataJson)
-          : note.trim()
-            ? { note: note.trim() }
-            : undefined;
+        decision === "data" ? safeParse(dataJson) : note.trim() ? { note: note.trim() } : undefined;
       return api.respondEscalation(ticket.darwin_id, ticket.ticket_id, decision, payload);
     },
     onSuccess: () => {
       if (!ticket) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.escalations(ticket.darwin_id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.fleetEscalations() });
       queryClient.invalidateQueries({ queryKey: queryKeys.events(ticket.darwin_id, 0) });
       onOpenChange(false);
       // Reset for next open.
@@ -122,7 +119,7 @@ export function RespondDialog({
           )}
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
+            <label className="mb-1 block text-xs tracking-wide text-[var(--color-muted-foreground)] uppercase">
               Decision
             </label>
             <div className="flex gap-2">
@@ -149,7 +146,7 @@ export function RespondDialog({
 
           {decision === "data" ? (
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
+              <label className="mb-1 block text-xs tracking-wide text-[var(--color-muted-foreground)] uppercase">
                 Structured data (JSON)
               </label>
               <textarea
@@ -165,7 +162,7 @@ export function RespondDialog({
             </div>
           ) : (
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
+              <label className="mb-1 block text-xs tracking-wide text-[var(--color-muted-foreground)] uppercase">
                 Note (optional)
               </label>
               <Input
@@ -181,7 +178,11 @@ export function RespondDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={respond.isPending}>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={respond.isPending}
+          >
             Cancel
           </Button>
           <Button
@@ -216,8 +217,8 @@ function DecisionButton({
       onClick={() => onClick(value)}
       className={
         active
-          ? "rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium capitalize text-[var(--color-accent-foreground)]"
-          : "rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs capitalize text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)]"
+          ? "rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent-foreground)] capitalize"
+          : "rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-muted-foreground)] capitalize hover:bg-[var(--color-muted)]"
       }
     >
       {value}
@@ -227,9 +228,7 @@ function DecisionButton({
 
 function DetailSummary({ ticket }: { ticket: EscalationTicket }) {
   const opened = ticket.opened_ts ? formatTimestamp(ticket.opened_ts) : null;
-  const detailKeys = Object.entries(ticket.detail ?? {}).filter(
-    ([, v]) => v !== null && v !== "",
-  );
+  const detailKeys = Object.entries(ticket.detail ?? {}).filter(([, v]) => v !== null && v !== "");
   return (
     <div className="space-y-1 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-3 text-xs">
       <div className="mono text-[var(--color-muted-foreground)]">{ticket.ticket_id}</div>
@@ -258,13 +257,7 @@ function DetailRow({ k, v }: { k: string; v: unknown }) {
 }
 
 function pickEvidenceUrl(ticket: EscalationTicket): string | null {
-  const candidates = [
-    "live_view_url",
-    "session_url",
-    "handoff_url",
-    "evidence_url",
-    "url",
-  ];
+  const candidates = ["live_view_url", "session_url", "handoff_url", "evidence_url", "url"];
   const detail = ticket.detail ?? {};
   for (const k of candidates) {
     const v = detail[k];
@@ -286,7 +279,10 @@ function safeParse(s: string): Record<string, unknown> | undefined {
 function ErrorPanel({ error }: { error: unknown }) {
   let msg = "Unknown error";
   if (error instanceof ApiError) {
-    msg = error.status === 400 ? "Decision rejected by the platform — check the ticket state." : `${error.status} · ${error.code}`;
+    msg =
+      error.status === 400
+        ? "Decision rejected by the platform — check the ticket state."
+        : `${error.status} · ${error.code}`;
   } else if (error instanceof Error) {
     msg = error.message;
   }

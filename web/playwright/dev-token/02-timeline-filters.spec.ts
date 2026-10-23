@@ -1,15 +1,11 @@
-import { expect, mockBackend, signIn, test } from "../fixtures";
+import { expect, mockBackend, mockStatus, signIn, test } from "../fixtures";
 
 const DARWIN_ID = "alpha-001";
 
 test("Timeline filter bar round-trips through the URL", async ({ page }) => {
   await mockBackend(page, {
     "/darwins": () => ({ darwins: [DARWIN_ID] }),
-    [`/darwins/${DARWIN_ID}`]: () => ({
-      darwin_id: DARWIN_ID,
-      lifecycle: "alive",
-      balance_usdc: 1,
-    }),
+    [`/darwins/${DARWIN_ID}`]: () => mockStatus(DARWIN_ID),
     [`/darwins/${DARWIN_ID}/events`]: ({ url }) => ({
       darwin_id: DARWIN_ID,
       total: 1,
@@ -41,7 +37,5 @@ test("Timeline filter bar round-trips through the URL", async ({ page }) => {
 
   // Clear button removes both.
   await page.getByRole("button", { name: /Clear/ }).click();
-  await expect(page).toHaveURL(
-    new RegExp(`^.+/darwins/${DARWIN_ID}/timeline/?$`),
-  );
+  await expect(page).toHaveURL(new RegExp(`^.+/darwins/${DARWIN_ID}/timeline/?$`));
 });

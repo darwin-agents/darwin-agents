@@ -5,7 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatRelative, formatUsdc, shortId } from "@/lib/format";
+import { formatUsdc, shortId } from "@/lib/format";
+import { lifecycleOf } from "@/lib/types";
 import { StatusBadge } from "@/components/darwin/status-badge";
 import { AlertBadges } from "@/components/darwin/alert-badges";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -35,11 +36,9 @@ export function FleetRow({ darwinId }: { darwinId: string }) {
     refetchInterval: 30_000,
   });
 
-  const balance =
-    (status?.balance_usdc as number | undefined) ?? (status?.treasury_usdc as number | undefined);
+  const balance = status?.balance_usdc;
   const openCount =
     escalations?.tickets?.filter((t) => t.status === "open" || t.status === undefined).length ?? 0;
-  const heartbeat = status?.last_heartbeat_at;
 
   return (
     <Link
@@ -54,7 +53,7 @@ export function FleetRow({ darwinId }: { darwinId: string }) {
           ) : (
             <>
               <span>gen {status?.generation ?? "—"}</span>
-              {heartbeat && <span>· heartbeat {formatRelative(heartbeat)}</span>}
+              {status && <span>· tick {status.tick}</span>}
             </>
           )}
         </div>
@@ -77,7 +76,7 @@ export function FleetRow({ darwinId }: { darwinId: string }) {
       </div>
 
       <div className="w-28 justify-self-end">
-        <StatusBadge status={status?.lifecycle ?? "alive"} />
+        <StatusBadge status={lifecycleOf(status)} />
       </div>
 
       <ChevronRight className="size-4 text-[var(--color-muted-foreground)]" />

@@ -14,6 +14,7 @@ export const queryKeys = {
     ["darwin", id, "events", page, filters ?? {}] as const,
   ledger: (id: string, offset = 0) => ["darwin", id, "ledger", offset] as const,
   billing: (id: string) => ["darwin", id, "billing"] as const,
+  store: (id: string) => ["darwin", id, "store"] as const,
   ledgerSummary: (id: string, year?: number) =>
     ["darwin", id, "ledger-summary", year ?? "lifetime"] as const,
   organismTables: (id: string) => ["darwin", id, "organism", "tables"] as const,
@@ -25,11 +26,11 @@ export const queryKeys = {
   controls: (id: string) => ["darwin", id, "controls"] as const,
   alerts: (id: string) => ["darwin", id, "alerts"] as const,
   escalations: (id: string) => ["darwin", id, "escalations"] as const,
+  fleetEscalations: () => ["escalations", "fleet"] as const,
   lineage: (id: string) => ["darwin", id, "lineage"] as const,
   // Payments — doc 17
   preapprovals: (id: string) => ["darwin", id, "preapprovals"] as const,
-  freelancers: (ownerSubject: string) =>
-    ["freelancers", ownerSubject] as const,
+  freelancers: (ownerSubject: string) => ["freelancers", ownerSubject] as const,
   myFreelancers: () => ["freelancers", "me"] as const,
   // Push subscriptions — doc 22 (PWA escalation companion)
   pushSubscriptions: () => ["push", "subscriptions"] as const,
@@ -38,12 +39,10 @@ export const queryKeys = {
   proposals: (id: string) => ["darwin", id, "proposals"] as const,
   // Operator surfaces
   throttle: (id: string) => ["darwin", id, "throttle"] as const,
-  resourceThrottle: (id: string) =>
-    ["darwin", id, "resource-throttle"] as const,
+  resourceThrottle: (id: string) => ["darwin", id, "resource-throttle"] as const,
   walletPolicy: (id: string) => ["darwin", id, "wallet-policy"] as const,
   stagingStatus: () => ["platform", "staging", "status"] as const,
-  stagingHistory: (limit: number) =>
-    ["platform", "staging", "history", limit] as const,
+  stagingHistory: (limit: number) => ["platform", "staging", "history", limit] as const,
   signingKey: () => ["platform", "signing", "public-key"] as const,
   kycStatus: (subject: string) => ["kyc", "status", subject] as const,
 };

@@ -11,7 +11,7 @@ import { StatusBadge } from "@/components/darwin/status-badge";
 import { AlertBadges } from "@/components/darwin/alert-badges";
 import { KillDialog } from "@/components/darwin/kill-dialog";
 import { shortId } from "@/lib/format";
-import type { Lifecycle } from "@/lib/types";
+import { lifecycleOf } from "@/lib/types";
 
 export function DarwinHeader({ darwinId }: { darwinId: string }) {
   const queryClient = useQueryClient();
@@ -27,9 +27,10 @@ export function DarwinHeader({ darwinId }: { darwinId: string }) {
     refetchInterval: 30_000,
   });
 
-  const lifecycle = (status?.lifecycle ?? "alive") as Lifecycle;
+  const lifecycle = lifecycleOf(status);
   const terminal = lifecycle === "dead" || lifecycle === "killed";
-  const paused = lifecycle === "paused";
+  // Resume un-pauses, and restarts a crashed drive loop.
+  const paused = lifecycle === "paused" || lifecycle === "crashed";
 
   const pause = useMutation({
     mutationFn: () => api.pause(darwinId),

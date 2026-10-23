@@ -1,20 +1,10 @@
-import { expect, mockBackend, signIn, test } from "../fixtures";
+import { expect, mockBackend, mockStatus, signIn, test } from "../fixtures";
 
 test("fleet page renders signed-in Darwin list", async ({ page }) => {
   await mockBackend(page, {
     "/darwins": () => ({ darwins: ["alpha-001", "beta-002"] }),
-    "/darwins/alpha-001": () => ({
-      darwin_id: "alpha-001",
-      lifecycle: "alive",
-      balance_usdc: 12.34,
-      generation: 0,
-    }),
-    "/darwins/beta-002": () => ({
-      darwin_id: "beta-002",
-      lifecycle: "alive",
-      balance_usdc: 5.6,
-      generation: 0,
-    }),
+    "/darwins/alpha-001": () => mockStatus("alpha-001", { balance_usdc: 12.34 }),
+    "/darwins/beta-002": () => mockStatus("beta-002", { balance_usdc: 5.6 }),
   });
   await signIn(page);
 

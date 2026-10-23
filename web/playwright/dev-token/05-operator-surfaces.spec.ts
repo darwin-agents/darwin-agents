@@ -1,13 +1,8 @@
-import { expect, mockBackend, signIn, test } from "../fixtures";
+import { expect, mockBackend, mockStatus, signIn, test } from "../fixtures";
 
 const ID = "alpha-001";
 
-const darwinStub = {
-  darwin_id: ID,
-  lifecycle: "alive",
-  balance_usdc: 10,
-  generation: 0,
-};
+const darwinStub = mockStatus(ID);
 
 test("proposals page renders pending + admitted, with operator actions when operator", async ({
   page,
@@ -40,9 +35,7 @@ test("proposals page renders pending + admitted, with operator actions when oper
   await expect(page.getByRole("button", { name: "Admit" })).toBeVisible();
 });
 
-test("operator console is gated: owner token sees the operator-only notice", async ({
-  page,
-}) => {
+test("operator console is gated: owner token sees the operator-only notice", async ({ page }) => {
   await mockBackend(page, {
     "/platform/capabilities": () => ({
       tenant_namespaces: false,

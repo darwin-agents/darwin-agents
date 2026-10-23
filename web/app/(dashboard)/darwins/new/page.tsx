@@ -51,13 +51,16 @@ export default function SpawnPage() {
         <CardHeader>
           <CardTitle>Spawn a Darwin</CardTitle>
           <p className="text-sm text-[var(--color-muted-foreground)]">
-            You fund an opening treasury. The Darwin acts autonomously inside it. If it depletes,
-            it dies and the remaining funds are settled per the death sequence.
+            You fund an opening treasury. The Darwin acts autonomously inside it. If it depletes, it
+            dies and the remaining funds are settled per the death sequence.
           </p>
         </CardHeader>
         <CardContent className="space-y-5">
           <div>
-            <label htmlFor="budget" className="mb-1 block text-xs uppercase tracking-wide text-[var(--color-muted-foreground)]">
+            <label
+              htmlFor="budget"
+              className="mb-1 block text-xs tracking-wide text-[var(--color-muted-foreground)] uppercase"
+            >
               Opening budget (USDC)
             </label>
             <Input
@@ -70,7 +73,9 @@ export default function SpawnPage() {
               disabled={spawn.isPending}
             />
             {!budgetValid && budget.length > 0 && (
-              <p className="mt-1 text-xs text-[var(--color-destructive)]">Enter a positive amount.</p>
+              <p className="mt-1 text-xs text-[var(--color-destructive)]">
+                Enter a positive amount.
+              </p>
             )}
           </div>
 
@@ -83,9 +88,12 @@ export default function SpawnPage() {
               disabled={spawn.isPending}
             />
             <span>
-              I accept the kill-switch terms of service and understand outcomes are
-              non-guaranteed — the Darwin can lose its entire treasury, and there is
-              no resurrection.
+              I accept the{" "}
+              <a href="/terms" target="_blank" className="underline">
+                terms of service
+              </a>{" "}
+              (including the kill switch) and understand outcomes are non-guaranteed — the Darwin
+              can lose its entire treasury, and there is no resurrection.
             </span>
           </label>
 
@@ -100,9 +108,7 @@ export default function SpawnPage() {
             <span>I confirm I am 18 years or older.</span>
           </label>
 
-          {spawn.isError && (
-            <SpawnError error={spawn.error} />
-          )}
+          {spawn.isError && <SpawnError error={spawn.error} />}
 
           <Button
             disabled={!budgetValid || !termsAccepted || !consent18 || spawn.isPending}
@@ -121,9 +127,11 @@ function SpawnError({ error }: { error: unknown }) {
   let msg = "Unknown error";
   if (error instanceof ApiError) {
     if (error.status === 422) {
-      msg = "Budget out of range. Check platform minimum / maximum.";
+      msg = "The opening budget must be a positive amount.";
+    } else if (error.status === 409 && /kyc/i.test(error.code)) {
+      msg = "Verify your identity first (Get started → Identity), then spawn.";
     } else {
-      msg = `${error.status} · ${error.code}`;
+      msg = error.code;
     }
   } else if (error instanceof Error) {
     msg = error.message;

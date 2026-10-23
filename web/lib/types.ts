@@ -14,36 +14,33 @@ export type SpawnRequest = components["schemas"]["SpawnRequest"];
 export type KillRequest = components["schemas"]["KillRequest"];
 export type PauseRequest = components["schemas"]["PauseRequest"];
 export type SpendLockRequest = components["schemas"]["SpendLockRequest"];
-export type ReproductionBlockRequest =
-  components["schemas"]["ReproductionBlockRequest"];
+export type ReproductionBlockRequest = components["schemas"]["ReproductionBlockRequest"];
 export type DisabledNeuronsRequest = components["schemas"]["DisabledNeuronsRequest"];
-export type DisabledCategoriesRequest =
-  components["schemas"]["DisabledCategoriesRequest"];
-export type EscalationResponseRequest =
-  components["schemas"]["EscalationResponseRequest"];
+export type DisabledCategoriesRequest = components["schemas"]["DisabledCategoriesRequest"];
+export type EscalationResponseRequest = components["schemas"]["EscalationResponseRequest"];
 export type HarvestRequest = components["schemas"]["HarvestRequest"];
 export type HarvestRuleRequest = components["schemas"]["HarvestRuleRequest"];
 export type VaultPutRequest = components["schemas"]["VaultPutRequest"];
-export type FiatDepositQuoteRequest =
-  components["schemas"]["FiatDepositQuoteRequest"];
-export type FiatConfirmDepositRequest =
-  components["schemas"]["FiatConfirmDepositRequest"];
+export type FiatDepositQuoteRequest = components["schemas"]["FiatDepositQuoteRequest"];
+export type FiatConfirmDepositRequest = components["schemas"]["FiatConfirmDepositRequest"];
 export type FiatWithdrawRequest = components["schemas"]["FiatWithdrawRequest"];
 
-export type Lifecycle = "alive" | "paused" | "quarantined" | "dead" | "killed";
+export type DarwinStatus = components["schemas"]["DarwinStatus"];
 
-export interface DarwinStatus {
-  darwin_id: string;
-  lifecycle: Lifecycle;
-  balance_usdc?: number;
-  treasury_usdc?: number;
-  generation?: number;
-  parent_id?: string | null;
-  spawned_at?: string;
-  last_heartbeat_at?: string | null;
-  cause_of_death?: string | null;
-  // Loose-tail for fields the doc enumerates but the runtime adds opportunistically.
-  [k: string]: unknown;
+export type Lifecycle = "alive" | "paused" | "crashed" | "quarantined" | "dead" | "killed";
+
+/** The one state to show, from the backend's flags (it has no single
+ * lifecycle field). A crashed drive loop resumes like a pause. */
+export function lifecycleOf(
+  s: Pick<DarwinStatus, "alive" | "paused" | "killed" | "quarantined" | "crashed"> | undefined,
+): Lifecycle {
+  if (!s) return "alive";
+  if (s.killed) return "killed";
+  if (!s.alive) return "dead";
+  if (s.quarantined) return "quarantined";
+  if (s.crashed) return "crashed";
+  if (s.paused) return "paused";
+  return "alive";
 }
 
 export interface DarwinListResponse {
@@ -232,15 +229,7 @@ export interface OrganismRowsResponse {
   offset: number;
 }
 
-export interface BillingResponse {
-  darwin_id: string;
-  balance_usdc?: number;
-  burn_rate_usdc_per_hour?: number;
-  llm_cost_usdc?: number;
-  sandbox_cost_usdc?: number;
-  browser_cost_usdc?: number;
-  [k: string]: unknown;
-}
+export type BillingResponse = components["schemas"]["BillingSummary"];
 
 /**
  * Real shape from `Supervisor.get_owner_controls` — `spend_lock` is the
@@ -288,37 +277,11 @@ export interface EscalationsResponse {
   tickets: EscalationTicket[];
 }
 
-export interface LineageNode {
-  darwin_id: string;
-  generation?: number;
-  lifecycle?: Lifecycle;
-  parent_id?: string | null;
-  children?: LineageNode[];
-  fitness?: number | null;
-  cause_of_death?: string | null;
-  [k: string]: unknown;
-}
-
-export interface LineageTreeResponse {
-  darwin_id: string;
-  root?: LineageNode;
-  ancestors?: LineageNode[];
-  descendants?: LineageNode[];
-  [k: string]: unknown;
-}
-
-export interface AlertEntry {
-  level?: number;
-  code?: string;
-  summary?: string;
-  ts?: string;
-  [k: string]: unknown;
-}
-
-export interface AlertsResponse {
-  darwin_id: string;
-  alerts: AlertEntry[];
-}
+export type LineageNode = components["schemas"]["LineageNode"];
+export type LineageAncestor = components["schemas"]["LineageAncestor"];
+export type LineageTreeResponse = components["schemas"]["LineageTree"];
+export type AlertEntry = components["schemas"]["AlertRow"];
+export type AlertsResponse = components["schemas"]["DarwinAlerts"];
 
 /* ---------------------------------------------------------------------------
  * Payments — doc 17 (preapprovals, freelancer registry, fiat payouts)
@@ -563,4 +526,14 @@ export interface KycStartResponse {
   inquiry_id: string;
   redirect_url: string;
   status: string;
+}
+
+/** `GET /store/{id}` — the x402 offer for one paid report. */
+export interface StoreInfo {
+  darwin_id: string;
+  service: string;
+  price_usdc: number;
+  payment: {
+    accepts: Array<{ amount: string; payTo: string; network: string; asset: string }>;
+  };
 }

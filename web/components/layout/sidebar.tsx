@@ -10,9 +10,12 @@ import {
   Gauge,
   Inbox,
   LayoutGrid,
+  Menu,
   Receipt,
+  Rocket,
   Users,
 } from "lucide-react";
+import { CLERK_ENABLED } from "@/lib/auth-mode";
 import { cn } from "@/lib/cn";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
@@ -23,26 +26,66 @@ type NavItem = {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   operatorOnly?: boolean;
+  devOnly?: boolean;
 };
 
 const NAV: NavItem[] = [
   { href: "/", label: "Fleet", icon: LayoutGrid },
+  { href: "/onboarding", label: "Get started", icon: Rocket },
   { href: "/escalations", label: "Escalations", icon: Inbox },
   { href: "/freelancers", label: "Freelancers", icon: Users },
   { href: "/operator", label: "Operator", icon: Gauge, operatorOnly: true },
   { href: "/notifications", label: "Notifications", icon: Bell },
-  { href: "/tokens", label: "Design tokens", icon: FlaskConical },
+  // The dev token-paste page; Clerk replaces it in production.
+  { href: "/tokens", label: "Dev tokens", icon: FlaskConical, devOnly: true },
 ];
 
-export function Sidebar() {
-  const pathname = usePathname();
+const VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? "dev";
+
+function useNavItems() {
   const { data: caps } = useQuery({
     queryKey: queryKeys.capabilities(),
     queryFn: () => api.capabilities(),
     staleTime: 5 * 60_000,
     retry: false,
   });
-  const items = NAV.filter((item) => !item.operatorOnly || caps?.is_operator);
+  return NAV.filter(
+    (item) => (!item.operatorOnly || caps?.is_operator) && (!item.devOnly || !CLERK_ENABLED),
+  );
+}
+
+/** Small screens: a top bar with the same links behind a native disclosure. */
+export function MobileNav() {
+  const items = useNavItems();
+  return (
+    <details className="border-b border-[var(--color-border)] bg-[var(--color-card)] md:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-semibold">
+        <Menu className="size-4" />
+        <Activity className="size-4 text-[var(--color-status-alive)]" />
+        Darwin
+      </summary>
+      <nav className="flex flex-col gap-1 px-2 pb-3">
+        {items.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href as never}
+            className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)]"
+          >
+            <item.icon className="size-4" />
+            {item.label}
+          </Link>
+        ))}
+        <div className="px-2 pt-2">
+          <AuthChip />
+        </div>
+      </nav>
+    </details>
+  );
+}
+
+export function Sidebar() {
+  const pathname = usePathname();
+  const items = useNavItems();
   return (
     <aside className="hidden w-56 flex-col border-r border-[var(--color-border)] bg-[var(--color-card)] p-3 md:flex">
       <div className="flex items-center gap-2 px-2 py-3">
@@ -75,7 +118,7 @@ export function Sidebar() {
         <div className="text-[10px] text-[var(--color-muted-foreground)]">
           <div className="flex items-center gap-1">
             <Receipt className="size-3" />
-            <span>v0.1.0 · dev</span>
+            <span>{VERSION}</span>
           </div>
         </div>
       </div>

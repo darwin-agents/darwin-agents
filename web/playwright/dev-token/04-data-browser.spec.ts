@@ -1,17 +1,11 @@
-import { expect, mockBackend, signIn, test } from "../fixtures";
+import { expect, mockBackend, mockStatus, signIn, test } from "../fixtures";
 
 const DARWIN_ID = "alpha-001";
 
 test("data browser tabs switch via URL", async ({ page }) => {
   await mockBackend(page, {
     "/darwins": () => ({ darwins: [DARWIN_ID] }),
-    [`/darwins/${DARWIN_ID}`]: () => ({
-      darwin_id: DARWIN_ID,
-      lifecycle: "alive",
-      balance_usdc: 7,
-      generation: 1,
-      parent_id: null,
-    }),
+    [`/darwins/${DARWIN_ID}`]: () => mockStatus(DARWIN_ID),
     [`/darwins/${DARWIN_ID}/lineage/tree`]: () => ({
       darwin_id: DARWIN_ID,
       root: { darwin_id: DARWIN_ID, generation: 1 },
@@ -41,9 +35,7 @@ test("data browser tabs switch via URL", async ({ page }) => {
       total: 1,
       offset: 0,
       limit: 100,
-      events: [
-        { seq: 1, ts: 1700000000, kind: "event:perceive", hash: "0xabcd1234" },
-      ],
+      events: [{ seq: 1, ts: 1700000000, kind: "event:perceive", hash: "0xabcd1234" }],
     }),
   });
   await signIn(page);

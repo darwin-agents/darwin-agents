@@ -101,7 +101,7 @@ function cspFor(nonce: string): string {
   ].join("; ");
 }
 
-const isPublic = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
+const isPublic = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/terms", "/privacy"]);
 
 const clerkHandler = clerkMiddleware(async (auth, req) => {
   if (isPublic(req)) return;
@@ -109,10 +109,7 @@ const clerkHandler = clerkMiddleware(async (auth, req) => {
   if (!userId) return redirectToSignIn();
 });
 
-export default async function middleware(
-  req: NextRequest,
-  event: NextFetchEvent,
-) {
+export default async function middleware(req: NextRequest, event: NextFetchEvent) {
   // btoa + crypto.randomUUID are both available in the Edge runtime.
   const nonce = isProd ? btoa(crypto.randomUUID()) : "";
   const csp = cspFor(nonce);
