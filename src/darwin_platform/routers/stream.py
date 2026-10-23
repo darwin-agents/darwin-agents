@@ -246,3 +246,5 @@ async def darwin_stream(websocket: WebSocket, darwin_id: str) -> None:
             await asyncio.sleep(0.2)
     except WebSocketDisconnect:
         return
+    finally:
+        drain_task.cancel()
