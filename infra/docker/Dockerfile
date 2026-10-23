@@ -23,13 +23,19 @@ WORKDIR /build
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
-# Create the runtime venv under /opt/venv and install the platform extra
-# (FastAPI, uvicorn, OpenTelemetry, LiteLLM client). System site-packages
-# stays clean so the runtime image is reproducible.
+# Create the runtime venv under /opt/venv from the LOCKED dependency set
+# (hash-checked), then the package itself without re-resolving. Builds are
+# reproducible: the image gets exactly what CI tested against uv.lock.
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
-RUN uv venv /opt/venv && \
+RUN uv export --frozen --no-dev --no-emit-project \
+        --extra platform --extra llm --extra graph --extra postgres \
+        --extra web3 --extra hvac --extra browser --extra e2b --extra solana \
+        --extra stellar --extra stripe --extra pdfwatermark --extra k8s \
+        --extra cdp --extra webpush -o /tmp/requirements.txt && \
+    uv venv /opt/venv && \
     uv pip install --python /opt/venv/bin/python --no-cache \
-        ".[platform,llm,graph,postgres,web3,hvac,browser,e2b,solana,stellar,stripe,pdfwatermark,k8s,cdp,webpush]"
+        --require-hashes -r /tmp/requirements.txt && \
+    uv pip install --python /opt/venv/bin/python --no-cache --no-deps .
 
 # -- runtime ----------------------------------------------------------------
 FROM python:3.12-slim AS runtime
