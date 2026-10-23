@@ -113,14 +113,15 @@ async def test_status_reads_driver_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_kills_each_k8s_darwin():
+async def test_shutdown_leaves_k8s_darwins_running():
+    """A deploy restarts the supervisor; its pods must keep living (the next
+    supervisor re-adopts them). Found on a real cluster: shutdown killed them."""
     driver = _FakeK8sDriver()
     sup = Supervisor(k8s_driver=driver, heartbeat_seconds=0.0)
-    a = (await sup.spawn(opening_usdc=10.0)).darwin_id
-    b = (await sup.spawn(opening_usdc=10.0)).darwin_id
+    await sup.spawn(opening_usdc=10.0)
+    await sup.spawn(opening_usdc=10.0)
     await sup.shutdown(kill_running=True)
-    killed_ids = {did for did, _r in driver.killed}
-    assert {a, b} <= killed_ids
+    assert driver.killed == []
 
 
 @pytest.mark.asyncio

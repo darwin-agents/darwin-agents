@@ -4422,20 +4422,12 @@ class Supervisor:
 
     # -- supervisor shutdown ----------------------------------------------
     async def shutdown(self, *, kill_running: bool = True) -> None:
-        """Stop driving every Darwin. If ``kill_running``, flip every kill
-        flag first so the genomes write a clean final audit record."""
+        """Stop driving every in-process Darwin. If ``kill_running``, flip
+        every in-process kill flag first so the genomes write a clean final
+        audit record. Pod-hosted (k8s) Darwins are never touched: they
+        outlive the supervisor and the next one re-adopts them — killing
+        them here killed the whole fleet on every deploy."""
         self._closed = True
-        # K8s-mode: tell every per-Darwin orchestrator pod to halt
-        # cleanly, but leave the namespaces in place so an operator can
-        # forensically inspect them. The driver's stop() is a separate
-        # operator-driven call.
-        if self._k8s_driver is not None:
-            for did in list(self._k8s_handles):
-                try:
-                    if kill_running:
-                        await self._k8s_driver.kill(did, reason="supervisor shutdown")
-                except Exception:
-                    pass
         # Stop the leadership watch task first so it doesn't observe
         # mid-shutdown state and try to react to it.
         if self._leader_watch_task is not None:
