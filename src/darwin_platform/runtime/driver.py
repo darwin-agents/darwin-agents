@@ -92,6 +92,9 @@ class DarwinSnapshot:
     merkle_root: str | None = None
     # Set when the pod's drive loop crashed (see DarwinStatus.crashed).
     crashed: str | None = None
+    address: str | None = None
+    profit_usdc: float = 0.0
+    unsettled_usdc: float = 0.0
 
 
 @runtime_checkable

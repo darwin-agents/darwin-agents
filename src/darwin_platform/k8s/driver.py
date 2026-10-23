@@ -467,6 +467,13 @@ class K8sDarwinDriver:
             llm_spend_usdc=float(data.get("llm_spend_usdc", 0.0) or 0.0),
             merkle_root=(data.get("merkle_root") or None),
             crashed=(data.get("crashed") or None),
+            address=(data.get("wallet") or {}).get("address"),
+            profit_usdc=(
+                float(data.get("balance_usdc", 0.0) or 0.0)
+                - float(data.get("profit_baseline_usdc", 0.0) or 0.0)
+                if float(data.get("starting_capital_usdc", 0.0) or 0.0) > 0 else 0.0
+            ),
+            unsettled_usdc=float((data.get("wallet") or {}).get("unsettled_usdc") or 0.0),
         )
 
 

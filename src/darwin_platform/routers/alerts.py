@@ -19,6 +19,7 @@ from fastapi import (
 
 from ..observability.monitoring import Severity
 from ..runtime.supervisor import UnknownDarwin
+from .models import DarwinAlerts
 from ..security.auth import (
     OWNER,
     PLATFORM_OPERATOR,
@@ -53,7 +54,7 @@ async def darwin_alerts(
     since: float | None = Query(None),
     limit: int | None = Query(None, ge=1, le=10_000),
     ctx: AuthContext = Depends(get_auth),
-) -> dict[str, Any]:
+) -> DarwinAlerts:
     _require_scope(ctx, OWNER)
     _require_owns(ctx, darwin_id)
     sev = _parse_severity(min_severity)

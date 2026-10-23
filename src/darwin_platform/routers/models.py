@@ -256,3 +256,60 @@ class AmendmentRequest(BaseModel):
     amendment_blob_b64: str
     amendment_name: str = Field(min_length=1)
     kill_parent_reason: str = "amendment reproduction"
+
+
+# -- typed responses (so the dashboard's generated client knows the shapes) --
+class BillingInfrastructure(BaseModel):
+    gross_usdc: float
+    provider_cost_usdc: float
+    platform_revenue_usdc: float
+    events: int
+
+
+class BillingHarvests(BaseModel):
+    gross_usdc: float
+    net_usdc: float
+    fee_usdc: float
+    events: int
+    history_tail: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BillingSummary(BaseModel):
+    darwin_id: str
+    infrastructure: BillingInfrastructure
+    harvests: BillingHarvests
+    total_platform_revenue_usdc: float
+
+
+class LineageAncestor(BaseModel):
+    darwin_id: str
+    alive: bool
+
+
+class LineageNode(BaseModel):
+    darwin_id: str
+    budget_usdc: float
+    spawned_at: float
+    alive: bool
+    children: list["LineageNode"] = Field(default_factory=list)
+
+
+class LineageTree(BaseModel):
+    darwin_id: str
+    generation: int
+    ancestors: list[LineageAncestor]
+    descendants: list[LineageNode]
+
+
+class AlertRow(BaseModel):
+    darwin_id: str
+    kind: str
+    severity: str
+    suggested_level: int
+    detail: dict[str, Any] = Field(default_factory=dict)
+    ts: float
+
+
+class DarwinAlerts(BaseModel):
+    darwin_id: str
+    alerts: list[AlertRow]

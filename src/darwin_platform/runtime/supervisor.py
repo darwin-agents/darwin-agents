@@ -173,6 +173,15 @@ class DarwinStatus:
     # Set when the drive loop died on an unexpected exception: the Darwin no
     # longer ticks (or spends) until an owner/operator ``resume``.
     crashed: str | None = None
+    # The Darwin's own on-chain address (fund it / buyers pay it).
+    address: str | None = None
+    # Earned since the last reproduction/draw (deposits excluded): what a
+    # harvest pays the fee on.
+    profit_usdc: float = 0.0
+    # Metering + fees booked but not yet paid to the platform.
+    unsettled_usdc: float = 0.0
+    # Where harvests + the closing sweep go (owner-set).
+    payout_address: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1747,6 +1756,10 @@ class Supervisor:
             days_elapsed=snapshot.days_elapsed,
             open_escalations=0,
             crashed=snapshot.crashed,
+            address=snapshot.address,
+            profit_usdc=snapshot.profit_usdc,
+            unsettled_usdc=snapshot.unsettled_usdc,
+            payout_address=self._payout_address(darwin_id),
         )
 
     async def _k8s_control_get(self, darwin_id: str, path: str) -> dict[str, Any]:
@@ -5034,7 +5047,18 @@ class Supervisor:
                 self._router.for_darwin(h.darwin_id, include_resolved=False)
             ),
             crashed=h.crashed,
+            address=self._wallet_address(h.darwin_id),
+            profit_usdc=(
+                float(h.stack.wallet.balance_usdc()) - float(st.profit_baseline_usdc)
+                if st.starting_capital_usdc > 0 else 0.0
+            ),
+            unsettled_usdc=float(getattr(h.stack.wallet, "unsettled_usdc", 0.0)),
+            payout_address=self._payout_address(h.darwin_id),
         )
+
+    def _payout_address(self, darwin_id: str) -> str | None:
+        row = self._lifecycle.get(darwin_id) if self._lifecycle is not None else None
+        return row.payout_address if row is not None else None
 
     def _ancestry(self, darwin_id: str) -> list[str]:
         # Kept for compatibility; the registry's ancestry walk is the

@@ -19,7 +19,7 @@ from fastapi import (
     Request,
 )
 
-from ..runtime.supervisor import SupervisorError, UnknownDarwin
+from ..runtime.supervisor import DarwinStatus, SupervisorError, UnknownDarwin
 from ..security.auth import (
     OWNER,
     PLATFORM_OPERATOR,
@@ -36,6 +36,7 @@ from .deps import (
 )
 from .models import (
     DisabledCategoriesRequest,
+    LineageTree,
     DisabledNeuronsRequest,
     KillRequest,
     PauseRequest,
@@ -112,11 +113,11 @@ async def status(
     darwin_id: str,
     request: Request,
     ctx: AuthContext = Depends(get_auth),
-) -> dict[str, Any]:
+) -> DarwinStatus:
     _require_scope(ctx, OWNER)
     _require_owns(ctx, darwin_id)
     try:
-        return asdict(await _sup(request).status(darwin_id))
+        return await _sup(request).status(darwin_id)
     except UnknownDarwin as exc:
         raise HTTPException(404, str(exc))
     except SupervisorError as exc:
@@ -335,7 +336,7 @@ async def lineage_tree(
     request: Request,
     max_depth: int = Query(16, ge=1, le=128),
     ctx: AuthContext = Depends(get_auth),
-) -> dict[str, Any]:
+) -> LineageTree:
     """Phase 1 (doc 21 §"Lineage tree"): nested ancestors + descendants
     for the minimal dashboard. ``max_depth`` bounds the descendant
     recursion."""
