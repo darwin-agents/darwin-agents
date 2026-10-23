@@ -14,7 +14,9 @@ and tracing.
 | `redis`      | 16379     | LiteLLM response cache + rate limits (host 16379 → container 6379). |
 | `litellm`    | 4000      | Real LLM gateway (BerriAI LiteLLM proxy, doc 13).      |
 | `prometheus` | 9090      | Scrapes `supervisor:8000/metrics` every 15s.           |
-| `jaeger`     | 16686     | Trace UI (OpenTelemetry receiver on 4317/4318).        |
+| `otel-collector` | 4317, 4318 | OTLP gRPC / HTTP receiver for the supervisor's spans; forwards to Jaeger. |
+| `jaeger`     | 16686     | Trace UI (receives OTLP from the collector in-network on `jaeger:4317`). |
+| `alertmanager` | 9093    | Routes Prometheus alerts (`alerting_rules.yml`) to receivers. |
 
 ## Quickstart
 
