@@ -122,3 +122,42 @@ def test_phantom_wallet_drift_halts_gracefully(vclock):
     assert "event:ledger.reconciliation_failed" in kinds
     assert {"event:death.begin", "event:death.end"} <= set(kinds)
     rt.audit.verify()  # graceful: the chain is intact through the halt
+
+
+def test_every_platform_movement_kind_journals_and_reconciles():
+    """Harvest, sweep, fiat payout and deposits used to raise
+    ``unrecognised wallet movement`` and kill the drive loop. Each must now
+    post with the right sign so the ledger still reconciles to the wallet."""
+    from darwin_dna.machinery.ledger import EQUITY_OWNER_DRAW, FUNDING_EXTERNAL
+
+    led = Ledger("d")
+    led.seed_opening(100.0, ts=0.0)
+    led.journal_new(
+        [
+            {"credit": {"from": "deposit:owner", "amount_usdc": 50.0, "ts": 1.0}},
+            {"harvest": {"destination": "0xowner", "amount_usdc": 16.0,
+                         "kind": "owner_net", "ts": 2.0}},
+            {"harvest": {"destination": "platform.fee", "amount_usdc": 4.0,
+                         "kind": "platform_fee", "ts": 2.0}},
+            {"fiat_payout_transfer": {"amount_usdc": 10.0,
+                                      "destination": "0xomni", "ts": 3.0}},
+            {"sweep_out": {"amount_usdc": 5.0, "destination": "0xomni",
+                           "ts": 4.0}},
+        ],
+        now=5.0,
+    )
+    # 100 + 50 − 16 − 4 − 10 − 5
+    assert led.treasury_balance() == pytest.approx(115.0)
+    led.reconcile(115.0, 1e-6)
+    by_cat = {e.category: e for e in led.entries}
+    assert by_cat["deposit"].credit == FUNDING_EXTERNAL  # capital, not revenue
+    assert by_cat["owner_draw"].debit == EQUITY_OWNER_DRAW
+    assert by_cat["platform_fee"].debit == "expense:platform_fee"
+    led.verify()
+
+
+def test_malformed_movement_halts_instead_of_crashing():
+    led = Ledger("d")
+    led.seed_opening(10.0, ts=0.0)
+    with pytest.raises(LedgerError, match="malformed"):
+        led.journal_new([{"debit": {"amount_usdc": 1.0}, "credit": {}}], now=1.0)
