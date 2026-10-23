@@ -65,15 +65,18 @@ def _rebase_profit(state, movs, bal: float) -> None:
     alone leaves the baseline, so profit drops by exactly the amount drawn.
     Own cursor (checkpointed with the state) so a mid-life reboot, which
     re-journals the whole feed, never re-applies a movement twice."""
-    drew = False
-    for mv in movs[state.funding_cursor:]:
+    window = movs[state.funding_cursor:]
+    # Replay the window in order from the balance it started at (the ledger
+    # just reconciled to ``bal``), so a draw sees the balance it left behind,
+    # not one that already includes revenue landing later in the window.
+    running = bal - sum(treasury_delta(mv) for mv in window)
+    for mv in window:
+        running += treasury_delta(mv)
         kind, m = movement_leg(mv)
         if is_deposit(mv):
             state.profit_baseline_usdc += float(m["amount_usdc"])
         elif kind == "harvest":
-            drew = True
-    if drew:
-        state.profit_baseline_usdc = min(state.profit_baseline_usdc, bal)
+            state.profit_baseline_usdc = min(state.profit_baseline_usdc, running)
     state.funding_cursor = len(movs)
 
 

@@ -2728,11 +2728,13 @@ class Supervisor:
             annotate_span_with_runtime(s, h.runtime)
             policy = self._billing.policy
             st = h.runtime.state
-            fee = policy.harvest_fee(
-                float(amount_usdc),
-                profit_usdc=float(h.stack.wallet.balance_usdc())
-                - float(st.profit_baseline_usdc),
+            # Before the first perceive there is no baseline yet, and the
+            # opening balance is principal, not profit.
+            profit = (
+                float(h.stack.wallet.balance_usdc()) - float(st.profit_baseline_usdc)
+                if st.starting_capital_usdc > 0 else 0.0
             )
+            fee = policy.harvest_fee(float(amount_usdc), profit_usdc=profit)
             net = float(amount_usdc) - fee
             try:
                 wallet_row = h.stack.wallet.harvest_to_owner(
