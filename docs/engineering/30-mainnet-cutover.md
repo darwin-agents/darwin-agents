@@ -6,7 +6,8 @@ credentials + process exercise, not a code rewrite. Work top to bottom — the
 **Hard gates** must all pass before any real funds move.
 
 The supervisor enforces the dangerous parts itself: booting against mainnet
-with demo-grade money config is refused (`_assert_mainnet_safe`), and the
+with demo-grade money config is refused (`_assert_production_ready`, which
+lists every missing production requirement at once), and the
 preflight (`scripts/real_preflight.sh --network mainnet`) mirrors those
 checks. This doc is the human-facing superset.
 

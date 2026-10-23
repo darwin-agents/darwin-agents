@@ -83,6 +83,10 @@ class ConfirmingChainClient(Protocol):
         ...
 
 
+def _inbound_key(payer: str, amount_usdc: float) -> str:
+    return f"{payer.lower()}:{int(round(float(amount_usdc) * 1_000_000))}"
+
+
 class WatchOnlyChain:
     """A :class:`ChainClient` that can read but never sign. Pods get this:
     the Darwin's balance + movements come from the chain, while every
@@ -204,6 +208,9 @@ class RealWallet:
         self._hints: dict[str, dict] = {}
         # inbound tx_hash → credit source (e.g. "x402:<order>" = revenue).
         self._credit_sources: dict[str, str] = {}
+        # "<payer>:<atomic amount>" → credit source, for a payment we expect
+        # before its tx exists (an x402 settlement).
+        self._expected_inbound: dict[str, str] = {}
         # settlement tx_hash → submit time; at most one in flight.
         self._settling: dict[str, float] = {}
         # unregistered outbound tx_hash → first seen (see sync()).
@@ -221,7 +228,8 @@ class RealWallet:
     # compact (snapshot + truncate) when a Darwin's feed gets large.
     _STATE = (
         "_unsettled", "_synced_block", "_synced_balance", "_hints",
-        "_credit_sources", "_settling", "_spent_today", "_spent_lifetime",
+        "_credit_sources", "_expected_inbound", "_settling", "_spent_today",
+        "_spent_lifetime",
         "_today", "_last_revenue_ts",
     )
 
@@ -321,7 +329,11 @@ class RealWallet:
         for log in logs:
             tx, amt = log["tx_hash"].lower(), float(log["amount_usdc"])
             if log["to"] == me and log["from"] != me:
-                src = self._credit_sources.pop(tx, None) or f"{DEPOSIT_PREFIX}{log['from']}"
+                src = (
+                    self._credit_sources.pop(tx, None)
+                    or self._expected_inbound.pop(_inbound_key(log["from"], amt), None)
+                    or f"{DEPOSIT_PREFIX}{log['from']}"
+                )
                 if not src.startswith(DEPOSIT_PREFIX):
                     self._last_revenue_ts = now
                 rows.append({"credit": {"from": src, "amount_usdc": amt,
@@ -388,6 +400,11 @@ class RealWallet:
             "amount_usdc": fee, "kind": "platform_fee",
             "ts": float(self._clock()),
         }})
+
+    @property
+    def expects_chain_payments(self) -> bool:
+        """Inbound money is booked from the chain (see ``sync``)."""
+        return self._reader is not None
 
     @property
     def unsettled_usdc(self) -> float:
@@ -560,6 +577,7 @@ class RealWallet:
     # -- credit (incoming revenue) ----------------------------------------
     def credit(
         self, amount_usdc: float, source: str, *, tx_hash: str | None = None,
+        payer: str | None = None,
     ) -> None:
         """Real revenue lands on-chain (incoming USDC transfer to the
         adapter's address). The platform calls this when it observes
@@ -573,11 +591,14 @@ class RealWallet:
         if self._reader is not None:
             # Chain-derived feed: a credit can only label a real inbound
             # transfer (sync() books it); an unbacked one is refused.
-            if not tx_hash:
+            if tx_hash:
+                self._credit_sources[str(tx_hash).lower()] = source
+            elif payer:
+                self._expected_inbound[_inbound_key(payer, amount)] = source
+            else:
                 raise WalletError(
-                    "credit needs the on-chain tx hash of the inbound transfer"
+                    "credit needs the inbound transfer's tx hash or payer"
                 )
-            self._credit_sources[str(tx_hash).lower()] = source
             self._write()
             return
         if not source.startswith(DEPOSIT_PREFIX):  # a top-up is not revenue

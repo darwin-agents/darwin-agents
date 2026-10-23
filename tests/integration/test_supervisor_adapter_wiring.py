@@ -712,3 +712,37 @@ def test_build_factories_cdp_excludes_web3_chains():
     ))
     # one wallet_factory — the CDP one; no crash from the web3 path.
     assert "wallet_factory" in result
+
+
+def test_production_boot_lists_every_missing_requirement(capsys):
+    """A production boot with demo config used to start with no auth (every
+    caller an operator), no KYC, fakes and SQLite. Now it refuses, naming
+    every gap at once; a fully configured one passes."""
+    from darwin_platform.__main__ import _assert_production_ready, build_parser
+    from darwin_platform.api import build_app
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        _assert_production_ready(parser.parse_args(["serve", "--env", "production"]))
+    err = capsys.readouterr().err
+    for needle in ("clerk", "cors-origin", "kyc-provider", "sanctions", "litellm-url",
+                   "virtual-keys", "transit", "postgres", "leader-election",
+                   "driver k8s", "wallet-provider cdp", "fee-address", "gas-tank",
+                   "e2b", "webpush"):
+        assert needle in err, needle
+
+    ready = parser.parse_args([
+        "serve", "--env", "production", "--network", "mainnet",
+        "--clerk-issuer", "https://clerk.example", "--cors-origin", "https://app.example",
+        "--kyc-provider", "persona", "--sanctions-provider", "chainalysis",
+        "--sanctions-api-key", "k", "--litellm-url", "http://litellm:4000",
+        "--litellm-virtual-keys", "--signing-vault-transit-key", "darwin",
+        "--db", "postgresql://u:p@db/darwin", "--leader-election", "--driver", "k8s",
+        "--wallet-provider", "cdp",
+        "--platform-fee-address", "0x52908400098527886E0F7030069857D2E4169EE7",
+        "--gas-tank-key", "0x" + "1" * 64, "--e2b-api-key", "e2b",
+        "--push-provider", "webpush", "--rpc-url", "https://mainnet.base.org",
+    ])
+    _assert_production_ready(ready)  # does not exit
+    with pytest.raises(RuntimeError, match="without auth"):
+        build_app(require_auth=True)

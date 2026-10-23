@@ -179,7 +179,12 @@ class FakeWallet:
         return {"tx_hash": f"0x{len(self.ledger):08x}", **tx}
 
     # -- revenue (the world pays the Darwin) -------------------------------
-    def credit(self, amount_usdc: float, source: str) -> None:
+    def credit(
+        self, amount_usdc: float, source: str, *, tx_hash: str | None = None,
+        payer: str | None = None,
+    ) -> None:
+        """Book an inbound transfer at once (no chain to wait for); the
+        tx/payer labels a real wallet needs are accepted and ignored."""
         amount = float(amount_usdc)
         if amount < 0:
             raise WalletError("negative credit")

@@ -43,6 +43,9 @@ class StrategyObservation(BaseModel):
     # instead of ``dispatch``) — and the eval harness exposes the SAME signal,
     # so the real candidate's failure-avoidance is what gets measured.
     recurring_failures: dict[str, int] = Field(default_factory=dict)
+    # Paid orders waiting on this Darwin (x402 storefront): ``{"id", "topic"}``
+    # each, oldest first. ``topic`` is buyer-supplied — untrusted input.
+    pending_orders: list[dict[str, str]] = Field(default_factory=list)
 
 
 ActionKind = Literal["dispatch", "capability_request", "wait"]

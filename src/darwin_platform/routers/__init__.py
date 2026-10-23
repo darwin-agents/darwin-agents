@@ -24,6 +24,7 @@ from .alerts import router as alerts_router
 from .signing import router as signing_router
 from .audit import router as audit_router
 from .ops import router as ops_router
+from .store import router as store_router
 
 ALL_ROUTERS = [
     darwins_router,
@@ -48,4 +49,5 @@ ALL_ROUTERS = [
     signing_router,
     audit_router,
     ops_router,
+    store_router,
 ]

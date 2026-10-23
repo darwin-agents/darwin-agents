@@ -450,3 +450,31 @@ async def test_billing_endpoints_owner_and_operator_scopes() -> None:
             assert r.status_code == 409
         finally:
             await sup.shutdown()
+
+
+async def test_production_harvest_only_to_a_settled_payout_address(tmp_path) -> None:
+    """In production a harvest may only go to the owner's payout address,
+    and only once it has stood for the cooldown (a hijacked session can't
+    redirect funds on the spot)."""
+    now = [time.time()]
+    sup = Supervisor(
+        heartbeat_seconds=0.0, persistence_path=str(tmp_path / "p.db"),
+        require_payout_address=True, clock=lambda: now[0],
+    )
+    good = "0x52908400098527886E0F7030069857D2E4169EE7"
+    try:
+        did = (await sup.spawn(opening_usdc=100.0, actor="owner")).darwin_id
+        with pytest.raises(SupervisorError, match="payout address before"):
+            await sup.harvest(did, amount_usdc=1.0, destination=good)
+        with pytest.raises(SupervisorError, match="checksummed"):
+            await sup.set_payout_address(did, address=good.lower())
+        await sup.set_payout_address(did, address=good, actor="owner")
+        with pytest.raises(SupervisorError, match="set recently"):
+            await sup.harvest(did, amount_usdc=1.0, destination=good)
+        now[0] += Supervisor.PAYOUT_COOLDOWN_SECONDS + 1
+        with pytest.raises(SupervisorError, match="only go to"):
+            await sup.harvest(did, amount_usdc=1.0, destination="0x" + "b" * 40)
+        out = await sup.harvest(did, amount_usdc=1.0, destination=good)
+        assert out["destination"] == good
+    finally:
+        await sup.shutdown()

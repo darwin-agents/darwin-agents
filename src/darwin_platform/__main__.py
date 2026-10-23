@@ -168,7 +168,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # by --network / --cdp-mainnet via _is_mainnet(), never guessed from an RPC
     # URL substring (which silently missed mainnet endpoints like 1rpc.io/base
     # or base.llamarpc.com). The testnet-config-pointed-at-mainnet-RPC mismatch
-    # is caught separately by _assert_mainnet_safe() at boot.
+    # is caught separately by _assert_production_ready() at boot.
     is_mainnet = _is_mainnet(args)
     base_network = "base-mainnet" if is_mainnet else "base-sepolia"
     if wallet_provider not in ("cdp", "local-vault", "watch") and enabled_count > 0:
@@ -1610,6 +1610,7 @@ _POD_SUBSTRATE = (
     ("browser_use_model", None, None),
     ("browser_use_max_cost_usdc", None, None),
     ("e2b_api_key", "E2B_API_KEY", None),
+    ("store_price_usdc", "DARWIN_STORE_PRICE_USDC", None),
 )
 
 
@@ -1645,6 +1646,39 @@ def _pod_substrate(args: argparse.Namespace) -> dict[str, Any]:
         if url:
             sub["vault_url"] = url
     return sub
+
+
+def _build_store(args: argparse.Namespace) -> dict[str, Any]:
+    """The x402 storefront: a price (every Darwin sells a report for it) and
+    a facilitator — x402.org on testnet, Coinbase's (CDP-key auth) on
+    mainnet. ``{}`` when no price is set."""
+    price = getattr(args, "store_price_usdc", None) or os.environ.get(
+        "DARWIN_STORE_PRICE_USDC"
+    )
+    if not price:
+        return {}
+    from .adapters.x402_facilitator import Facilitator
+
+    url = getattr(args, "x402_facilitator_url", None) or os.environ.get(
+        "DARWIN_X402_FACILITATOR_URL"
+    )
+    auth = None
+    if _is_mainnet(args) and not url:
+        from cdp.x402 import create_cdp_auth_headers
+
+        key_id = getattr(args, "cdp_api_key_id", None) or os.environ.get("CDP_API_KEY_ID")
+        secret = getattr(args, "cdp_api_key_secret", None) or os.environ.get(
+            "CDP_API_KEY_SECRET"
+        )
+        if not (key_id and secret):
+            print("the mainnet x402 facilitator needs CDP API keys", file=sys.stderr)
+            sys.exit(2)
+        url = "https://api.cdp.coinbase.com/platform/v2/x402"
+        auth = create_cdp_auth_headers(key_id, secret)
+    return {
+        "store_price_usdc": float(price),
+        "x402_facilitator": Facilitator(url or "https://x402.org/facilitator", auth_headers=auth),
+    }
 
 
 def _base_wallet_extras(
@@ -1686,25 +1720,94 @@ def _base_wallet_extras(
     }
 
 
-def _assert_mainnet_safe(args: argparse.Namespace) -> None:
-    """Refuse to boot against mainnet with demo-grade money-safety config.
+def _production_problems(args: argparse.Namespace) -> list[str]:
+    """Everything a production (or mainnet) boot still lacks; ``[]`` means
+    ready. One list, so an operator fixes the whole config in one pass."""
+    def val(dest: str, env: str | None = None):
+        return getattr(args, dest, None) or (os.environ.get(env) if env else None)
 
-    Mirrors the web3 shared-key mainnet refusal: moving REAL funds demands a
-    live sanctions screener (an offline denylist can't catch a freshly-listed
-    address), and the credit-minting faucet endpoint must be off. Testnet is
-    unaffected. The network is the explicit --network / --cdp-mainnet flag
-    (see :func:`_is_mainnet`), and we also refuse a network/RPC mismatch so a
-    testnet-configured boot can't be pointed at a mainnet RPC by accident."""
+    def on(dest: str, env: str) -> bool:
+        return bool(getattr(args, dest, False)) or (
+            os.environ.get(env, "").lower() in ("1", "true", "yes")
+        )
+
+    problems: list[str] = []
+    if _is_mainnet(args) and getattr(args, "env", "dev") not in ("production", "prod"):
+        problems.append("--network mainnet requires --env production")
+    if not (val("clerk_issuer", "CLERK_ISSUER") or val("clerk_jwks_url", "CLERK_JWKS_URL")):
+        problems.append(
+            "auth: set --clerk-issuer / --clerk-jwks-url (with no auth every "
+            "caller is a platform operator)"
+        )
+    if getattr(args, "auth_tokens", None):
+        problems.append("auth: --auth-tokens (static bearer tokens) is dev-only; use Clerk")
+    origins = list(getattr(args, "cors_origins", None) or [])
+    if not origins or "*" in origins:
+        problems.append("--cors-origin must name the dashboard origin(s), never '*'")
+    if getattr(args, "kyc_provider", "none") not in ("persona", "onfido"):
+        problems.append("--kyc-provider persona|onfido required")
+    if getattr(args, "sanctions_provider", "local") not in ("chainalysis", "trm") or not val(
+        "sanctions_api_key", "DARWIN_SANCTIONS_API_KEY"
+    ):
+        problems.append(
+            "live sanctions screening required: --sanctions-provider "
+            "chainalysis|trm + --sanctions-api-key (an offline list can't catch "
+            "a freshly-listed address)"
+        )
+    if not val("litellm_url", "DARWIN_LITELLM_URL"):
+        problems.append("--litellm-url required")
+    if not on("litellm_virtual_keys", "DARWIN_LITELLM_VIRTUAL_KEYS"):
+        problems.append("--litellm-virtual-keys required (per-Darwin spend isolation)")
+    if not val("signing_vault_transit_key"):
+        problems.append(
+            "--signing-vault-transit-key required (a per-process key cannot "
+            "verify a Darwin's DNA after a restart)"
+        )
+    if not str(getattr(args, "db", None) or "").startswith(("postgres://", "postgresql://")):
+        problems.append("--db must be a postgres:// DSN")
+    if not getattr(args, "leader_election", False):
+        problems.append("--leader-election required")
+    if getattr(args, "driver", "in-process") != "k8s":
+        problems.append("--driver k8s required (per-Darwin isolation)")
+    if getattr(args, "wallet_provider", None) != "cdp":
+        problems.append("--wallet-provider cdp required")
+    fee = val("platform_fee_address", "DARWIN_PLATFORM_FEE_ADDRESS")
+    if not fee or not _is_checksum_address(fee):
+        problems.append("--platform-fee-address must be a checksummed 0x address")
+    if not val("gas_tank_key", "DARWIN_GAS_TANK_KEY"):
+        problems.append("--gas-tank-key required (each Darwin's account pays gas)")
+    if not val("e2b_api_key", "E2B_API_KEY"):
+        problems.append("--e2b-api-key required (no in-process sandbox in production)")
+    if getattr(args, "fiat_provider", "none") not in ("none", "moonpay"):
+        problems.append("--fiat-provider must be none or moonpay (the platform never holds fiat)")
+    if getattr(args, "allow_manual_credit", False):
+        problems.append("--allow-manual-credit mints unbacked user credit")
+    if getattr(args, "enable_omnibus", False):
+        problems.append("--enable-omnibus is not a v1 money rail")
+    if getattr(args, "push_provider", "none") != "webpush":
+        problems.append("--push-provider webpush required (owners must hear about escalations)")
+    return problems
+
+
+def _is_checksum_address(addr: str) -> bool:
+    try:
+        from eth_utils import is_checksum_address
+    except ImportError:  # pragma: no cover - [web3] extra absent
+        return False
+    return is_checksum_address(addr)
+
+
+def _assert_production_ready(args: argparse.Namespace) -> None:
+    """Refuse a production (or mainnet) boot that is missing anything real
+    money and real users need — auth, KYC, sanctions, isolation, durable
+    state — printing every gap at once. Also refuses a testnet boot pointed
+    at a mainnet RPC (almost certainly a mistake)."""
     rpc = (
         getattr(args, "rpc_url", None)
         or os.environ.get("DARWIN_RPC_URL")
         or ""
     )
-    is_mainnet = _is_mainnet(args)
-    # Coherence: an explicit testnet boot pointed at a mainnet RPC is almost
-    # certainly a mistake — fail loud rather than sign real-money txns with
-    # testnet-grade safety config.
-    if not is_mainnet and "mainnet" in rpc.lower():
+    if not _is_mainnet(args) and "mainnet" in rpc.lower():
         print(
             f"refusing to boot: --network testnet but DARWIN_RPC_URL={rpc} "
             "looks like mainnet. Pass --network mainnet (with live compliance "
@@ -1712,25 +1815,13 @@ def _assert_mainnet_safe(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    if not is_mainnet:
+    if not _is_production(args):
         return
-    sanctions = getattr(args, "sanctions_provider", None) or "local"
-    if sanctions not in ("chainalysis", "trm"):
-        print(
-            f"refusing to boot on mainnet with sanctions-provider={sanctions!r}: "
-            "real-money transfers require a live screener (--sanctions-provider "
-            "chainalysis|trm + --sanctions-api-key). An offline denylist is not "
-            "acceptable for mainnet.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    if getattr(args, "allow_manual_credit", False):
-        print(
-            "refusing to boot on mainnet with --allow-manual-credit: minting "
-            "unbacked user credit against real funds is unsafe. In production, "
-            "credit only via verified Stripe/on-chain deposits.",
-            file=sys.stderr,
-        )
+    problems = _production_problems(args)
+    if problems:
+        print("refusing to boot in production:", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
         sys.exit(2)
 
 
@@ -1751,8 +1842,8 @@ def _serve(args: argparse.Namespace) -> int:
     from .runtime.supervisor import Supervisor
     from .security.auth import InMemoryTokenStore
 
-    # Mainnet money-safety gate (refuses demo-grade config against real funds).
-    _assert_mainnet_safe(args)
+    # Production / mainnet readiness gate (refuses demo-grade config).
+    _assert_production_ready(args)
 
     # -- OpenTelemetry trace export (doc 08) -----------------------------
     # Wire a real OTLP exporter so the spans the supervisor emits leave
@@ -1849,9 +1940,11 @@ def _serve(args: argparse.Namespace) -> int:
     namespace_provisioner = _build_namespace_provisioner(args, k8s_driver)
     if namespace_provisioner is not None:
         supervisor_kwargs["namespace_provisioner"] = namespace_provisioner
+    supervisor_kwargs.update(_build_store(args))
     sup = Supervisor(
         persistence_path=args.db if args.db else None,
         leader_election=leader_election,
+        require_payout_address=_is_production(args),
         sanctions_screener=sanctions,
         notification_sink=notification_sink,
         alert_sink=alert_sink,
@@ -1915,6 +2008,7 @@ def _serve(args: argparse.Namespace) -> int:
         # doc 01/05: in production, spawns must carry owner consent (kill-switch
         # terms + 18+). Captured always; enforced in production.
         require_spawn_consent=_is_production(args),
+        require_auth=_is_production(args),
         # None → build_app falls back to the DARWIN_ENABLE_DOCS env var.
         enable_docs=getattr(args, "enable_docs", None),
     )
@@ -2065,6 +2159,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--wallet-key", default=None, metavar="HEX",
         help="Hex private key for on-chain USDC signing. "
              "Env: DARWIN_WALLET_KEY. Never log this value.",
+    )
+    wallet_group.add_argument(
+        "--store-price-usdc", default=None, type=float, metavar="USDC",
+        help="Open the x402 storefront: every Darwin sells a research report "
+             "for this price, paid to its own wallet. Env: "
+             "DARWIN_STORE_PRICE_USDC",
+    )
+    wallet_group.add_argument(
+        "--x402-facilitator-url", default=None, metavar="URL",
+        help="x402 facilitator (verify/settle). Default: x402.org on testnet, "
+             "Coinbase's CDP facilitator on mainnet. Env: "
+             "DARWIN_X402_FACILITATOR_URL",
     )
     wallet_group.add_argument(
         "--gas-tank-key", default=None, metavar="HEX",

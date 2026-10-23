@@ -309,6 +309,8 @@ class DarwinRuntime:
         # can tell the LLM what it can actually transact with. getattr keeps
         # older Platform instances (no field) working — manifest stays None.
         ctx.money_capabilities = getattr(self._p, "money_capabilities", None)
+        # Paid orders the platform hands this Darwin (x402 storefront).
+        ctx.orders = getattr(self._p, "orders", None)
         # Path-C plumbing on the context so the orchestrator nodes can
         # submit + admit neuron proposals without reaching past the
         # context bundle into the runtime (doc 04 phase 3).

@@ -221,3 +221,18 @@ def test_gas_tank_tops_up_only_when_low() -> None:
     assert tx.to.hex().lower() == OWNER[2:].lower()
     assert tx.value == 2 * 10**14
     assert Account.recover_transaction(sent[0]) == tank.address
+
+
+def test_expected_payment_is_revenue_even_when_its_tx_arrives_first() -> None:
+    """An x402 settlement's tx hash only exists after settling; labelling the
+    expected payment by payer + amount beforehand classifies it as revenue
+    however the sync races."""
+    chain = _Chain(5.0)
+    w = _wallet(chain)
+    w.movements()
+    w.credit(1.25, "x402:order-9", payer=PAYER)
+    chain._land(PAYER, ME, 1.25)
+    chain._land(PAYER, ME, 3.0)  # an unrelated top-up stays a deposit
+    sources = [mv["credit"]["from"] for mv in w.movements() if "credit" in mv]
+    assert sources == ["x402:order-9", f"deposit:{PAYER}"]
+    _reconciles(w, 5.0)

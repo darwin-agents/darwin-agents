@@ -237,6 +237,13 @@ class HarvestRequest(BaseModel):
     destination: str = Field(min_length=1)
 
 
+class PayoutAddressRequest(BaseModel):
+    """Checksummed USDC address (e.g. an exchange deposit address) for this
+    Darwin's harvests and closing sweep."""
+
+    address: str = Field(min_length=42, max_length=42)
+
+
 class AmendmentRequest(BaseModel):
     """A platform amendment layer to ship via forced reproduction (doc 02).
 

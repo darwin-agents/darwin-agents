@@ -66,6 +66,9 @@ async def run(state, ctx):
         # back off a path that keeps failing — the same signal the eval
         # harness replays, so what evolves is measured against reality.
         recurring_failures=dict(state.recurring_failures),
+        pending_orders=(
+            ctx.orders.pending() if getattr(ctx, "orders", None) is not None else []
+        ),
     )
     action = ctx.strategy.propose(obs)
 

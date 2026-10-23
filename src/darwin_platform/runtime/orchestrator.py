@@ -337,6 +337,7 @@ class OrchestratorState:
         self._death_forensics: dict[str, Any] | None = None
         # "<ExcType>: <msg>" once the drive loop crashed; cleared by resume().
         self.crashed: str | None = None
+        self.orders = None  # OrderBook when the storefront is on
 
     def start(self) -> None:
         if self._task is not None:
@@ -1262,6 +1263,45 @@ def _build_control_app(state: OrchestratorState, token: str):
             raise HTTPException(status_code=409, detail=str(exc))
         return {"expected": True}
 
+    @app.post("/orders")
+    async def orders_add(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        from ..payments.orders import OrderBookFull
+
+        if state.orders is None:
+            raise HTTPException(status_code=409, detail="this Darwin sells nothing")
+        try:
+            state.orders.add(str(body["order_id"]), str(body["topic"]))
+        except OrderBookFull as exc:
+            return {"accepted": False, "reason": str(exc)}
+        return {"accepted": True}
+
+    @app.get("/orders/{order_id}")
+    async def orders_get(order_id: str, _: None = Depends(_require_token)) -> dict:
+        return {"order": state.orders.get(order_id) if state.orders else None}
+
+    @app.post("/orders/{order_id}/forget")
+    async def orders_forget(order_id: str, _: None = Depends(_require_token)) -> dict:
+        if state.orders is not None:
+            state.orders.forget(order_id)
+        return {"forgotten": True}
+
+    @app.post("/wallet/revenue")
+    async def wallet_revenue(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        from ..payments.orders import record_sale
+
+        record_sale(
+            state.stack.wallet, phase=str(body["phase"]),
+            amount_usdc=float(body["amount_usdc"]), source=str(body["source"]),
+            payer=str(body["payer"]),
+        )
+        return {"recorded": True}
+
     @app.post("/wallet/harvest")
     async def wallet_harvest(
         body: dict = Body(default_factory=dict),
@@ -1435,8 +1475,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.platform_key_path.exists() else None
         ),
     )
+    pod_args = _pod_args(args.substrate_path)
     money_capabilities = _apply_real_adapters(
-        stack, _pod_args(args.substrate_path), clock, darwin_id=args.darwin_id,
+        stack, pod_args, clock, darwin_id=args.darwin_id,
     )
 
     # Durable disk-backed audit sink (the prod ``AuditSink`` is "an append-only
@@ -1473,6 +1514,15 @@ def main(argv: list[str] | None = None) -> int:
     # Money-rails manifest so this pod's planner reasons over the rails it
     # actually has (wallet + x402), mirroring the in-process supervisor path.
     pod_platform.money_capabilities = money_capabilities
+    # x402 storefront: this Darwin's business is the paid reports it's sold.
+    orders = None
+    if getattr(pod_args, "store_price_usdc", None):
+        from darwin_dna.strategies import PaidReportStrategy
+
+        from ..payments.orders import OrderBook
+
+        orders = pod_platform.orders = OrderBook()
+        pod_platform.strategy = PaidReportStrategy()
     # Soma activation (doc 33): inject this Darwin's evolved soma strategy on
     # the platform BEFORE boot binds it, so a restarted/respawned pod RUNS its
     # promoted self-modifications (the soma tree is PVC-persisted). No-op +
@@ -1496,6 +1546,7 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_seconds=args.heartbeat_seconds,
         soma_merger=soma_merger,
     )
+    state.orders = orders
     app = _build_control_app(state, token)
 
     uvicorn.run(

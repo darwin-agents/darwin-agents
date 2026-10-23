@@ -339,6 +339,8 @@ class _Handle:
     task: asyncio.Task | None = None
     # "<ExcType>: <msg>" once the drive loop crashed; cleared by resume().
     crashed: str | None = None
+    # Paid orders (x402 storefront), when the storefront is on.
+    orders: Any = None
     # Tickets we have already routed to the genome's inbox so we don't
     # double-respond. Indexed by ticket id.
     handled_responses: set[str] = field(default_factory=set)
@@ -432,6 +434,14 @@ class Supervisor:
         pod_signer_factory: Callable[..., Any] | None = None,
         pod_settle_min_usdc: float = 1.0,
         pod_sync_seconds: float = 5.0,
+        # Production: harvests + sweeps may only go to the owner's payout
+        # address, and only once it has stood for ``PAYOUT_COOLDOWN_SECONDS``
+        # (a hijacked session can't redirect a Darwin's funds on the spot).
+        require_payout_address: bool = False,
+        # x402 storefront: every Darwin sells a paid report at this price,
+        # paid through this facilitator. Either None = no storefront.
+        store_price_usdc: float | None = None,
+        x402_facilitator: Any | None = None,
         # Tops up a pod Darwin's account with gas before it signs (CDP
         # server accounts are EOAs). ``.ensure(address)``; None = operator
         # keeps them funded.
@@ -789,6 +799,12 @@ class Supervisor:
         self._pod_settle_min_usdc = float(pod_settle_min_usdc)
         self._pod_sync_seconds = float(pod_sync_seconds)
         self._gas_tank = gas_tank
+        self._require_payout_address = bool(require_payout_address)
+        self._store_price_usdc = (
+            float(store_price_usdc)
+            if store_price_usdc and x402_facilitator is not None else None
+        )
+        self.x402_facilitator = x402_facilitator
         self._chain_networks: tuple[str, ...] = tuple(chain_networks or ("base",))
         self._vault_factory: Callable[[], Any] | None = vault_factory
         self._browser_factory: Callable[[Any], Any] | None = browser_factory
@@ -1526,6 +1542,15 @@ class Supervisor:
             # if one has been promoted to disk, so self-modification actually
             # changes behaviour. No-op without a soma root; fail-closed to the
             # founding strategy.
+            _orders = None
+            if self._store_price_usdc is not None:
+                # The storefront's paid reports are this Darwin's business.
+                from darwin_dna.strategies import PaidReportStrategy
+
+                from ..payments.orders import OrderBook
+
+                _orders = _platform.orders = OrderBook()
+                _platform.strategy = PaidReportStrategy()
             _overlay_strategy = self._load_soma_strategy(darwin_id_now)
             if _overlay_strategy is not None:
                 _platform.strategy = _overlay_strategy
@@ -1619,6 +1644,7 @@ class Supervisor:
                 # The spawning user owns it; a resume keeps the original owner.
                 owner_subject=_owner or actor,
                 escalation_auto=escalation_auto,
+                orders=_orders,
             )
             self._darwins[handle.darwin_id] = handle
             annotate_span_with_runtime(s, runtime)
@@ -2855,6 +2881,9 @@ class Supervisor:
             raise SupervisorError("harvest amount must be positive")
         if not destination:
             raise SupervisorError("harvest destination is required")
+        self._check_payout_destination(darwin_id, destination)
+        # Money leaving the platform goes only to a KYC'd, adult owner (doc 05).
+        self._kyc_gate(self.owner_of(darwin_id) or actor, action="harvest")
         if self._is_k8s(darwin_id):
             return await self._harvest_k8s(
                 darwin_id, amount_usdc=float(amount_usdc),
@@ -2907,6 +2936,129 @@ class Supervisor:
                 },
             )
             return {**wallet_row, "ledger": ledger_row}
+
+    # -- x402 storefront (each Darwin sells a paid report) -------------------
+    @property
+    def store_price_usdc(self) -> float | None:
+        return self._store_price_usdc
+
+    async def store_offer(self, darwin_id: str, *, url: str) -> dict[str, Any]:
+        """The x402 ``PaymentRequired`` for one report from this Darwin:
+        priced in USDC on Base, paid straight to the Darwin's own address."""
+        from ..adapters.x402_facilitator import payment_required
+
+        if self._store_price_usdc is None:
+            raise SupervisorError("this platform runs no storefront")
+        st = await self.status(darwin_id)
+        if not st.alive or st.killed or st.paused or st.quarantined or st.crashed:
+            raise SupervisorError("this Darwin is not taking orders")
+        if self._is_k8s(darwin_id):
+            snap = await self._k8s_control_get(darwin_id, "/snapshot")
+            pay_to = (snap.get("wallet") or {}).get("address")
+        else:
+            pay_to = self._get(darwin_id).stack.wallet.address()
+        return payment_required(
+            network="mainnet" if self._network == "base-mainnet" else "testnet",
+            pay_to=str(pay_to), price_usdc=self._store_price_usdc, url=url,
+            description="A ~600-word research report on your topic, written by this Darwin.",
+        )
+
+    async def store_place_order(self, darwin_id: str, order_id: str, topic: str) -> None:
+        from ..payments.orders import OrderBookFull
+
+        if self._is_k8s(darwin_id):
+            out = await self._k8s_control_post(
+                darwin_id, "/orders", {"order_id": order_id, "topic": topic},
+            )
+            if not out.get("accepted"):
+                raise OrderBookFull(str(out.get("reason")))
+            return
+        self._get(darwin_id).orders.add(order_id, topic)
+
+    async def store_order(self, darwin_id: str, order_id: str) -> dict[str, Any] | None:
+        if self._is_k8s(darwin_id):
+            return (await self._k8s_control_get(darwin_id, f"/orders/{order_id}")).get("order")
+        return self._get(darwin_id).orders.get(order_id)
+
+    async def store_forget(self, darwin_id: str, order_id: str) -> None:
+        if self._is_k8s(darwin_id):
+            await self._k8s_control_post(darwin_id, f"/orders/{order_id}/forget")
+        else:
+            self._get(darwin_id).orders.forget(order_id)
+
+    async def store_revenue(
+        self, darwin_id: str, *, phase: str, order_id: str, amount_usdc: float,
+        payer: str,
+    ) -> None:
+        """See :func:`~darwin_platform.payments.orders.record_sale`."""
+        from ..payments.orders import record_sale
+
+        source = f"x402:{order_id}"
+        if self._is_k8s(darwin_id):
+            await self._k8s_control_post(darwin_id, "/wallet/revenue", {
+                "phase": phase, "amount_usdc": amount_usdc, "source": source,
+                "payer": payer,
+            })
+        else:
+            record_sale(self._get(darwin_id).stack.wallet, phase=phase,
+                        amount_usdc=amount_usdc, source=source, payer=payer)
+        if phase == "book":
+            self._audit.record(
+                actor="platform.store", action="store_sale", darwin_id=darwin_id,
+                metadata={"order_id": order_id, "amount_usdc": amount_usdc, "payer": payer},
+            )
+
+    PAYOUT_COOLDOWN_SECONDS = 24 * 3600.0
+
+    async def set_payout_address(
+        self, darwin_id: str, *, address: str, actor: str = "anonymous",
+    ) -> dict[str, Any]:
+        """Set where this Darwin's harvests and closing sweep go. Must be a
+        checksummed address the sanctions screen allows; usable after the
+        cooldown (any change restarts it)."""
+        if not self._known(darwin_id):
+            raise UnknownDarwin(darwin_id)
+        if self._lifecycle is None:
+            raise SupervisorError("payout addresses need --db persistence")
+        try:
+            from eth_utils import is_checksum_address
+        except ImportError as exc:  # pragma: no cover - [web3] extra absent
+            raise SupervisorError("payout addresses need the [web3] extra") from exc
+        if not is_checksum_address(address):
+            raise SupervisorError("payout address must be a checksummed 0x address")
+        if self._sanctions is not None:
+            verdict = self._sanctions.check(address)
+            if not verdict.allowed:
+                raise SupervisorError(
+                    f"sanctions:{verdict.source} refused {address!r}: "
+                    f"{verdict.reason or 'screening refused'}"
+                )
+        row = self._lifecycle.get(darwin_id)
+        previous = row.payout_address if row is not None else None
+        now = float(self._clock())
+        self._lifecycle.set_payout_address(darwin_id, address=address, set_at=now)
+        self._audit.record(
+            actor=actor, action="set_payout_address", darwin_id=darwin_id,
+            metadata={"address": address, "previous": previous},
+        )
+        return {
+            "payout_address": address,
+            "usable_from": now + self.PAYOUT_COOLDOWN_SECONDS,
+        }
+
+    def _check_payout_destination(self, darwin_id: str, destination: str) -> None:
+        if not self._require_payout_address:
+            return
+        row = self._lifecycle.get(darwin_id) if self._lifecycle is not None else None
+        if row is None or not row.payout_address:
+            raise SupervisorError("set a payout address before harvesting")
+        if destination != row.payout_address:
+            raise SupervisorError("harvests may only go to the Darwin's payout address")
+        wait = (row.payout_address_set_at or 0.0) + self.PAYOUT_COOLDOWN_SECONDS - self._clock()
+        if wait > 0:
+            raise SupervisorError(
+                f"the payout address was set recently; usable in {wait / 3600:.1f}h"
+            )
 
     async def _harvest_k8s(
         self, did: str, *, amount_usdc: float, destination: str, actor: str,
