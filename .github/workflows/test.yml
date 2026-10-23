@@ -47,6 +47,32 @@ jobs:
         # pyproject; CI honours it.
         run: uv run pytest -m "not slow" --maxfail=3
 
+  e2e:
+    # The real `darwin-platform serve` process over real HTTP (tests/e2e):
+    # CLI wiring, lifespan, auth, restart/resume. Marked slow for the local
+    # fast loop, but cheap enough (~30 s) to gate every PR and image publish.
+    name: pytest -m e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install deps
+        run: uv sync --all-extras --dev
+
+      - name: Run e2e tier
+        run: uv run pytest -m e2e -v
+
   postgres:
     name: pytest (postgres persistence)
     runs-on: ubuntu-latest

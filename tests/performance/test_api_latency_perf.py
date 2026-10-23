@@ -3,7 +3,16 @@
 In-process via ``httpx.ASGITransport`` so the numbers are the platform's own
 overhead — routing, auth, supervisor reads, serialisation — not the
 network. The dashboard polls these routes continuously, so each has a p95
-budget; the list route also must not degrade sharply with fleet size."""
+budget, and a single Darwin's status must not degrade with fleet size.
+
+The fleet runs at a fast-but-real cadence for a moment to build history,
+then is paused so the measurement isn't queueing behind live drive loops.
+
+ponytail: in the in-process driver, events / anatomy / metrics cost
+O(audit-chain length) (the in-memory sink copies the chain per read, ~6 ms
+per 1k records). Production uses ``--driver k8s``, where the supervisor
+reads a bounded pod tail (``EVENTS_TAIL``); index the in-process reads if
+the dev path ever has to serve long-lived Darwins."""
 
 from __future__ import annotations
 
@@ -32,8 +41,9 @@ async def _p95(client, path: str, n: int = 60) -> float:
     return samples[int(0.95 * (len(samples) - 1))]
 
 
-async def _fleet(n: int):
-    sup = Supervisor(heartbeat_seconds=0.0)
+async def _fleet(n: int, *, warm_seconds: float = 0.5):
+    """``n`` Darwins with ~``warm_seconds`` of history each, then paused."""
+    sup = Supervisor(heartbeat_seconds=0.01)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(sup)), base_url="http://t")
     spawn_times, ids = [], []
     for _ in range(n):
@@ -41,6 +51,9 @@ async def _fleet(n: int):
         r = await client.post("/darwins", json={"opening_usdc": 60.0})
         spawn_times.append(time.perf_counter() - t)
         ids.append(r.json()["darwin_id"])
+    await asyncio.sleep(warm_seconds)
+    assert (await client.post("/platform/fleet/pause", json={"reason": "perf"})).status_code == 200
+    await asyncio.sleep(0.1)  # let every loop observe the pause
     return sup, client, ids, spawn_times
 
 
@@ -48,7 +61,6 @@ def test_read_routes_meet_their_p95_budgets(perf):
     async def scenario():
         sup, client, ids, spawn_times = await _fleet(FLEET)
         try:
-            await asyncio.sleep(0.2)  # let the drive loops write some history
             did = ids[0]
             budgets = {
                 "/healthz": 0.01,
