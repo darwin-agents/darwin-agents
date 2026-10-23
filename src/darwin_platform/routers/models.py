@@ -89,7 +89,8 @@ class KYCStartRequest(BaseModel):
 
 
 class KYCWebhookRequest(BaseModel):
-    subject: str = Field(min_length=1)
+    # Default: the caller. Only operators may name another subject.
+    subject: str | None = None
     inquiry_id: str = Field(min_length=1)
 
 

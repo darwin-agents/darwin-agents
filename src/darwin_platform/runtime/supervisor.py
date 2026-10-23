@@ -676,6 +676,10 @@ class Supervisor:
         # supervisor binds its audit recorder onto the ones that
         # accept one so each call shows up on the operator audit log.
         self._kyc_service: KYCService | None = kyc_service
+        # KYC verdicts + inquiry bindings survive a restart (else every
+        # verified user is UNKNOWN again and refused).
+        if kyc_service is not None and self._persistence is not None:
+            kyc_service.attach_store(self._persistence.kyc_store())
         self._omnibus_wallet: OmnibusWallet | None = omnibus_wallet
         # Persist omnibus state (user credits + lifetime totals + ledger)
         # so a restart doesn't reset every owner's credit to zero. Attach

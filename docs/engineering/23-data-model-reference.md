@@ -300,6 +300,10 @@ Owner-granted spend pre-approvals (doc 17 §"paying a human"): per-Darwin rules 
 
 Owner-curated registry of approved human freelancers / counterparties a Darwin may pay, with per-counterparty limits.
 
+#### `kyc_verdicts` / `kyc_inquiries`
+
+KYC state (v13), write-through from `KYCService`: `kyc_verdicts` holds each subject's latest verdict (JSON) so a restart doesn't reset verified users to UNKNOWN; `kyc_inquiries` binds every provider inquiry to the subject who started it, which is the authority on whose verdict an inquiry is (an approved inquiry can never unlock another account).
+
 #### `push_subscriptions`
 
 Web Push (PWA) subscriptions for owner escalation notifications: endpoint + keys per owner, used by the WebPush notification sink.

@@ -165,6 +165,17 @@ CREATE TABLE IF NOT EXISTS darwin_lifecycle (
     payout_address        TEXT,
     payout_address_set_at {real}
 );
+-- KYC verdicts + which subject started each inquiry (v13): survive restarts,
+-- and bind an inquiry's verdict to the one person who started it.
+CREATE TABLE IF NOT EXISTS kyc_verdicts (
+    subject     TEXT PRIMARY KEY,
+    verdict     TEXT NOT NULL,
+    updated_at  {real} NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kyc_inquiries (
+    inquiry_id  TEXT PRIMARY KEY,
+    subject     TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS darwin_lifecycle_alive_idx ON darwin_lifecycle(alive);
 
 CREATE TABLE IF NOT EXISTS darwin_audit_records (
@@ -778,6 +789,9 @@ class PersistenceStore:
         :class:`WebPushNotificationSink` is hydrated from this on supervisor
         boot and writes through on every register / revoke / 410-purge."""
         return PersistentPushSubscriptionStore(self._backend, clock=self._clock)
+
+    def kyc_store(self) -> "PersistentKYCStore":
+        return PersistentKYCStore(self._backend, clock=self._clock)
 
     def lifecycle_store(self) -> "PersistentLifecycleStore":
         return PersistentLifecycleStore(self._backend)
@@ -2193,6 +2207,45 @@ class PersistentWebhookEventStore:
                 "ON CONFLICT(event_id) DO NOTHING",
                 (str(event_id), str(provider), str(status), float(ts)),
             )
+
+
+class PersistentKYCStore:
+    """KYC verdicts (JSON) and inquiry → subject bindings. Write-through from
+    :class:`~darwin_platform.security.kyc.KYCService`."""
+
+    def __init__(self, backend: _Backend, *, clock=time.time) -> None:
+        self._backend = backend
+        self._clock = clock
+
+    def save_verdict(self, subject: str, verdict: dict) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO kyc_verdicts (subject, verdict, updated_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(subject) DO UPDATE SET "
+                "verdict = excluded.verdict, updated_at = excluded.updated_at",
+                (subject, json.dumps(verdict), float(self._clock())),
+            )
+
+    def bind_inquiry(self, inquiry_id: str, subject: str) -> None:
+        with self._backend:
+            self._backend.execute(
+                "INSERT INTO kyc_inquiries (inquiry_id, subject) VALUES (?, ?) "
+                "ON CONFLICT(inquiry_id) DO NOTHING",
+                (inquiry_id, subject),
+            )
+
+    def load(self) -> tuple[dict[str, dict], dict[str, str]]:
+        verdicts = {
+            r[0]: json.loads(r[1]) for r in self._backend.execute(
+                "SELECT subject, verdict FROM kyc_verdicts"
+            ).fetchall()
+        }
+        inquiries = {
+            r[0]: r[1] for r in self._backend.execute(
+                "SELECT inquiry_id, subject FROM kyc_inquiries"
+            ).fetchall()
+        }
+        return verdicts, inquiries
 
 
 _LIFECYCLE_COLS = (
