@@ -389,7 +389,7 @@ class _Handle:
     # spawn so a supervisor restart re-applies it, and held here so the
     # auto-decide hook + child-boot inheritance don't have to round-trip
     # through SQLite every tick.
-    escalation_auto: str | None = "approve"
+    escalation_auto: str | None = None
 
 
 # -- the supervisor --------------------------------------------------------
@@ -1286,7 +1286,7 @@ class Supervisor:
         self,
         *,
         opening_usdc: float = 100.0,
-        escalation_auto: str | None = "approve",
+        escalation_auto: str | None = None,
         parent_id: str | None = None,
         actor: str = "anonymous",
         _resume_id: str | None = None,

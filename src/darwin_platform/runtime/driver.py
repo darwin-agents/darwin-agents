@@ -37,7 +37,7 @@ class DarwinSpec:
 
     darwin_id: str
     opening_usdc: float
-    escalation_auto: str | None = "approve"
+    escalation_auto: str | None = None
     parent_id: str | None = None
     # Sealed DNA. The K8s driver writes these into a ConfigMap so the
     # orchestrator pod can reconstruct the same identity on boot (lossless
