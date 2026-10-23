@@ -43,11 +43,40 @@ DEFAULT_LEDGER_WINDOW = 10_000
 TREASURY = "treasury"
 FUNDING_EXTERNAL = "funding:external"
 EQUITY_REPRODUCTION = "equity:reproduction"
+EQUITY_OWNER_DRAW = "equity:owner_draw"
+# A credit whose source starts with this prefix is new capital (owner
+# deposit, on-ramp), not revenue: it funds the treasury and never counts as
+# fitness profit.
+DEPOSIT_PREFIX = "deposit:"
 
 
 class LedgerError(Exception):
     """The ledger is internally inconsistent or has drifted from the
     authoritative wallet beyond tolerance. The Darwin must halt (doc 05)."""
+
+
+def movement_leg(mv: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Split one wallet movement row ``{kind: payload}`` into its parts.
+    Every wallet emits single-key rows; anything else is a feed we cannot
+    account for, which must halt the Darwin like any other drift."""
+    if not isinstance(mv, dict) or len(mv) != 1:
+        raise LedgerError(f"malformed wallet movement: {mv!r}")
+    ((kind, payload),) = mv.items()
+    if not isinstance(payload, dict):
+        raise LedgerError(f"malformed wallet movement payload: {mv!r}")
+    return str(kind), payload
+
+
+def is_deposit(mv: dict[str, Any]) -> bool:
+    """True for a capital inflow (see :data:`DEPOSIT_PREFIX`)."""
+    kind, m = movement_leg(mv)
+    return kind == "credit" and str(m.get("from", "")).startswith(DEPOSIT_PREFIX)
+
+
+def treasury_delta(mv: dict[str, Any]) -> float:
+    """Signed effect of one movement on the treasury (inflow positive)."""
+    debit, credit, amount, _cat, _cp = Ledger._classify(mv)
+    return amount if debit == TREASURY else -amount
 
 
 class LedgerEntry(BaseModel):
@@ -143,35 +172,40 @@ class Ledger:
     def _classify(mv: dict[str, Any]) -> tuple[str, str, float, str, str | None]:
         """Map one normalized wallet movement to (debit, credit, amount,
         category, counterparty)."""
-        if "debit" in mv:
-            d = mv["debit"]
-            amount = float(d["amount_usdc"])
-            if d.get("kind") == "payment":
+        kind, m = movement_leg(mv)
+        amount = float(m["amount_usdc"])
+        if kind == "debit":
+            if m.get("kind") == "payment":
                 return ("expense:payment", TREASURY, amount, "payment",
-                        d.get("to"))
-            memo = str(d.get("memo", "metered"))
+                        m.get("to"))
+            memo = str(m.get("memo", "metered"))
             cat = memo.split(":", 1)[0] or "metered"
-            return (f"expense:{cat}", TREASURY, amount, cat, d.get("to"))
-        if "credit" in mv:
-            c = mv["credit"]
-            src = str(c.get("from", "unknown"))
-            return (TREASURY, f"revenue:{src}", float(c["amount_usdc"]),
-                    f"revenue:{src}", src)
-        if "reproduction_transfer" in mv:
-            r = mv["reproduction_transfer"]
-            return (EQUITY_REPRODUCTION, TREASURY, float(r["amount_usdc"]),
-                    "reproduction", None)
-        raise LedgerError(f"unrecognised wallet movement: {sorted(mv)}")
+            return (f"expense:{cat}", TREASURY, amount, cat, m.get("to"))
+        if kind == "credit":
+            src = str(m.get("from", "unknown"))
+            if src.startswith(DEPOSIT_PREFIX):
+                return (TREASURY, FUNDING_EXTERNAL, amount, "deposit", src)
+            return (TREASURY, f"revenue:{src}", amount, f"revenue:{src}", src)
+        if kind == "reproduction_transfer":
+            return (EQUITY_REPRODUCTION, TREASURY, amount, "reproduction", None)
+        if kind == "harvest":
+            if m.get("kind") == "platform_fee":
+                return ("expense:platform_fee", TREASURY, amount,
+                        "platform_fee", m.get("destination"))
+            return (EQUITY_OWNER_DRAW, TREASURY, amount, "owner_draw",
+                    m.get("destination"))
+        # Every other row a wallet emits (sweep_out, fiat_payout_transfer, …)
+        # is a platform-driven outflow. Booking an unknown kind as an outflow
+        # is the safe failure: if it was really an inflow, the sign is wrong,
+        # reconciliation drifts, and the Darwin halts instead of mis-counting.
+        return (f"equity:{kind}", TREASURY, amount, kind, m.get("destination"))
 
     def journal_new(self, movements: list[dict[str, Any]], *, now: float) -> int:
         """Journal movements not yet seen. Returns how many were posted."""
         new = movements[self._cursor :]
         for mv in new:
             debit, credit, amount, cat, cp = self._classify(mv)
-            ts = float(
-                mv.get("debit", mv.get("credit", mv.get("reproduction_transfer", {})))
-                .get("ts", now)
-            )
+            ts = float(movement_leg(mv)[1].get("ts", now))
             self._post(debit=debit, credit=credit, amount=amount,
                        category=cat, ts=ts, counterparty=cp)
         self._cursor = len(movements)

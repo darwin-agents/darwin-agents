@@ -43,11 +43,16 @@ class BillingPolicy:
     # 10% markup → ~9.09% of each metered debit is platform revenue.
     infrastructure_markup_rate: float = 0.10
 
-    def harvest_fee(self, gross_usdc: float) -> float:
+    def harvest_fee(
+        self, gross_usdc: float, profit_usdc: float | None = None,
+    ) -> float:
         """Fee on a harvest of ``gross_usdc``. Returns a non-negative float
-        capped at ``gross_usdc`` (no negative net for the owner)."""
+        capped at ``gross_usdc`` (no negative net for the owner). With
+        ``profit_usdc`` the fee applies only to the profit part of the draw:
+        an owner withdrawing their own principal pays nothing on it."""
         gross = max(0.0, float(gross_usdc))
-        return min(gross, gross * self.harvest_fee_rate)
+        feeable = gross if profit_usdc is None else min(gross, max(0.0, float(profit_usdc)))
+        return min(gross, feeable * self.harvest_fee_rate)
 
     def revenue_from_metered(self, amount_usdc: float) -> tuple[float, float]:
         """Split one metered Darwin-side debit into (provider_cost,

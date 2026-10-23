@@ -40,6 +40,7 @@ from typing import Any, Callable, Mapping
 
 from darwin_dna.evolution import DarwinRuntime, boot
 from darwin_dna.hyperparameters import DEFAULT_HYPERPARAMETERS
+from darwin_dna.machinery.ledger import DEPOSIT_PREFIX
 from darwin_fakes import FakeStack, make_child_platform
 from darwin_fakes.fake_platform import SigningService
 
@@ -2726,7 +2727,12 @@ class Supervisor:
             h = self._get(darwin_id)
             annotate_span_with_runtime(s, h.runtime)
             policy = self._billing.policy
-            fee = policy.harvest_fee(float(amount_usdc))
+            st = h.runtime.state
+            fee = policy.harvest_fee(
+                float(amount_usdc),
+                profit_usdc=float(h.stack.wallet.balance_usdc())
+                - float(st.profit_baseline_usdc),
+            )
             net = float(amount_usdc) - fee
             try:
                 wallet_row = h.stack.wallet.harvest_to_owner(
@@ -2740,16 +2746,9 @@ class Supervisor:
                 fee_usdc=fee,
                 destination=destination,
             )
-            # Re-baseline ``profit_baseline_usdc`` so a withdrawn profit is
-            # not re-counted as the next generation's profit. (Reproduction
-            # also rebaselines on its own path; harvest takes the same care
-            # so the two stories agree.)
-            try:
-                h.runtime.state.profit_baseline_usdc = float(
-                    h.stack.wallet.balance_usdc()
-                )
-            except Exception:
-                pass
+            # No re-baseline here: the genome's perceive sees the harvest rows
+            # and lowers profit_baseline_usdc itself (only when the draw dipped
+            # into principal), so pods and in-process Darwins agree.
             # The metered sweep would also see the harvest rows if we let it;
             # bump the cursor so the harvest fee is not double-counted as
             # infrastructure revenue.
@@ -6008,7 +6007,7 @@ class Supervisor:
             try:
                 h.stack.wallet.credit(
                     receipt.amount_usdc,
-                    f"fiat:{receipt.provider}:{receipt.provider_tx_id}",
+                    f"{DEPOSIT_PREFIX}fiat:{receipt.provider}:{receipt.provider_tx_id}",
                 )
             except Exception as exc:
                 raise SupervisorError(

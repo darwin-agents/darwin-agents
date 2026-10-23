@@ -10,7 +10,7 @@ and resolving escalations deterministically are both that kind of check.
 
 from __future__ import annotations
 
-from ...machinery.ledger import LedgerError
+from ...machinery.ledger import LedgerError, is_deposit, movement_leg, treasury_delta
 
 
 def _reconcile_ledger(state, ctx) -> bool:
@@ -28,22 +28,17 @@ def _reconcile_ledger(state, ctx) -> bool:
     now = float(ctx.clock())
     bal = float(wallet.balance_usdc())
 
-    if not ledger.seeded:
-        # Derive the opening so a mid-life boot reconciles by construction;
-        # divergence is then anything that moves the wallet without a
-        # corresponding movement in the feed.
-        net = 0.0
-        for mv in movs:
-            if "credit" in mv:
-                net += float(mv["credit"]["amount_usdc"])
-            elif "debit" in mv:
-                net -= float(mv["debit"]["amount_usdc"])
-            elif "reproduction_transfer" in mv:
-                net -= float(mv["reproduction_transfer"]["amount_usdc"])
-        ledger.seed_opening(bal - net, ts=now)
-
-    ledger.journal_new(movs, now=now)
     try:
+        if not ledger.seeded:
+            # Derive the opening so a mid-life boot reconciles by
+            # construction; divergence is then anything that moves the wallet
+            # without a corresponding movement in the feed.
+            net = sum(treasury_delta(mv) for mv in movs)
+            ledger.seed_opening(bal - net, ts=now)
+        # Inside the try: a feed the ledger cannot account for is drift too,
+        # and must end in the graceful death sequence — never an exception
+        # that kills the drive loop while the Darwin still reports alive.
+        ledger.journal_new(movs, now=now)
         drift = ledger.reconcile(
             bal, ctx.hp.ledger_reconciliation_tolerance_usdc
         )
@@ -59,7 +54,27 @@ def _reconcile_ledger(state, ctx) -> bool:
         {"drift_usdc": round(drift, 9),
          "treasury_usdc": ledger.treasury_balance()},
     )
+    _rebase_profit(state, movs, bal)
     return False
+
+
+def _rebase_profit(state, movs, bal: float) -> None:
+    """Capital moving in or out is not profit (fitness, reproduction, harvest
+    fee): a deposit raises the baseline by its amount; an owner draw that
+    dips into principal lowers the baseline to what is left. A draw of profit
+    alone leaves the baseline, so profit drops by exactly the amount drawn.
+    Own cursor (checkpointed with the state) so a mid-life reboot, which
+    re-journals the whole feed, never re-applies a movement twice."""
+    drew = False
+    for mv in movs[state.funding_cursor:]:
+        kind, m = movement_leg(mv)
+        if is_deposit(mv):
+            state.profit_baseline_usdc += float(m["amount_usdc"])
+        elif kind == "harvest":
+            drew = True
+    if drew:
+        state.profit_baseline_usdc = min(state.profit_baseline_usdc, bal)
+    state.funding_cursor = len(movs)
 
 
 def _resolve_escalations(state, ctx) -> None:

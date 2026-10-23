@@ -13,6 +13,7 @@ from collections import deque
 
 from darwin_dna.constitution import OwnerSoftCaps, PreApprovalRule
 from darwin_dna.hyperparameters import HARD_CAPS
+from darwin_dna.machinery.ledger import DEPOSIT_PREFIX
 
 
 class WalletError(Exception):
@@ -183,7 +184,8 @@ class FakeWallet:
         if amount < 0:
             raise WalletError("negative credit")
         self._balance += amount
-        self._last_revenue_ts = float(self._clock())
+        if not source.startswith(DEPOSIT_PREFIX):  # a top-up is not revenue
+            self._last_revenue_ts = float(self._clock())
         self.ledger.append(
             {"credit": {"from": source, "amount_usdc": amount,
                         "ts": float(self._clock())}}
