@@ -399,3 +399,22 @@ async def test_events_records_proxies_orchestrator_audit_log():
     records = await driver.events_records("d-1")
     assert ("/events" in [p for (p, _b) in control.calls])
     assert records and records[0]["darwin_id"] == "d-1"
+
+
+def test_incluster_token_is_actually_sent():
+    """kubernetes-client 36 loads the in-cluster token where it never sends
+    it; requests went out anonymous and every spawn got a 403."""
+    client = pytest.importorskip("kubernetes.client")
+    from darwin_platform.k8s.driver import _send_incluster_token
+
+    saved = client.Configuration.get_default_copy()
+    try:
+        cfg = client.Configuration()
+        cfg.api_key["authorization"] = "bearer tok-1"
+        cfg.refresh_api_key_hook = lambda c: c.api_key.update(authorization="bearer tok-2")
+        client.Configuration.set_default(cfg)
+        _send_incluster_token(client)
+        live = client.Configuration.get_default_copy()
+        assert live.auth_settings()["BearerToken"]["value"] == "bearer tok-2"
+    finally:
+        client.Configuration.set_default(saved)
