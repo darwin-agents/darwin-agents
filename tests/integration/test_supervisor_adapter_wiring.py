@@ -477,12 +477,14 @@ def test_cli_parse_serve_real_flags():
 # 7b. --wallet-provider default + mainnet safety
 # ---------------------------------------------------------------------------
 
-def test_cli_default_wallet_provider_is_cdp():
-    """Step 2 default change: 'cdp' is the production-safe default. The
-    shared-key 'web3' path stays available as an opt-in escape hatch."""
-    from darwin_platform.__main__ import build_parser
+def test_cli_default_wallet_provider_is_unset():
+    """A bare ``serve`` boots on the in-memory FakeWallet (dev / CI soak);
+    production must pick a provider explicitly. Defaulting to 'cdp' made a
+    keyless boot exit 2, which broke soak-smoke and ``make serve``."""
+    from darwin_platform.__main__ import _build_real_factories, build_parser
     args = build_parser().parse_args(["serve"])
-    assert args.wallet_provider == "cdp"
+    assert args.wallet_provider is None
+    assert "wallet_factory" not in _build_real_factories(args)
 
 
 def test_cli_soma_root_flag_opt_in():
