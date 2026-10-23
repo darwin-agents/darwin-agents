@@ -203,6 +203,17 @@ def test_moonpay_protocol_satisfied():
     assert isinstance(MoonPayFiatRamp(api_key="pk_x"), FiatRamp)
 
 
+def test_moonpay_buy_delivers_straight_to_the_darwins_wallet():
+    """Bought USDC lands at the Darwin's own address (its chain watcher books
+    it); the omnibus is only the fallback when no address is known."""
+    r = MoonPayFiatRamp(api_key="pk_test", secret_key="sk_test",
+                        omnibus_wallet_address="0xOMNI")
+    q = r.deposit_quote(amount_usd=50.0, payment_method="credit_debit_card",
+                        destination_darwin_id="d-1",
+                        destination_address="0x" + "a" * 40)
+    assert _qs(q.widget_url)["walletAddress"] == "0x" + "a" * 40
+
+
 def test_moonpay_requires_api_key():
     with pytest.raises(ValueError):
         MoonPayFiatRamp(api_key="")
@@ -223,7 +234,7 @@ def test_moonpay_deposit_quote_builds_signed_widget_url():
     assert params["apiKey"] == "pk_test"
     assert params["baseCurrencyCode"] == "usd"
     assert params["baseCurrencyAmount"] == "100.0"
-    assert params["currencyCode"] == "usdc"
+    assert params["currencyCode"] == "usdc_base"  # Base USDC, not Ethereum L1
     assert params["walletAddress"] == "0xOMNI"
     # Routing fields the webhook reads back:
     assert params["externalTransactionId"] == q.quote_id
@@ -248,7 +259,7 @@ def test_moonpay_quote_rate_from_buy_quote_endpoint():
     assert q.fee_usd == 5.0  # feeAmount + networkFeeAmount
     # Hit the real v3 buy_quote endpoint with camelCase params.
     call = http.calls[0]
-    assert call["url"].endswith("/v3/currencies/usdc/buy_quote")
+    assert call["url"].endswith("/v3/currencies/usdc_base/buy_quote")
     assert call["kwargs"]["params"]["baseCurrencyAmount"] == 100.0
 
 
@@ -367,7 +378,7 @@ def test_moonpay_withdraw_builds_signed_sell_widget_url():
     assert rec.fee_usd == pytest.approx(4.0)
     assert rec.widget_url.startswith("https://sell.moonpay.com?")
     params = _qs(rec.widget_url)
-    assert params["baseCurrencyCode"] == "usdc"   # selling USDC
+    assert params["baseCurrencyCode"] == "usdc_base"   # selling Base USDC
     assert params["quoteCurrencyCode"] == "usd"
     assert params["externalCustomerId"] == "bank-x"
     assert "signature" in params

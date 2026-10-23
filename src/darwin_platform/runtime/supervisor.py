@@ -4886,6 +4886,16 @@ class Supervisor:
             open_escalations=0,
         )
 
+    def _wallet_address(self, darwin_id: str) -> str | None:
+        """The Darwin's own on-chain address (where money for it is sent)."""
+        if self._is_k8s(darwin_id):
+            return (
+                self._pod_signer(darwin_id).address()
+                if self._pod_signer_factory is not None else None
+            )
+        address = getattr(self._get(darwin_id).stack.wallet, "address", None)
+        return address() if callable(address) else None
+
     def owner_of(self, darwin_id: str) -> str | None:
         """The Darwin's owner subject, or None if unknown/anonymous."""
         h = self._darwins.get(darwin_id)
@@ -6357,15 +6367,16 @@ class Supervisor:
         if self._fiat_ramp is None:
             raise SupervisorError("fiat ramp is not configured")
         self._kyc_gate(actor, action="fiat_deposit_quote")
-        if (
-            destination_darwin_id is not None
-            and destination_darwin_id not in self._darwins
-        ):
-            raise UnknownDarwin(destination_darwin_id)
+        address = None
+        if destination_darwin_id is not None:
+            if not self._known(destination_darwin_id):
+                raise UnknownDarwin(destination_darwin_id)
+            address = self._wallet_address(destination_darwin_id)
         try:
             quote = self._fiat_ramp.deposit_quote(
                 amount_usd=amount_usd, payment_method=payment_method,
                 destination_darwin_id=destination_darwin_id,
+                destination_address=address,
             )
         except FiatRampError as exc:
             raise SupervisorError(str(exc)) from exc
@@ -6482,8 +6493,10 @@ class Supervisor:
         already moved the user's USD; the platform now reflects that USDC
         inside the Darwin's accounting) and audit it. Shared by the
         synchronous confirm path and the webhook-driven confirm path."""
-        if destination_darwin_id is not None:
-            h = self._darwins[destination_darwin_id]
+        h = self._darwins.get(destination_darwin_id) if destination_darwin_id else None
+        # A chain-backed (or pod) wallet books the USDC itself when it lands
+        # on-chain; only a chainless wallet (dev fake) is credited here.
+        if h is not None and not getattr(h.stack.wallet, "expects_chain_payments", False):
             try:
                 h.stack.wallet.credit(
                     receipt.amount_usdc,
