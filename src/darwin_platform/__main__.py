@@ -90,14 +90,37 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     """
     factories: dict = {}
 
-    # -- wallet provider: cdp (default), local-vault, or web3 --------------
-    # CDP is a complete wallet — when selected it provides wallet_factory
-    # and the multi-chain web3 block below is skipped. The argparse layer
-    # defaults to "cdp"; the "web3" fallback here is for internal callers
+    # -- wallet provider: watch, cdp, local-vault, or web3 -----------------
+    # watch / CDP are complete wallets — when selected they provide
+    # wallet_factory and the multi-chain web3 block below is skipped. The
+    # argparse layer defaults to unset; the "web3" fallback here is for internal callers
     # (orchestrator pod, tests) that build a Namespace by hand and keep the
     # legacy shared-key behaviour. Don't change this fallback without also
     # giving the orchestrator a --wallet-provider flag to forward.
     wallet_provider = getattr(args, "wallet_provider", "web3")
+    if wallet_provider == "watch":
+        address = getattr(args, "wallet_address", None) or os.environ.get(
+            "DARWIN_WALLET_ADDRESS"
+        )
+        if not address:
+            print(
+                "--wallet-provider watch requires --wallet-address "
+                "(or DARWIN_WALLET_ADDRESS)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        watch_network = "base-mainnet" if _is_mainnet(args) else "base-sepolia"
+
+        def _watch_wallet_factory(darwin_id, clock, vault, *, _addr=address):
+            from .adapters.wallet import RealWallet, WatchOnlyChain
+
+            extras = _base_wallet_extras(args, darwin_id, _addr)
+            return RealWallet(
+                chain=WatchOnlyChain(extras["reader"]), clock=clock,
+                network=watch_network, **extras,
+            )
+
+        factories["wallet_factory"] = _watch_wallet_factory
     if wallet_provider == "cdp":
         cdp_id = getattr(args, "cdp_api_key_id", None) or os.environ.get(
             "CDP_API_KEY_ID"
@@ -155,6 +178,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 # Gate the ledger credit on an on-chain confirmation when
                 # moving real funds (doc 30). Testnet stays fire-and-forget.
                 wait_for_confirmation=(_net == "base-mainnet"),
+                **_base_wallet_extras(args, darwin_id, chain.address()),
             )
 
         factories["wallet_factory"] = _cdp_wallet_factory
@@ -189,7 +213,7 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
     # is caught separately by _assert_mainnet_safe() at boot.
     is_mainnet = _is_mainnet(args)
     base_network = "base-mainnet" if is_mainnet else "base-sepolia"
-    if wallet_provider not in ("cdp", "local-vault") and enabled_count > 0:
+    if wallet_provider not in ("cdp", "local-vault", "watch") and enabled_count > 0:
         # Mainnet refusal: a single fleet-shared key is a testnet-only
         # shortcut. On mainnet the operator must opt into cdp (TEE-held key)
         # or local-vault (per-Darwin minted key sealed in the per-Darwin vault).
@@ -280,10 +304,17 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 )
             else:
                 chain = next(iter(clients.values()))
+            # The chain-derived feed tracks Base USDC; multi-chain wallets
+            # keep the legacy local feed (Solana/Stellar are not v1 rails).
+            extras = (
+                _base_wallet_extras(args, darwin_id, chain.address())
+                if len(clients) == 1 and _have_base else {}
+            )
             return RealWallet(
                 chain=chain, clock=clock,
                 network=_base_network,
                 wait_for_confirmation=_is_mainnet,
+                **extras,
             )
         factories["wallet_factory"] = _wallet_factory
 
@@ -396,10 +427,15 @@ def _build_real_factories(args: argparse.Namespace) -> dict:
                 )
             else:
                 chain_client = next(iter(clients.values()))
+            extras = (
+                _base_wallet_extras(args, darwin_id, chain_client.address())
+                if _chains == ("base",) else {}
+            )
             return RealWallet(
                 chain=chain_client, clock=clock,
                 network=_base_network,
                 wait_for_confirmation=_is_mainnet,
+                **extras,
             )
 
         factories["wallet_factory"] = _local_vault_wallet_factory
@@ -1584,6 +1620,45 @@ def _build_k8s_driver(args: argparse.Namespace):
     )
 
 
+def _base_wallet_extras(
+    args: argparse.Namespace, darwin_id: str, address: str,
+) -> dict[str, Any]:
+    """RealWallet kwargs for a Base-USDC wallet: a same-block reader (so
+    inbound revenue / deposits are booked instead of reading as drift), the
+    platform fee address metering settles to, and the per-Darwin durable
+    feed + accrual log."""
+    from web3 import Web3
+
+    from .adapters.web3_chain import USDC_BASE_MAINNET, USDC_BASE_SEPOLIA, UsdcReader
+
+    mainnet = _is_mainnet(args)
+    # ponytail: public Base RPCs are rate-limited; set --rpc-url for real load.
+    rpc = (
+        getattr(args, "rpc_url", None) or os.environ.get("DARWIN_RPC_URL")
+        or ("https://mainnet.base.org" if mainnet else "https://sepolia.base.org")
+    )
+    usdc = getattr(args, "usdc_contract", None) or (
+        USDC_BASE_MAINNET if mainnet else USDC_BASE_SEPOLIA
+    )
+    state_dir = getattr(args, "wallet_state_dir", None) or os.environ.get(
+        "DARWIN_WALLET_STATE_DIR"
+    )
+    if state_dir:
+        Path(state_dir).mkdir(parents=True, exist_ok=True)
+    return {
+        "reader": UsdcReader(
+            Web3(Web3.HTTPProvider(rpc)),
+            usdc_contract=Web3.to_checksum_address(usdc),
+            address=Web3.to_checksum_address(address),
+        ),
+        "fee_address": getattr(args, "platform_fee_address", None)
+        or os.environ.get("DARWIN_PLATFORM_FEE_ADDRESS"),
+        "state_path": (
+            Path(state_dir) / f"{darwin_id}.wallet.jsonl" if state_dir else None
+        ),
+    }
+
+
 def _assert_mainnet_safe(args: argparse.Namespace) -> None:
     """Refuse to boot against mainnet with demo-grade money-safety config.
 
@@ -1949,6 +2024,23 @@ def build_parser() -> argparse.ArgumentParser:
              "Env: DARWIN_WALLET_KEY. Never log this value.",
     )
     wallet_group.add_argument(
+        "--wallet-address", default=None, metavar="ADDR",
+        help="Address a --wallet-provider watch wallet reads (no key; the "
+             "platform signs). Env: DARWIN_WALLET_ADDRESS",
+    )
+    wallet_group.add_argument(
+        "--platform-fee-address", default=None, metavar="ADDR",
+        help="Platform USDC address that accrued metering + harvest fees "
+             "settle to (one transfer per maintenance pass). Env: "
+             "DARWIN_PLATFORM_FEE_ADDRESS",
+    )
+    wallet_group.add_argument(
+        "--wallet-state-dir", default=None, metavar="DIR",
+        help="Directory for each real wallet's durable feed + accrual log "
+             "(<darwin_id>.wallet.jsonl). Unset = in memory (lost on "
+             "restart). Env: DARWIN_WALLET_STATE_DIR",
+    )
+    wallet_group.add_argument(
         "--usdc-contract", default=None, metavar="ADDR",
         help="USDC ERC-20 contract address. Defaults to Base Sepolia or "
              "mainnet constant based on the RPC URL.",
@@ -1979,7 +2071,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wallet_group.add_argument(
         "--wallet-provider", default=None,
-        choices=["web3", "cdp", "local-vault"],
+        choices=["web3", "cdp", "local-vault", "watch"],
         help="Wallet backend (default: none = in-memory FakeWallet, dev "
              "only; production must pick one). 'cdp' (Coinbase CDP, "
              "non-custodial, per-Darwin TEE-held key — production default); "

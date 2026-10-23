@@ -83,6 +83,25 @@ class ConfirmingChainClient(Protocol):
         ...
 
 
+class WatchOnlyChain:
+    """A :class:`ChainClient` that can read but never sign. Pods get this:
+    the Darwin's balance + movements come from the chain, while every
+    outbound transfer is executed (and screened) by the supervisor, so a
+    compromised pod cannot move funds."""
+
+    def __init__(self, reader) -> None:
+        self._reader = reader
+
+    def address(self) -> str:
+        return self._reader.address()
+
+    def balance_usdc(self) -> float:
+        return self._reader.balance_at(self._reader.head())
+
+    def transfer(self, *, to: str, amount_usdc: float, memo: str) -> dict:
+        raise WalletError("watch-only wallet: transfers are executed by the platform")
+
+
 # Known networks the adapter understands. Mainnet is gated by an explicit
 # constructor argument so a misconfigured factory cannot accidentally use
 # real-money credentials in a test path.

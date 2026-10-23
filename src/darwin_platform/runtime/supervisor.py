@@ -382,6 +382,7 @@ class _Handle:
     # observation feeds the per-interval DELTA (consumption this period), not a
     # monotonic running total. resource_runs is the period label.
     last_resource_maintenance_ts: float = 0.0
+    last_settlement_ts: float = 0.0
     resource_runs: int = 0
     resource_last_cumulative: dict[str, float] = field(default_factory=dict)
     # Owner-set escalation policy (doc 09). Persisted on the lifecycle row at
@@ -5029,6 +5030,30 @@ class Supervisor:
                         darwin_id=handle.darwin_id,
                         metadata={"reason": str(exc)[:200]},
                     )
+
+        # Per-Darwin: pay accrued metering + fees to the platform fee
+        # address in one transfer (RealWallet only; FakeWallet has no
+        # settle). ponytail: the chain call blocks this loop; move it off
+        # the event loop if settlements get frequent or slow.
+        settle = getattr(handle.stack.wallet, "settle", None)
+        if callable(settle) and now - handle.last_settlement_ts >= interval:
+            handle.last_settlement_ts = now
+            try:
+                tx = settle()
+                if tx:
+                    self._audit.record(
+                        actor="platform.maintenance", action="settlement",
+                        darwin_id=handle.darwin_id, metadata=tx,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self._audit.record(
+                    actor="platform.maintenance", action="settlement_failed",
+                    darwin_id=handle.darwin_id,
+                    metadata={"reason": str(exc)[:200]},
+                )
+                self._fleet_alert("settlement_failed", {
+                    "darwin_id": handle.darwin_id, "reason": str(exc)[:200],
+                })
 
         # Per-Darwin: resource-consumption anomaly profiling (doc 22). Same
         # cadence + baseline-then-fire shape as drift.

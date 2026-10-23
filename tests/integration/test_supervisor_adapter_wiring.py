@@ -487,6 +487,29 @@ def test_cli_default_wallet_provider_is_unset():
     assert "wallet_factory" not in _build_real_factories(args)
 
 
+def test_watch_provider_reads_but_never_signs(tmp_path):
+    """Pods get a watch wallet: balance + feed from the chain, every outbound
+    transfer refused (the supervisor signs). Needs only an address."""
+    pytest.importorskip("web3")
+    from darwin_platform.__main__ import _build_real_factories, build_parser
+    from darwin_platform.adapters.wallet import RealWallet, WalletError
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        _build_real_factories(parser.parse_args(["serve", "--wallet-provider", "watch"]))
+    args = parser.parse_args([
+        "serve", "--wallet-provider", "watch",
+        "--wallet-address", "0x" + "a" * 40,
+        "--platform-fee-address", "0x" + "f" * 40,
+        "--wallet-state-dir", str(tmp_path),
+    ])
+    w = _build_real_factories(args)["wallet_factory"]("d1", lambda: 0.0, None)
+    assert isinstance(w, RealWallet)
+    with pytest.raises(WalletError, match="watch-only"):
+        w._chain.transfer(to="0x" + "b" * 40, amount_usdc=1.0, memo="x")  # noqa: SLF001
+    assert w._state_path == tmp_path / "d1.wallet.jsonl"  # noqa: SLF001
+
+
 def test_cli_soma_root_flag_opt_in():
     """--soma-root activates real self-modification + death forensics; default
     unset keeps today's simulated behavior (docs 03/21/05)."""
