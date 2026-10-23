@@ -22,8 +22,8 @@ export default function SpawnPage() {
     mutationFn: () =>
       api.spawn({
         opening_usdc: Number(budget),
-        // Backend default: auto-approve owner inbox for unattended runs.
-        escalation_auto: "approve",
+        // The owner answers escalations (spend, captcha, KYC) themselves.
+        escalation_auto: null,
         parent_id: null,
         // Required consent gates (backend SpawnRequest).
         terms_accepted: termsAccepted,

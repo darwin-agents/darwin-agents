@@ -405,8 +405,8 @@ def build_deployment(
         "--control-token-path", "/run/secrets/darwin-control/control_token",
         "--wallet-provider", config.wallet_provider,
     ]
-    if escalation_auto is not None:
-        args.extend(["--escalation-auto", escalation_auto])
+    # Always explicit: None means "owner responds", never the pod default.
+    args.extend(["--escalation-auto", escalation_auto or "none"])
     # Real soma merge + death forensics (docs 03/21/05). The supervisor enables
     # this when it's configured with a soma root; the pod writes its soma tree
     # to the SOMA_MOUNT_PATH emptyDir below.

@@ -14,10 +14,11 @@ from pydantic import BaseModel, Field
 class SpawnRequest(BaseModel):
     opening_usdc: float = Field(default=100.0, gt=0)
     escalation_auto: str | None = Field(
-        default="approve",
-        description="Unattended owner-response policy for the fake inbox: "
-        "'approve' | 'deny' | null. None means a real owner (or test) must "
-        "respond via the respond_escalation endpoint.",
+        default=None,
+        description="Unattended owner-response policy: 'approve' | 'deny' | "
+        "null. Default null: the owner must respond via the "
+        "respond_escalation endpoint. 'approve' auto-approves every ticket "
+        "(spend, captcha, KYC) and is meant for unattended dev/sim runs.",
     )
     parent_id: str | None = None
     # Owner consent (doc 01 step 3 + doc 05). Captured + audit-recorded on

@@ -506,7 +506,8 @@ async def test_router_uses_pluggable_sink() -> None:
             {"ticket": "T-sink", "neuron": "x", "ticket_class": "info"}
         )
         await _wait_until(lambda: "T-sink" in calls)
-        assert calls == ["T-sink"]
+        # The live Darwin may post its own tickets meanwhile; only ours matters.
+        assert calls.count("T-sink") == 1
     finally:
         await sup.shutdown()
 

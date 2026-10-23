@@ -1093,7 +1093,7 @@ class Supervisor:
             try:
                 status = await self.spawn(
                     opening_usdc=opening,
-                    escalation_auto=rec.escalation_auto or "approve",
+                    escalation_auto=rec.escalation_auto,
                     parent_id=rec.parent_id,
                     actor="platform.resume",
                     _resume_id=rec.darwin_id if has_manifest else None,

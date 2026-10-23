@@ -1235,7 +1235,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--opening-usdc", default=100.0, type=float)
     p.add_argument(
-        "--escalation-auto", default="approve",
+        "--escalation-auto", default="none",
         choices=["approve", "deny", "none"],
         help="Unattended owner-response policy (use 'none' to disable).",
     )
