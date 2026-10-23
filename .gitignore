@@ -75,6 +75,10 @@ dmypy.json
 infra/docker/tokens.json
 !infra/docker/tokens.example.json
 tokens.json
+
+# Supabase CLI local link state (project ref, pooler URL). Not project config.
+supabase/.temp/
+supabase/.branches/
 data/
 !web/app/**/data/
 !web/app/**/data/**
