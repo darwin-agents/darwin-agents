@@ -152,6 +152,8 @@ async def test_supervisor_harvest_records_billing() -> None:
         h = sup._darwins[status.darwin_id]  # noqa: SLF001
         # Let it tick so the wallet has settled into baseline.
         await _wait_until(lambda: h.runtime.state.tick >= 3)
+        # Earn enough that the whole draw is profit (the fee is on profit).
+        h.stack.wallet.credit(150.0, "affiliate_network")
 
         result = await sup.harvest(
             status.darwin_id, amount_usdc=100.0, destination="bank://owner"
@@ -193,11 +195,58 @@ async def test_supervisor_harvest_custom_policy() -> None:
     )
     try:
         status = await sup.spawn(opening_usdc=200.0)
+        h = sup._darwins[status.darwin_id]  # noqa: SLF001
+        await _wait_until(lambda: h.runtime.state.tick >= 1)
+        h.stack.wallet.credit(150.0, "affiliate_network")
         result = await sup.harvest(
             status.darwin_id, amount_usdc=100.0, destination="bank://owner"
         )
         assert result["fee_usdc"] == pytest.approx(5.0)
         assert result["net_usdc"] == pytest.approx(95.0)
+    finally:
+        await sup.shutdown()
+
+
+async def test_harvest_keeps_darwin_alive_and_fees_profit_only() -> None:
+    """Regression: a harvest row used to raise ``LedgerError`` in the
+    genome's perceive, killing the drive task while status still said alive.
+    A draw of principal pays no fee, and a deposit never counts as profit."""
+    sup = Supervisor(heartbeat_seconds=0.0)
+    try:
+        status = await sup.spawn(opening_usdc=200.0, escalation_auto="approve")
+        h = sup._darwins[status.darwin_id]  # noqa: SLF001
+        st = h.runtime.state
+        await _wait_until(lambda: st.tick >= 3)
+
+        # A deposit raises the baseline: no profit, so a draw is fee-free.
+        h.stack.wallet.credit(50.0, "deposit:owner-topup")
+        t = st.tick
+        await _wait_until(lambda: st.tick > t + 1)
+        assert st.balance_usdc - st.profit_baseline_usdc <= 0.0
+        principal = await sup.harvest(
+            status.darwin_id, amount_usdc=40.0, destination="bank://owner"
+        )
+        assert principal["fee_usdc"] == 0.0
+
+        # Revenue then a draw of part of it: fee on the profit part only.
+        h.stack.wallet.credit(30.0, "affiliate_network")
+        t = st.tick
+        await _wait_until(lambda: st.tick > t + 1)
+        profit = st.balance_usdc - st.profit_baseline_usdc
+        assert 0.0 < profit <= 30.0
+        mixed = await sup.harvest(
+            status.darwin_id, amount_usdc=profit + 10.0,
+            destination="bank://owner",
+        )
+        # (Live balance may sit a few metered cents under the perceive-time
+        # one; the tolerance is far below the $2 a fee on the whole draw adds.)
+        assert mixed["fee_usdc"] == pytest.approx(0.20 * profit, abs=0.5)
+
+        # The Darwin keeps ticking after both harvests and never drifted.
+        t = st.tick
+        await _wait_until(lambda: st.tick > t + 3)
+        assert st.alive
+        assert not h.task.done()
     finally:
         await sup.shutdown()
 
