@@ -329,3 +329,42 @@ class UsdcReader:
             self._w3, tx_hash, timeout_s=timeout_s,
             min_confirmations=min_confirmations,
         )
+
+
+class GasTank:
+    """Keeps an account's native gas topped up from a platform key, so a
+    Darwin's own (EOA) account can pay for the USDC transfers the platform
+    signs for it. ``ensure(address)`` sends ``topup_eth`` when the account
+    holds less than ``min_eth`` and waits for it to confirm. Keep the tank
+    small and alert on it; it is a hot key."""
+
+    def __init__(
+        self, w3, *, private_key: str, chain_id: int,
+        min_eth: float = 0.00005, topup_eth: float = 0.0002,
+    ) -> None:
+        self._w3 = w3
+        self._key = private_key
+        self._chain_id = int(chain_id)
+        self._min_wei = int(min_eth * 10**18)
+        self._topup_wei = int(topup_eth * 10**18)
+        self.address = w3.eth.account.from_key(private_key).address
+
+    def ensure(self, address: str) -> str | None:
+        from eth_utils import to_checksum_address
+
+        address = to_checksum_address(address)
+        if int(self._w3.eth.get_balance(address)) >= self._min_wei:
+            return None
+        signed = self._w3.eth.account.sign_transaction({
+            "to": address, "value": self._topup_wei, "gas": 21_000,
+            "gasPrice": int(self._w3.eth.gas_price),
+            "nonce": self._w3.eth.get_transaction_count(self.address),
+            "chainId": self._chain_id,
+        }, private_key=self._key)
+        raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+        tx_hash = _hex(self._w3.eth.send_raw_transaction(raw))
+        wait_for_receipt(self._w3, tx_hash, timeout_s=60.0)
+        return tx_hash
+
+    def balance_eth(self) -> float:
+        return int(self._w3.eth.get_balance(self.address)) / 10**18

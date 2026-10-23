@@ -1799,6 +1799,23 @@ def _serve(args: argparse.Namespace) -> int:
         supervisor_kwargs["pod_substrate"] = _pod_substrate(args)
         if getattr(args, "wallet_provider", None) == "cdp":
             supervisor_kwargs["pod_signer_factory"] = _cdp_chain_factory(args)
+            gas_key = getattr(args, "gas_tank_key", None) or os.environ.get(
+                "DARWIN_GAS_TANK_KEY"
+            )
+            if gas_key:
+                from web3 import Web3
+
+                from .adapters.web3_chain import GasTank
+
+                mainnet = _is_mainnet(args)
+                rpc = (
+                    getattr(args, "rpc_url", None) or os.environ.get("DARWIN_RPC_URL")
+                    or ("https://mainnet.base.org" if mainnet else "https://sepolia.base.org")
+                )
+                supervisor_kwargs["gas_tank"] = GasTank(
+                    Web3(Web3.HTTPProvider(rpc)), private_key=gas_key,
+                    chain_id=8453 if mainnet else 84532,
+                )
 
     if args.heartbeat_seconds is not None:
         supervisor_kwargs["heartbeat_seconds"] = float(args.heartbeat_seconds)
@@ -2048,6 +2065,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--wallet-key", default=None, metavar="HEX",
         help="Hex private key for on-chain USDC signing. "
              "Env: DARWIN_WALLET_KEY. Never log this value.",
+    )
+    wallet_group.add_argument(
+        "--gas-tank-key", default=None, metavar="HEX",
+        help="Private key of a small ETH float that tops up each Darwin's "
+             "CDP account with gas before the platform signs for it "
+             "(--driver k8s). Env: DARWIN_GAS_TANK_KEY",
     )
     wallet_group.add_argument(
         "--wallet-address", default=None, metavar="ADDR",

@@ -175,3 +175,49 @@ def test_outbound_waits_for_its_late_hint_instead_of_booking_unattributed() -> N
     clock[0] += w.hint_grace_s + 1
     assert any("unattributed_out" in mv for mv in w.movements())
     _reconciles(w, 40.0)
+
+
+def test_gas_tank_tops_up_only_when_low() -> None:
+    """CDP accounts are EOAs: before the platform signs a USDC transfer for a
+    Darwin, its account must hold gas. The tank sends a signed top-up only
+    below the floor."""
+    pytest.importorskip("eth_account")
+    from eth_account import Account
+    from eth_account._utils.legacy_transactions import Transaction
+
+    from darwin_platform.adapters.web3_chain import GasTank
+
+    sent: list[bytes] = []
+
+    class _Eth:
+        account = Account
+        gas_price = 10**7
+        block_number = 10
+
+        def __init__(self) -> None:
+            self.balances = {OWNER.lower(): 0, PAYER.lower(): 10**18}
+
+        def get_balance(self, address):
+            return self.balances[address.lower()]
+
+        def get_transaction_count(self, _addr):
+            return 7
+
+        def send_raw_transaction(self, raw):
+            sent.append(bytes(raw))
+            return b"\x11" * 32
+
+        def get_transaction_receipt(self, _h):
+            return {"status": 1, "blockNumber": 10}
+
+    class _W3:
+        eth = _Eth()
+
+    key = "0x" + "4" * 64
+    tank = GasTank(_W3(), private_key=key, chain_id=84532, topup_eth=0.0002)
+    assert tank.ensure(PAYER) is None and sent == []  # already has gas
+    assert tank.ensure(OWNER) == "0x" + "11" * 32
+    tx = Transaction.from_bytes(sent[0])
+    assert tx.to.hex().lower() == OWNER[2:].lower()
+    assert tx.value == 2 * 10**14
+    assert Account.recover_transaction(sent[0]) == tank.address
