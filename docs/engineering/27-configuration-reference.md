@@ -37,9 +37,9 @@ darwin-platform signing-key  # Print the platform's signing public key (PEM)
 
 | Flag | Env var | Default | Description |
 | ---- | ------- | ------- | ----------- |
-| `--wallet-provider` | — | `cdp` | One of `cdp`, `local-vault`, `web3`. See sections below. |
+| `--wallet-provider` | — | unset (FakeWallet, dev only) | One of `cdp`, `local-vault`, `web3`. Production must set one. See sections below. |
 
-### `--wallet-provider cdp` (production default)
+### `--wallet-provider cdp` (production choice)
 
 Per-Darwin Coinbase CDP account; private key TEE-held by Coinbase. Requires the `[cdp]` extra.
 

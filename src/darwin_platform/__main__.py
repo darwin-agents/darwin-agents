@@ -1540,7 +1540,8 @@ def _build_k8s_driver(args: argparse.Namespace):
         # Forward the supervisor's --wallet-provider choice to every
         # per-Darwin pod. Without this, the pod default ("cdp") is used
         # regardless of what the operator started the supervisor with.
-        wallet_provider=getattr(args, "wallet_provider", None) or "cdp",
+        # Unset = "web3", which stays on FakeWallet without --rpc-url.
+        wallet_provider=getattr(args, "wallet_provider", None) or "web3",
         # Forward the platform-mediated rails (fiat / sanctions / KYC /
         # omnibus) so each pod's planner reasons over the FULL money picture
         # the operator endpoint shows — not just the pod-local wallet + x402
@@ -1706,7 +1707,7 @@ def _serve(args: argparse.Namespace) -> int:
     # wallet-factory closures bake these in but don't expose them, so carry
     # the resolved choice strings explicitly (see Supervisor.money_capabilities).
     supervisor_kwargs["wallet_provider"] = (
-        getattr(args, "wallet_provider", None) or "cdp"
+        getattr(args, "wallet_provider", None) or "none"
     )
     supervisor_kwargs["network"] = (
         "base-mainnet" if _is_mainnet(args) else "base-sepolia"
@@ -1977,9 +1978,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stellar account secret. Env: DARWIN_STELLAR_SECRET",
     )
     wallet_group.add_argument(
-        "--wallet-provider", default="cdp",
+        "--wallet-provider", default=None,
         choices=["web3", "cdp", "local-vault"],
-        help="Wallet backend (default: cdp). 'cdp' (Coinbase CDP, "
+        help="Wallet backend (default: none = in-memory FakeWallet, dev "
+             "only; production must pick one). 'cdp' (Coinbase CDP, "
              "non-custodial, per-Darwin TEE-held key — production default); "
              "'local-vault' (per-Darwin keypair minted on spawn and sealed "
              "in the per-Darwin vault — self-custodial for chains CDP "
