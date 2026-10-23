@@ -159,6 +159,9 @@ markers = [
     "redteam: tier-3 adversarial scenario from doc 24",
     "integration: tier-4 multi-module end-to-end flow",
     "simulation: tier-5 multi-day in-process simulation",
+    "e2e: the real `darwin-platform serve` process over real HTTP (also slow)",
+    "infra: deployment assets — Docker, Compose, Helm, Terraform, CI, observability config",
+    "performance: latency / throughput / memory budgets on hot paths (also slow)",
 ]
 
 [tool.uv]
