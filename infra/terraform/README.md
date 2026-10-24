@@ -139,8 +139,9 @@ host via an extraPortMapping).
 for the supervisor's Deployment, Service, ServiceAccount, and K8s-driver
 RBAC) and wires its values to the CNPG / Vault / LiteLLM module outputs.
 It keeps one thing in Terraform that the chart deliberately doesn't
-model: the `DARWIN_POD_*` Secret (substrate creds the driver mounts onto
-spawned pods). The API is fronted by `modules/k8s-addons/` (the NGINX
+model: the supervisor's env Secret (Vault / LiteLLM wiring from sibling
+modules plus the deploy's `secret_env` — CDP, KYC, sanctions, MoonPay,
+VAPID — mounted via `secretKeyRef`). The API is fronted by `modules/k8s-addons/` (the NGINX
 Ingress), kept separate so the exposure strategy is a per-env knob. The
 local stack runs the chart's k8s driver mode with the production extras
 stripped (no egress proxy / per-Darwin NetworkPolicies / LanceDB

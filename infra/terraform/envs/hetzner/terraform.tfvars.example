@@ -18,12 +18,21 @@ location     = "nbg1"     # nbg1 / fsn1 / hel1 (cax/ARM regions)
 server_type  = "cax21"    # ARM64, 4 vCPU / 8 GB
 agent_count  = 2          # 1 control-plane + this many workers
 
-# Lock the API + SSH to your IP (strongly recommended):
-# allowed_admin_cidrs = ["203.0.113.4/32"]
+# Lock the API + SSH to your IP (required; 0.0.0.0/0 is refused):
+allowed_admin_cidrs = ["203.0.113.4/32"]
 
 # --- platform ---------------------------------------------------------------
 platform_image  = "ghcr.io/darwin-agents/darwin-agents/darwin-platform:latest"
-wallet_provider = "cdp"   # cdp | local-vault | web3
+wallet_provider = "cdp"
+
+# Production supervisor config (or start from staging.tfvars / prod.tfvars):
+network              = "testnet"               # mainnet for prod
+clerk_issuer         = "https://clerk.darwinagents.com"
+cors_origins         = ["https://app.darwinagents.com"]
+platform_fee_address = "0x..."                 # checksummed
+vapid_subject        = "mailto:ops@darwinagents.com"
+# secret_env = { ... }  — pass via TF_VAR_secret_env (CDP, KYC, sanctions,
+#                         MoonPay, VAPID, gas tank, E2B, DARWIN_RPC_URL)
 
 # litellm_master_key    = "sk-..."           # or TF_VAR_litellm_master_key
 # litellm_provider_keys = { CLAUDE_API_KEY = "sk-ant-...", OPENAI_API_KEY = "sk-..." }

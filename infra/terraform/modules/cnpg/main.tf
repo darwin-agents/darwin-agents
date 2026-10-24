@@ -116,7 +116,22 @@ resource "kubectl_manifest" "cluster" {
   depends_on = [
     helm_release.operator,
     kubernetes_namespace.data,
+    kubernetes_secret.backup_s3,
   ]
+}
+
+resource "kubernetes_secret" "backup_s3" {
+  count = var.backup_enabled && var.backup_s3_credentials != null ? 1 : 0
+
+  metadata {
+    name      = var.backup_s3_credentials_secret
+    namespace = kubernetes_namespace.data.metadata[0].name
+  }
+
+  data = {
+    ACCESS_KEY_ID     = var.backup_s3_credentials.access_key_id
+    ACCESS_SECRET_KEY = var.backup_s3_credentials.secret_access_key
+  }
 }
 
 # Scheduled base backups (doc 20). WAL is archived continuously by the
