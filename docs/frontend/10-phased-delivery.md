@@ -1,5 +1,7 @@
 # Build plan
 
+> **Status (2026-10):** M0–M3 delivered in `web/`; M4 delivered as a PWA with W3C Web Push instead of an Expo app. All seven backend register items are shipped. See [§ Delivered](#delivered-2026-10) — the per-task checkboxes below are the original plan and are not maintained as a live tracker.
+
 A single clean path from `web/` scaffold to alpha-ready dashboard + mobile companion. Aligned with [`../overview/06-roadmap-and-phases.md`](../overview/06-roadmap-and-phases.md) and engineering build plans [`20`](../engineering/20-phase-zero-runtime-build-plan.md) / [`21`](../engineering/21-phase-one-evolution-build-plan.md) / [`22`](../engineering/22-phase-two-multi-tenant-build-plan.md).
 
 ## How to read this plan
@@ -8,7 +10,7 @@ A single clean path from `web/` scaffold to alpha-ready dashboard + mobile compa
 - **Epics** group related work inside a milestone (`M1-A`, `M1-B`, …).
 - **Tasks** are checkbox-sized — one task ≈ one PR.
 - **⛔ blocked** marks a task that needs a backend endpoint not yet implemented; see [§ Backend API work register](#backend-api-work-register).
-- Nothing here is started yet — see [`00-README.md`](00-README.md) status. Every checkbox is `[ ]` on purpose; this doc doubles as the working tracker.
+- Delivery status lives in [§ Delivered](#delivered-2026-10); the checkboxes record the original plan, not progress.
 
 Milestones are gates, not deadlines. Week ranges are planning estimates only.
 
@@ -29,15 +31,21 @@ Most of the heavy backend integrations the dashboard depends on are **already do
 | Harvest rules CRUD, force harvest | ✅ done | `/darwins/{id}/harvest_rules`, `/darwins/{id}/harvest` |
 | Quarantine state persisted | ✅ done | persistence schema v3 |
 
-What's **still not on the API** and gates the live canvases:
+What was **still not on the API** at planning time — all shipped since: the WebSocket stream (`WS /darwins/{id}/stream`), the anatomy snapshot (`GET /darwins/{id}/anatomy`), events filtering with `cursor` / `since` / `kind` / `neuron_id` / `tier`, the data browser (`GET /platform/darwins/{id}/organism/tables[/{table}/rows]`, operator scope) and the aggregate `GET /escalations`.
 
-- WebSocket stream (`WSS /darwins/{id}/stream`)
-- Anatomy snapshot (`GET /darwins/{id}/anatomy`)
-- Events filtering + cursor pagination, and `?since=` for incremental polling
-- Data browser (`GET /darwins/{id}/data`, `/data/{table}`)
-- Aggregate `/escalations` across owned Darwins (optional optimization)
+---
 
-That short list is the entire remaining backend ask for a complete frontend.
+## Delivered (2026-10)
+
+| Milestone | Delivered | Deviations from the plan |
+|-----------|-----------|--------------------------|
+| M0 Foundations | Next.js 15 + strict TS + Tailwind + shadcn-style `components/ui`, `lib/api.ts` + generated `lib/api.generated.ts` (`make web-codegen`), dev-token + Clerk auth (`lib/auth.ts`, `providers/`), TanStack Query keys (`lib/queryKeys.ts`), CI `.github/workflows/web.yml` (lint, typecheck, Vitest, build, Playwright) | — |
+| M1 Read-only fleet | Fleet home, per-Darwin shell, event table with `?since=` delta polling, lineage view, Recharts treasury chart, billing + ledger CSV, spawn wizard (`darwins/new`), kill dialog with `Idempotency-Key` | Lineage is an indented list; no d3 |
+| M2 Owner controls + escalations | Settings & controls, harvest rules, aggregate inbox (`/escalations`) with respond dialog, vault, resources, fiat deposit/withdraw dialog, freelancers, pre-approvals and payments tabs (operator) | — |
+| M3 Live canvases | Anatomy canvas on the WebSocket stream, full-width Timeline with URL-encoded filters, Anatomy → Timeline deep link, data browser (`/darwins/[id]/data`), forensics and operator tabs | Anatomy is hand-rolled SVG (no React Flow); no `@tanstack/react-virtual`, Zustand store, JSONL export, swimlane mode or visual-regression snapshots |
+| M4 Mobile companion | Installable PWA: `public/manifest.webmanifest`, `public/sw.js`, `/notifications` Web Push opt-in, backend `WebPushNotificationSink` + `/me/push-*` | Not an Expo app; no FCM, inline Approve / Deny actions or `darwin://` deep links — notifications open `/darwins/{id}` |
+
+Playwright specs: `web/playwright/dev-token/` (fleet, timeline filters, anatomy link, data browser, operator surfaces, owner money), `web/playwright/clerk/` (sign-in gate), `web/playwright/live/` (against a running platform).
 
 ---
 
@@ -223,7 +231,7 @@ That short list is the entire remaining backend ask for a complete frontend.
 
 ---
 
-## Milestone 4 — Mobile companion (Expo)
+## Milestone 4 — Mobile companion (Expo) — delivered as a PWA
 
 **Weeks 10–13 (est.) · Goal:** an alpha user resolves an escalation on their phone via push notification.
 
@@ -238,6 +246,8 @@ That short list is the entire remaining backend ask for a complete frontend.
 | [ ] | Quick-glance: balance, status, open-escalation count | — |
 
 **Mobile MVP excludes:** Anatomy, Timeline, vault editing, spawn wizard, billing. Phase 4+ deferral.
+
+*As built:* the PWA is the full dashboard installed on the phone, so these screens are available there too; see [`09-owner-controls-escalations-mobile.md`](09-owner-controls-escalations-mobile.md#mobile-companion-pwa-phase-2).
 
 ---
 
@@ -254,6 +264,8 @@ The complete remaining backend ask for a complete frontend. Each item is tied to
 | 5 | Aggregate escalations (optional) | `GET /escalations` owner-scoped across owned Darwins — removes M2-B fan-out | M2-B | M2 |
 | 6 | Incremental events polling | `?since={event_id}` so polling and WS reconnect fetch deltas only | M1-B, M3-C | M1 |
 | 7 | FCM notification sink + push payload | `FCMNotificationSink`; payload shape in [`09-owner-controls-escalations-mobile.md`](09-owner-controls-escalations-mobile.md) | M4 | M4 |
+
+*Status (2026-10): all seven shipped — #1/#6 as `cursor` / `since` / `kind` / `neuron_id` / `tier` on `GET /darwins/{id}/events` (offset paging retained); #2 `GET /darwins/{id}/anatomy`; #3 `WS /darwins/{id}/stream`; #4 as operator-scoped `GET /platform/darwins/{id}/organism/tables[/{table}/rows]`; #5 `GET /escalations`; #7 as `WebPushNotificationSink` (W3C Web Push), not FCM.*
 
 Items 1 / 2 / 3 are the **M3 long poles** — start them during M1–M2 so they're ready when the frontend needs them. The rest are smaller and can land alongside their consuming milestone.
 
@@ -334,6 +346,6 @@ A milestone is not done until its CI gate is green.
 | Internationalization (i18n) | Post-beta |
 | Full mobile parity (Anatomy, Timeline) | Phase 4 |
 | Operator admin in the owner app | Never — separate internal WebAuthn-protected app |
-| PWA / offline | Not planned |
+| PWA / offline | PWA shipped as the M4 companion (install + Web Push); offline caching not built |
 | Team / org accounts | Not planned for alpha (one user, one wallet, N Darwins) |
 | User-authored custom neurons / strategy marketplace | Not planned |

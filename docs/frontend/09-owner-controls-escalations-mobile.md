@@ -77,38 +77,31 @@ Flow:
 
 CSP `frame-src` must allowlist **both** Browserbase and Browser Use Cloud domains, regardless of which is active at deploy time. Do not integrate third-party captcha-solving services.
 
-## Mobile app (Expo, Phase 2)
+## Mobile companion (PWA, Phase 2)
 
-Scope from [`../engineering/22-phase-two-multi-tenant-build-plan.md`](../engineering/22-phase-two-multi-tenant-build-plan.md):
+The original scope in [`../engineering/22-phase-two-multi-tenant-build-plan.md`](../engineering/22-phase-two-multi-tenant-build-plan.md) was a minimal Expo app (`mobile/`, FCM token registration, Approve / Deny notification actions, `darwin://` deep links). **As built (2026-05-31):** it shipped as an installable PWA folded into `web/` instead, so the same dashboard is the mobile client and there is no `mobile/` package.
 
-```
-mobile/
-  app/(tabs)/
-    index.tsx          # Darwin list (minimal)
-    escalations.tsx    # Inbox
-  src/
-    notifications.ts   # FCM token register → platform
-    api.ts             # Same bearer as web
-```
+- **Install + push:** `web/public/manifest.webmanifest` and `web/public/sw.js`; the `/notifications` page asks for permission, subscribes with the platform's VAPID key (`GET /me/push-vapid-public-key`) and registers the device (`POST /me/push-subscriptions`; `GET` / `DELETE` to list / remove).
+- **Delivery:** `WebPushNotificationSink` (`src/darwin_platform/escalations/notification_webpush.py`, `--push-provider webpush`) pushes on every new escalation to each of the owner's subscriptions; dead subscriptions (404/410) are purged. FCM is not used.
+- **Click-through:** the service worker focuses an open dashboard tab or opens the notification's `url` (`/darwins/{darwin_id}`); the owner responds in the normal escalation UI. There are no inline Approve / Deny actions.
 
-Features:
-
-- Push on `escalation.open` (FCM via `FCMNotificationSink`).
-- Notification actions: Approve / Deny (approval class only).
-- Deep link: `darwin://escalations/{darwin_id}/{escalation_id}` → full respond screen.
-- Quick glance: balance, status, open escalation count.
-
-Not in mobile MVP: Anatomy, Timeline, vault editing, spawn wizard.
+Not in the push payload: Anatomy, Timeline, vault editing, spawn wizard — those stay in the full dashboard.
 
 ### Push payload shape (contract with backend)
 
+As sent by `_build_push_payload` in `notification_webpush.py`:
+
 ```json
 {
+  "title": "approval: payments.facilitator",
+  "body": "Darwin 1a2b3c4d needs you — deadline in 3600s",
+  "tag": "<ticket_id>",
+  "url": "/darwins/<darwin_id>",
+  "ticket_id": "...",
   "darwin_id": "...",
-  "escalation_id": "...",
-  "class": "approval",
-  "summary": "Spend $50 on ads",
-  "deadline_at": "..."
+  "deadline_ts": 1767225600.0,
+  "neuron": "payments.facilitator",
+  "ticket_class": "approval"
 }
 ```
 
@@ -120,7 +113,7 @@ Not in mobile MVP: Anatomy, Timeline, vault editing, spawn wizard.
 - Push enable/disable per device
 - SMS (Phase 3 defer)
 
-Platform `NotificationSink` handles delivery; frontend only registers tokens and preferences API when added.
+Platform `NotificationSink` handles delivery; frontend only registers tokens and preferences API when added. *As built:* only per-device push opt-in exists (`/notifications`); email and SMS preferences are not built.
 
 ## Accessibility for escalations
 
