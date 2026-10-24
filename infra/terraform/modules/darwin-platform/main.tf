@@ -7,7 +7,7 @@
  * ServiceAccount, and the K8s-driver ClusterRole + Binding). The module's
  * job is to (a) wire the chart's values to the sibling modules' outputs
  * (CNPG Postgres, Vault, LiteLLM) and (b) carry the local-stack glue the
- * chart deliberately doesn't model: the DARWIN_POD_* forwarding Secret
+ * chart deliberately doesn't model: the supervisor's env Secret
  * (substrate creds the K8s driver mounts onto spawned pods) and the NGINX
  * Ingress that fronts the API on the kind host port (see ingress.tf).
  *
@@ -37,36 +37,31 @@ locals {
   orchestrator_repository = local.orchestrator_parts[0]
   orchestrator_tag        = length(local.orchestrator_parts) > 1 ? local.orchestrator_parts[1] : "latest"
 
-  # Substrate creds the K8s driver forwards into each per-Darwin
-  # orchestrator pod via DarwinPodConfig. Projected onto the supervisor
-  # as env (chart `extraEnv`), where the driver reads them at spawn time.
-  pod_env_keys = [
-    "DARWIN_POD_VAULT_ADDR",
-    "DARWIN_POD_VAULT_TOKEN",
-    "DARWIN_POD_LITELLM_URL",
-    "DARWIN_POD_LITELLM_KEY",
-  ]
+  # Every key of the env Secret, projected onto the supervisor as env (chart
+  # `extraEnv`, secretKeyRef). Key names aren't secret; values are.
+  secret_env_keys = concat(
+    ["DARWIN_VAULT_URL", "DARWIN_VAULT_TOKEN", "DARWIN_LITELLM_URL", "DARWIN_LITELLM_MASTER_KEY"],
+    nonsensitive(keys(var.secret_env)),
+  )
 }
 
-# Kept in Terraform (not the chart) because the values come from sibling
-# modules (Vault, LiteLLM) and are local-stack wiring, not part of the
-# supervisor's own chart surface. In --driver=k8s the supervisor doesn't
-# talk to LiteLLM/Vault directly — setting DARWIN_LITELLM_URL / VAULT_ADDR
-# would trip the "real-adapter flags not supported with --driver=k8s"
-# preflight — so these are stored under DARWIN_POD_* keys the driver
-# mounts onto spawned pods instead.
+# The supervisor's secrets, kept in Terraform (not the chart) because the
+# values come from sibling modules (Vault, LiteLLM) and from the deploy's
+# secret store (`secret_env`: CDP, KYC, sanctions, MoonPay, VAPID, …). In
+# --driver=k8s the supervisor forwards the pod-safe subset to each pod's
+# control Secret (never signing keys or the shared Vault token).
 resource "kubernetes_secret" "env" {
   metadata {
     name      = "darwin-platform-env"
     namespace = var.namespace
   }
   type = "Opaque"
-  data = {
-    DARWIN_POD_VAULT_ADDR  = var.vault_address
-    DARWIN_POD_VAULT_TOKEN = var.vault_token
-    DARWIN_POD_LITELLM_URL = var.litellm_url
-    DARWIN_POD_LITELLM_KEY = var.litellm_key
-  }
+  data = merge(var.secret_env, {
+    DARWIN_VAULT_URL          = var.vault_address
+    DARWIN_VAULT_TOKEN        = var.vault_token
+    DARWIN_LITELLM_URL        = var.litellm_url
+    DARWIN_LITELLM_MASTER_KEY = var.litellm_key
+  })
 }
 
 resource "helm_release" "platform" {
@@ -84,7 +79,8 @@ resource "helm_release" "platform" {
       tag        = local.image_tag
       pullPolicy = var.image_pull_policy
     }
-    replicaCount = var.replicas
+    replicaCount   = var.replicas
+    leaderElection = { enabled = var.leader_election }
 
     # Postgres-backed persistence: the CNPG connection Secret carries the
     # URI under var.database_secret_key. Setting existingSecret switches
@@ -138,11 +134,10 @@ resource "helm_release" "platform" {
     serviceMonitor = { enabled = false }
     ingress        = { enabled = false } # fronted by the k8s-addons module instead
 
-    # DARWIN_POD_* substrate creds, sourced from the Secret above, plus
-    # any caller-supplied extras (e.g. DARWIN_VAPID_*).
+    # Every key of the Secret above, plus any caller-supplied plain extras.
     extraEnv = concat(
       [
-        for k in local.pod_env_keys : {
+        for k in local.secret_env_keys : {
           name = k
           valueFrom = {
             secretKeyRef = {

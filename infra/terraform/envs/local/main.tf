@@ -125,22 +125,16 @@ module "platform_stack" {
   # /openapi.json. Off by default in the chart; this is a local-only env so
   # it's safe here. Drop --enable-docs for any internet-facing deployment.
   # `--push-provider webpush` turns the Notifications page live; the VAPID
-  # material rides env vars (extra_env) so the PEM never hits the args line.
+  # key rides the env Secret (secret_env), never the args or the pod spec.
   extra_args = [
     "--cors-origin", "http://localhost:3000",
     "--enable-docs",
     "--push-provider", "webpush",
   ]
-  extra_env = [
-    {
-      name  = "DARWIN_VAPID_PRIVATE_KEY"
-      value = tls_private_key.vapid.private_key_pem
-    },
-    {
-      name  = "DARWIN_VAPID_SUBJECT"
-      value = "mailto:dev@darwinagents.local"
-    },
-  ]
+  secret_env = {
+    DARWIN_VAPID_PRIVATE_KEY = tls_private_key.vapid.private_key_pem
+    DARWIN_VAPID_SUBJECT     = "mailto:dev@darwinagents.local"
+  }
 
   depends_on = [module.cluster, kubectl_manifest.kata_shim]
 }

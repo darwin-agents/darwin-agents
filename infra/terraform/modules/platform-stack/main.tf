@@ -28,6 +28,7 @@ module "cnpg" {
   backup_destination_path      = var.database_backup_destination_path
   backup_endpoint_url          = var.database_backup_endpoint_url
   backup_s3_credentials_secret = var.database_backup_s3_credentials_secret
+  backup_s3_credentials        = var.database_backup_s3_credentials
   backup_retention_policy      = var.database_backup_retention_policy
   backup_schedule              = var.database_backup_schedule
 }
@@ -93,6 +94,8 @@ module "platform" {
   runtime_handler      = var.runtime_handler
   extra_args           = var.extra_args
   extra_env            = var.extra_env
+  secret_env           = var.secret_env
+  leader_election      = var.leader_election
 
   depends_on = [module.cnpg, module.vault, module.vault_prod, module.litellm]
 }

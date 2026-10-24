@@ -1,6 +1,6 @@
 # Realtime, WebSockets, and caching
 
-## WebSocket contract (specified; API TODO)
+## WebSocket contract (shipped — `src/darwin_platform/routers/stream.py`)
 
 Single multiplexed stream per Darwin (preferred over two sockets):
 
@@ -21,13 +21,15 @@ Authorization: Bearer <token>
 
 Alternative split endpoints (`/timeline/stream`, `/anatomy/stream`) if multiplexing complicates backpressure — frontend `lib/ws.ts` should abstract transport either way.
 
+> **As built (2026-10):** the single multiplexed stream shipped. On connect the server sends `snapshot.anatomy` and `snapshot.status`, then `timeline.event`, `anatomy.patch` and `status` (only when changed), `escalation.open`, `heartbeat`, and `error`. Channels are `timeline`, `anatomy`, `status`, `escalations`; `subscribe` may also carry `since` to resync from a `seq` cursor. Auth is checked once at connect — `Authorization: Bearer` or `?token=` — and the socket closes with 4401 (missing/invalid token), 4403 (not owner of this Darwin) or 4404 (unknown Darwin).
+
 ## Client behavior (`lib/ws.ts`)
 
 | Concern | Policy |
 |---------|--------|
 | Connect | After REST snapshot loaded; one socket per open Darwin detail page |
-| Reconnect | Exponential backoff 1s → 30s cap; resync by refetching events (`?since=` once backend register #10 lands, else page 0 + dedupe) and the anatomy snapshot |
-| Auth | Pass bearer in query `?token=` only if header unsupported by infra — prefer subprotocol or first message auth |
+| Reconnect | Exponential backoff 1s → 30s cap; resync by refetching events with `?since=<last seq>` and the anatomy snapshot |
+| Auth | Browsers cannot set headers on a WebSocket upgrade, so `lib/ws.ts` passes the bearer as `?token=`; the server accepts either the header or the query parameter |
 | Close on navigate away | Disconnect when leaving `/darwins/[id]` |
 | Tab hidden | Keep socket; reduce UI updates (batch rAF) |
 | Pause stream | Stop applying patches; still receive heartbeat to show "buffered N" |
@@ -41,7 +43,7 @@ Alternative split endpoints (`/timeline/stream`, `/anatomy/stream`) if multiplex
 ['darwin', id, 'ledger']
 ['darwin', id, 'escalations']
 ['darwin', id, 'controls']
-['darwin', id, 'anatomy']             // when endpoint exists
+['darwin', id, 'anatomy']
 ```
 
 Invalidation:
@@ -75,6 +77,8 @@ pauseStream: boolean
 ```
 
 Anatomy and Timeline both subscribe; avoids prop drilling through layout.
+
+*As built:* no shared store exists yet — `selectedNeuronId` is local state passed into `components/anatomy/anatomy-canvas.tsx`, and Zustand is not a dependency.
 
 ## Rate limiting UI
 

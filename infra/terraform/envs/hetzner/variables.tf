@@ -46,14 +46,18 @@ variable "platform_image" {
 
 variable "wallet_provider" {
   type        = string
-  description = "Wallet provider for spawned darwins: cdp | local-vault | web3. Production default cdp (add CDP keys to the per-darwin substrate secret)."
+  description = "Wallet provider: cdp (the production guard requires it; CDP keys come via secret_env)."
   default     = "cdp"
 }
 
 variable "allowed_admin_cidrs" {
   type        = list(string)
-  description = "Source CIDRs allowed to reach SSH (22) + kube API (6443). LOCK THIS DOWN to your IP."
-  default     = ["0.0.0.0/0"]
+  description = "Source CIDRs allowed to reach SSH (22) + kube API (6443), e.g. your office IP /32. Required — there is no open default."
+
+  validation {
+    condition     = length(var.allowed_admin_cidrs) > 0 && !contains(var.allowed_admin_cidrs, "0.0.0.0/0")
+    error_message = "allowed_admin_cidrs must list specific CIDRs, not 0.0.0.0/0."
+  }
 }
 
 variable "ssh_public_key" {
@@ -69,9 +73,8 @@ variable "ssh_private_key" {
 
 variable "litellm_master_key" {
   type        = string
-  description = "LiteLLM proxy admin key."
+  description = "LiteLLM proxy admin key (the supervisor mints per-Darwin virtual keys with it). Pass via TF_VAR_litellm_master_key."
   sensitive   = true
-  default     = "sk-hetzner-litellm-change-me"
 }
 
 variable "litellm_provider_keys" {
@@ -119,6 +122,16 @@ variable "database_backup_s3_credentials_secret" {
   default     = ""
 }
 
+variable "database_backup_s3_credentials" {
+  type = object({
+    access_key_id     = string
+    secret_access_key = string
+  })
+  description = "Object Storage keys for the backup Secret; when set Terraform creates it. Pass via TF_VAR_database_backup_s3_credentials."
+  default     = null
+  sensitive   = true
+}
+
 variable "database_backup_retention_policy" {
   type        = string
   description = "Backup/WAL retention (CNPG syntax, e.g. 30d)."
@@ -153,4 +166,102 @@ variable "kata_release" {
   type        = string
   description = "Pinned kata-containers release for the kata-static bundle (only used when kata_enabled)."
   default     = "3.21.0"
+}
+
+# -- Production supervisor config (see locals.platform_args in main.tf). ----
+variable "network" {
+  type        = string
+  description = "Chain network: testnet (Base Sepolia, staging) or mainnet (Base, prod)."
+
+  validation {
+    condition     = contains(["testnet", "mainnet"], var.network)
+    error_message = "network must be testnet or mainnet."
+  }
+}
+
+variable "clerk_issuer" {
+  type        = string
+  description = "Clerk Frontend API issuer URL (e.g. https://clerk.darwinagents.com)."
+}
+
+variable "cors_origins" {
+  type        = list(string)
+  description = "Dashboard origins allowed by CORS (the exact Vercel domain(s)); never \"*\"."
+}
+
+variable "kyc_provider" {
+  type        = string
+  description = "KYC provider: persona | onfido. Keys come via secret_env."
+  default     = "persona"
+}
+
+variable "sanctions_provider" {
+  type        = string
+  description = "Sanctions screening provider: chainalysis | trm. Key via secret_env (DARWIN_SANCTIONS_API_KEY)."
+  default     = "chainalysis"
+}
+
+variable "fiat_provider" {
+  type        = string
+  description = "Fiat on/off-ramp: none | moonpay. MoonPay keys via secret_env."
+  default     = "none"
+}
+
+variable "platform_fee_address" {
+  type        = string
+  description = "Checksummed 0x address that receives metered charges and the harvest fee."
+}
+
+variable "vapid_subject" {
+  type        = string
+  description = "VAPID subject for web push (mailto: or https: URI). Keys via secret_env."
+}
+
+variable "signing_vault_transit_key" {
+  type        = string
+  description = "Vault transit key that signs audit events and genesis. Create it after Vault init (README)."
+  default     = "darwin-platform"
+}
+
+variable "store_price_usdc" {
+  type        = number
+  description = "x402 storefront price per report in USDC. Null = the platform default."
+  default     = null
+}
+
+variable "x402_facilitator_url" {
+  type        = string
+  description = "x402 facilitator override. Empty = x402.org on testnet, CDP on mainnet."
+  default     = ""
+}
+
+variable "cdp_per_tx_usdc" {
+  type        = number
+  description = "Per-transfer USDC cap enforced at the CDP account (canary safety net). Null = no cap."
+  default     = null
+}
+
+variable "cdp_per_day_usdc" {
+  type        = number
+  description = "Per-day USDC cap enforced at the CDP account. Null = no cap."
+  default     = null
+}
+
+variable "pod_reproduction" {
+  type        = bool
+  description = "Let Darwins reproduce (the supervisor signs, funds on-chain and spawns each child). Off for the alpha until the audit covers it."
+  default     = false
+}
+
+variable "database_instances" {
+  type        = number
+  description = "CNPG Postgres instances (2+ gives a streaming replica for failover)."
+  default     = 2
+}
+
+variable "secret_env" {
+  type        = map(string)
+  description = "Supervisor secrets as env (CDP_API_KEY_ID/SECRET, CDP_WALLET_SECRET, DARWIN_GAS_TANK_KEY, DARWIN_SANCTIONS_API_KEY, DARWIN_KYC_PERSONA_*, MOONPAY_*, DARWIN_VAPID_*, E2B_API_KEY, DARWIN_RPC_URL — provider RPC URLs embed a key, …). Composed by the deploy workflow; never commit."
+  sensitive   = true
+  default     = {}
 }

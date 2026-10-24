@@ -21,6 +21,19 @@ module.platform_stack                 →  cnpg + vault(raft) + litellm + superv
 
 ## 1. Configure
 
+Two deployments share this env: `staging.tfvars` (Base Sepolia) and
+`prod.tfvars` (Base mainnet), each with its own state key
+(`hetzner/<env>/terraform.tfstate`). Both boot the supervisor with
+`--env=production`, so staging runs the same boot guard as prod. CI
+(`.github/workflows/deploy-hetzner.yml`) is the normal path: it reads the
+deployment identities (domain, Clerk issuer, CORS origins, fee address,
+admin CIDRs) from the `hetzner-staging` / `hetzner-prod` GitHub
+Environment's variables and every secret from its secrets — the header of
+that workflow lists them. Give `hetzner-prod` required reviewers and promote
+only an image that passed `e2e-staging`.
+
+For a manual run:
+
 ```bash
 cp terraform.tfvars.example terraform.tfvars   # edit domain, acme_email, ssh_public_key, ...
 export TF_VAR_hcloud_token=...                  # never commit secrets
@@ -40,9 +53,15 @@ terraform init -migrate-state
 
 ## 2. Apply
 
+The supervisor refuses to boot until Vault is initialised and holds the
+signing key, so the **first** deploy stops at Vault (CI: dispatch with
+`bootstrap` checked), then §4, then a normal deploy:
+
 ```bash
 terraform init
-terraform apply        # ~5-10 min: servers boot, k3s + gVisor install, addons + stack roll out
+terraform apply -var-file=staging.tfvars -target=module.platform_stack.module.vault_prod  # first time only
+# … §4 Vault runbook …
+terraform apply -var-file=staging.tfvars   # ~5-10 min: the rest of the stack rolls out
 ```
 
 The cluster is briefly "broken" (nodes `NotReady`/`Pending`) between k3s install
@@ -76,7 +95,9 @@ done
 kubectl -n vault exec -ti vault-0 -- vault operator raft list-peers   # expect 3 voters
 ```
 
-Wire the supervisor's Kubernetes auth (run with the root token, then revoke it):
+Wire the supervisor's Kubernetes auth and its transit signing key (run with
+the root token, then revoke it). The transit key signs every audit event and
+genesis; the supervisor only gets `sign` + `read` on it, never export:
 
 ```bash
 export VAULT_TOKEN=$(jq -r .root_token vault-init.json)
@@ -85,18 +106,25 @@ kubectl -n vault exec -ti vault-0 -- sh -c 'cat <<EOF | vault policy write darwi
 path "secret/data/darwins/*"     { capabilities = ["create","read","update","delete"] }
 path "secret/metadata/darwins/*" { capabilities = ["list","delete"] }
 EOF'
+kubectl -n vault exec -ti vault-0 -- vault secrets enable transit
+kubectl -n vault exec -ti vault-0 -- vault write -f transit/keys/darwin-platform type=ed25519
+kubectl -n vault exec -ti vault-0 -- sh -c 'cat <<EOF | vault policy write darwin-sign -
+path "transit/sign/darwin-platform" { capabilities = ["update"] }
+path "transit/keys/darwin-platform" { capabilities = ["read"] }
+EOF'
 kubectl -n vault exec -ti vault-0 -- vault auth enable kubernetes
 kubectl -n vault exec -ti vault-0 -- sh -c \
   'vault write auth/kubernetes/config kubernetes_host=https://$KUBERNETES_PORT_443_TCP_ADDR:443'
 kubectl -n vault exec -ti vault-0 -- vault write auth/kubernetes/role/darwin \
   bound_service_account_names=darwin-platform \
-  bound_service_account_namespaces=darwin policies=darwin-kv ttl=1h
+  bound_service_account_namespaces=darwin policies=darwin-kv,darwin-sign ttl=1h
 kubectl -n vault exec -ti vault-0 -- vault token revoke -self   # drop root after bootstrap
 ```
 
-The supervisor reads `DARWIN_VAULT_URL` (the in-cluster Vault address) and should
-authenticate via the Kubernetes auth method (`auth_method=kubernetes`, role
-`darwin`) rather than a static token — `HvacVaultClient` already supports this.
+The supervisor reads `DARWIN_VAULT_URL` (the in-cluster Vault address) and logs
+in as its ServiceAccount (`--vault-k8s-role=darwin`, set in `main.tf`) for both
+KV and transit signing, re-authenticating when the 1h lease expires. No static
+token is deployed.
 
 > Store the 5 unseal keys + initial root token **offline and split** across
 > separate custodians. Never in this cluster, in git, or in the state bucket.
@@ -168,11 +196,15 @@ kubectl -n darwin-<id> get pod -o jsonpath='{.items[0].spec.runtimeClassName}'  
 If `/dev/kvm` is absent the node logs a skip (it does NOT fail to boot); pods
 requesting `runtimeClassName: kata` then stay Pending — keep gVisor in that case.
 
-## 6. Postgres PITR (optional, doc 20)
+## 6. Postgres PITR (on in prod, doc 20)
 
 Continuous WAL archiving + scheduled base backups to S3-compatible object
-storage give point-in-time recovery. Create a bucket + a credentials Secret in
-the platform namespace, then enable it:
+storage give point-in-time recovery. `prod.tfvars` enables it; set the
+bucket path + endpoint (CI: `PG_BACKUP_PATH` / `PG_BACKUP_ENDPOINT`) and pass
+the keys as `TF_VAR_database_backup_s3_credentials` (CI reuses the
+Object Storage keys) — Terraform then creates the `pg-backup-s3` Secret
+before the Cluster, so WAL archives from first boot. Without that variable,
+create the Secret yourself:
 
 ```bash
 kubectl -n darwin create secret generic pg-backup-s3 \

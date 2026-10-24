@@ -80,6 +80,16 @@ variable "backup_s3_credentials_secret" {
   default     = ""
 }
 
+variable "backup_s3_credentials" {
+  type = object({
+    access_key_id     = string
+    secret_access_key = string
+  })
+  description = "Object-store keys. When set, this module creates backup_s3_credentials_secret itself (before the Cluster), so a fresh cluster archives WAL from its first boot. Null = the Secret is managed out-of-band."
+  default     = null
+  sensitive   = true
+}
+
 variable "backup_retention_policy" {
   type        = string
   description = "How long to keep base backups + WAL (CNPG retention syntax, e.g. 30d, 4w). Older backups are pruned automatically."

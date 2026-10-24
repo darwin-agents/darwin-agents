@@ -77,6 +77,9 @@ def _rebase_profit(state, movs, bal: float) -> None:
             state.profit_baseline_usdc += float(m["amount_usdc"])
         elif kind == "harvest":
             state.profit_baseline_usdc = min(state.profit_baseline_usdc, running)
+        elif kind == "reproduction_transfer":
+            # Funding a child opens a fresh profit window (doc 06).
+            state.profit_baseline_usdc = running
     state.funding_cursor = len(movs)
 
 

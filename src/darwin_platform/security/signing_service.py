@@ -167,6 +167,8 @@ class HvacTransitBackend:
         mount: the Vault Transit mount path (default ``"transit"``).
         key_name: the Transit key name used for the platform signing
             identity (e.g. ``"darwin-platform"``).
+        reauth: re-login callable for a leased (Kubernetes/AppRole) token;
+            an auth failure calls it once and retries.
     """
 
     def __init__(
@@ -175,6 +177,7 @@ class HvacTransitBackend:
         client: Any,
         mount: str = "transit",
         key_name: str,
+        reauth: Any | None = None,
     ) -> None:
         if client is None:
             raise SigningServiceError("HvacTransitBackend requires a client")
@@ -183,14 +186,26 @@ class HvacTransitBackend:
         self._client = client
         self._mount = mount
         self._key = key_name
+        self._reauth = reauth
         self._pem = self._fetch_pem()
+
+    def _call(self, fn: Any) -> Any:
+        try:
+            return fn()
+        except Exception as exc:
+            from ..adapters.hvac_vault import HvacVaultClient
+
+            if self._reauth is None or not HvacVaultClient._is_auth_error(exc):
+                raise
+            self._reauth()
+            return fn()
 
     def _fetch_pem(self) -> bytes:
         """Read the Transit key's latest public-key PEM."""
         try:
-            resp = self._client.secrets.transit.read_key(
+            resp = self._call(lambda: self._client.secrets.transit.read_key(
                 name=self._key, mount_point=self._mount,
-            )
+            ))
         except Exception as exc:
             raise SigningServiceError(
                 f"Vault read_key failed for {self._key!r}: {exc}"
@@ -224,11 +239,11 @@ class HvacTransitBackend:
         # "vault:vN:<base64>" — strip the prefix, decode.
         b64_input = base64.b64encode(bytes(message)).decode()
         try:
-            resp = self._client.secrets.transit.sign_data(
+            resp = self._call(lambda: self._client.secrets.transit.sign_data(
                 name=self._key,
                 hash_input=b64_input,
                 mount_point=self._mount,
-            )
+            ))
         except Exception as exc:
             raise SigningServiceError(
                 f"Vault sign_data failed: {exc}"
@@ -258,6 +273,7 @@ def build_signer(
     hvac_client: Any | None = None,
     transit_mount: str = "transit",
     transit_key_name: str | None = None,
+    reauth: Any | None = None,
     kms_backend: KMSBackend | None = None,
     raw_private: bytes | None = None,
 ) -> PlatformSigner:
@@ -282,6 +298,7 @@ def build_signer(
                 client=hvac_client,
                 mount=transit_mount,
                 key_name=transit_key_name,
+                reauth=reauth,
             )
         )
     return LocalEd25519Signer(raw_private=raw_private)

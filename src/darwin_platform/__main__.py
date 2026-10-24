@@ -804,25 +804,31 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
     if transit_key:
         vault_url = args.vault_url or os.environ.get("DARWIN_VAULT_URL")
         vault_token = args.vault_token or os.environ.get("DARWIN_VAULT_TOKEN")
-        if not (vault_url and vault_token):
+        k8s_role = getattr(args, "vault_k8s_role", None) or os.environ.get(
+            "DARWIN_VAULT_K8S_ROLE"
+        )
+        if not (vault_url and (vault_token or k8s_role)):
             print(
                 "--signing-vault-transit-key requires --vault-url + "
-                "--vault-token",
+                "--vault-token or --vault-k8s-role",
                 file=sys.stderr,
             )
             sys.exit(2)
-        try:
-            import hvac
-        except ImportError as exc:
-            raise ImportError(
-                "Vault Transit signing requires the [hvac] extra: "
-                "pip install 'darwin-dna[hvac]'"
-            ) from exc
+        from .adapters.hvac_vault import HvacVaultClient
         from .security.signing_service import build_signer
 
-        client = hvac.Client(url=vault_url, token=vault_token)
+        # The supervisor's ServiceAccount logs in (production); a static
+        # token is the dev path. Leased tokens re-login on expiry.
+        vault = HvacVaultClient(
+            url=vault_url, token=vault_token,
+            auth_method="token" if vault_token else "kubernetes",
+            k8s_role=k8s_role,
+            k8s_jwt_path=getattr(args, "vault_k8s_jwt_path", None)
+            or "/var/run/secrets/kubernetes.io/serviceaccount/token",
+        )
         kwargs["signer"] = build_signer(
-            hvac_client=client, transit_key_name=transit_key,
+            hvac_client=vault._client, transit_key_name=transit_key,
+            reauth=None if vault_token else vault._authenticate,
         )
 
     # -- drift detection (doc 22) ----------------------------------------
@@ -1045,19 +1051,13 @@ def _build_platform_services(args: argparse.Namespace) -> dict[str, Any]:
         in ("1", "true", "yes")
     )
     if _vk_enabled:
-        # In k8s mode the supervisor pod carries the proxy URL + admin key
-        # under DARWIN_POD_LITELLM_* (it forwards them to pods); in-process
-        # mode uses the DARWIN_LITELLM_* / CLI names. Accept either so the
-        # minter works in both.
         vk_url = (
             getattr(args, "litellm_url", None)
             or os.environ.get("DARWIN_LITELLM_URL")
-            or os.environ.get("DARWIN_POD_LITELLM_URL")
         )
         vk_master = (
             getattr(args, "litellm_master_key", None)
             or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
-            or os.environ.get("DARWIN_POD_LITELLM_KEY")
         )
         if not vk_url:
             print(
@@ -1590,37 +1590,38 @@ def _cdp_chain_factory(args: argparse.Namespace):
 
 
 # Supervisor settings each pod's own ``serve`` parse needs to build its
-# substrate: (dest, env fallback, legacy DARWIN_POD_* env). Deliberately
+# substrate: (dest, env fallback). Deliberately
 # absent: CDP / signing keys (pods never sign; the supervisor executes every
 # transfer) and the shared Vault token (a pod only reaches Vault as its own
 # AppRole, see _pod_substrate).
 _POD_SUBSTRATE = (
-    ("network", None, None),
-    ("env", "DARWIN_ENV", None),
-    ("rpc_url", "DARWIN_RPC_URL", None),
-    ("usdc_contract", None, None),
-    ("platform_fee_address", "DARWIN_PLATFORM_FEE_ADDRESS", None),
-    ("litellm_url", "DARWIN_LITELLM_URL", "DARWIN_POD_LITELLM_URL"),
-    ("litellm_markup_rate", None, None),
-    ("browser_provider", None, None),
-    ("browserbase_url", "BROWSERBASE_URL", None),
-    ("browserbase_api_key", "BROWSERBASE_API_KEY", None),
-    ("browserbase_live_view_url", "BROWSERBASE_LIVE_VIEW_URL", None),
-    ("browser_use_api_key", "BROWSER_USE_API_KEY", None),
-    ("browser_use_model", None, None),
-    ("browser_use_max_cost_usdc", None, None),
-    ("e2b_api_key", "E2B_API_KEY", None),
-    ("store_price_usdc", "DARWIN_STORE_PRICE_USDC", None),
+    ("network", None),
+    ("env", "DARWIN_ENV"),
+    ("rpc_url", "DARWIN_RPC_URL"),
+    ("usdc_contract", None),
+    ("platform_fee_address", "DARWIN_PLATFORM_FEE_ADDRESS"),
+    ("litellm_url", "DARWIN_LITELLM_URL"),
+    ("litellm_markup_rate", None),
+    ("browser_provider", None),
+    ("browserbase_url", "BROWSERBASE_URL"),
+    ("browserbase_api_key", "BROWSERBASE_API_KEY"),
+    ("browserbase_live_view_url", "BROWSERBASE_LIVE_VIEW_URL"),
+    ("browser_use_api_key", "BROWSER_USE_API_KEY"),
+    ("browser_use_model", None),
+    ("browser_use_max_cost_usdc", None),
+    ("e2b_api_key", "E2B_API_KEY"),
+    ("store_price_usdc", "DARWIN_STORE_PRICE_USDC"),
+    ("pod_reproduction", None),
 )
 
 
 def _pod_substrate(args: argparse.Namespace) -> dict[str, Any]:
     """The settings forwarded to every pod (sealed in its control Secret)."""
     sub: dict[str, Any] = {}
-    for dest, env, legacy in _POD_SUBSTRATE:
+    for dest, env in _POD_SUBSTRATE:
         val = getattr(args, dest, None)
         if val is None and env:
-            val = os.environ.get(env) or (os.environ.get(legacy) if legacy else None)
+            val = os.environ.get(env)
         if val is not None:
             sub[dest] = val
     # Without per-Darwin virtual keys the pod needs the shared LiteLLM key
@@ -1632,7 +1633,6 @@ def _pod_substrate(args: argparse.Namespace) -> dict[str, Any]:
         key = (
             getattr(args, "litellm_master_key", None)
             or os.environ.get("DARWIN_LITELLM_MASTER_KEY")
-            or os.environ.get("DARWIN_POD_LITELLM_KEY")
         )
         if key:
             sub["litellm_master_key"] = key
@@ -1641,7 +1641,6 @@ def _pod_substrate(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "tenant_namespaces", False):
         url = (
             getattr(args, "vault_url", None) or os.environ.get("DARWIN_VAULT_URL")
-            or os.environ.get("DARWIN_POD_VAULT_ADDR")
         )
         if url:
             sub["vault_url"] = url
@@ -1992,9 +1991,14 @@ def _serve(args: argparse.Namespace) -> int:
                     or os.environ.get("CLERK_AUDIENCE")
                 ),
             )
-            # Seed ownership from the persisted owners so a restart doesn't
-            # 403 every owner on their own Darwins.
-            token_store = ClerkTokenStore(verifier=verifier, ownership=sup.owners())
+            # Ownership comes from the supervisor's record (persisted rows +
+            # live handles), so a restart doesn't 403 owners and a pod's
+            # child is its parent's owner's.
+            # ponytail: owners() per request; index by subject if it shows up.
+            token_store = ClerkTokenStore(
+                verifier=verifier,
+                owned_by=lambda subject: sup.owners().get(subject, set()),
+            )
 
     app = build_app(
         sup,
@@ -2781,6 +2785,13 @@ def build_parser() -> argparse.ArgumentParser:
     k8s_group.add_argument(
         "--k8s-namespace-prefix", default="darwin-",
         help="Per-Darwin namespace prefix (default: 'darwin-').",
+    )
+    k8s_group.add_argument(
+        "--pod-reproduction", action="store_true",
+        help="Let pod Darwins reproduce: the supervisor verifies the parent's "
+             "DNA, signs the child, funds it on-chain from the parent's account "
+             "(at most one child per parent per day) and spawns it for the same "
+             "owner. Off by default.",
     )
     k8s_group.add_argument(
         "--k8s-runtime-class", default="kata",

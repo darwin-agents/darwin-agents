@@ -142,6 +142,16 @@ variable "database_backup_s3_credentials_secret" {
   default     = ""
 }
 
+variable "database_backup_s3_credentials" {
+  type = object({
+    access_key_id     = string
+    secret_access_key = string
+  })
+  description = "Object-store keys for the backup Secret (created by the cnpg module). Null = managed out-of-band."
+  default     = null
+  sensitive   = true
+}
+
 variable "database_backup_retention_policy" {
   type        = string
   description = "Backup/WAL retention (CNPG syntax, e.g. 30d)."
@@ -176,7 +186,7 @@ variable "vault_seal_env" {
 
 variable "litellm_master_key" {
   type        = string
-  description = "LiteLLM proxy admin key. Stays in-cluster; forwarded to per-Darwin pods as DARWIN_POD_LITELLM_KEY."
+  description = "LiteLLM proxy admin key. Stays in-cluster; the supervisor mints per-Darwin virtual keys with it (DARWIN_LITELLM_MASTER_KEY)."
   sensitive   = true
 }
 
@@ -226,6 +236,19 @@ variable "extra_env" {
   }))
   description = "Extra environment variables on the supervisor container (e.g. DARWIN_VAPID_*)."
   default     = []
+}
+
+variable "leader_election" {
+  type        = bool
+  description = "Supervisor leader election (Postgres lock). Production requires it."
+  default     = false
+}
+
+variable "secret_env" {
+  type        = map(string)
+  description = "Secret supervisor environment (CDP, KYC, sanctions, MoonPay, VAPID, gas tank, …), stored in a Secret and mounted via secretKeyRef."
+  default     = {}
+  sensitive   = true
 }
 
 # -- exposure (ingress addon) ----------------------------------------------

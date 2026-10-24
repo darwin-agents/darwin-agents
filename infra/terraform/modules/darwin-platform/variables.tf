@@ -20,6 +20,12 @@ variable "replicas" {
   default     = 1
 }
 
+variable "leader_election" {
+  type        = bool
+  description = "Postgres-lock leader election (chart `leaderElection.enabled`). Production requires it even at one replica."
+  default     = false
+}
+
 variable "database_secret" {
   type        = string
   description = "Name of the Secret (in the same namespace) holding the Postgres connection string. Default CNPG layout exposes the URI under the `uri` key."
@@ -38,7 +44,7 @@ variable "vault_address" {
 
 variable "vault_token" {
   type        = string
-  description = "Vault token forwarded to per-Darwin pods (DARWIN_POD_VAULT_TOKEN). Empty in raft/prod mode, where the orchestrator authenticates via the Vault Kubernetes auth method instead of a static token."
+  description = "Vault token for the supervisor (DARWIN_VAULT_TOKEN; e.g. transit signing). Empty in raft/prod mode, where the orchestrator authenticates via the Vault Kubernetes auth method instead of a static token."
   sensitive   = true
   default     = ""
 }
@@ -84,12 +90,6 @@ variable "wallet_provider" {
   default     = "local-vault"
 }
 
-variable "base_rpc_url" {
-  type        = string
-  description = "EVM RPC URL the supervisor uses for Base / Base Sepolia transactions. The supervisor's preflight refuses to start without one when wallet_provider != cdp. Default points at Base Sepolia (public testnet)."
-  default     = "https://sepolia.base.org"
-}
-
 variable "extra_args" {
   type        = list(string)
   description = "Additional CLI flags appended to `darwin-platform serve`. Useful for `--auth-tokens` / `--clerk-issuer` / `--push-provider` without forking the module."
@@ -103,6 +103,13 @@ variable "extra_env" {
   }))
   description = "Additional environment variables on the supervisor container (chart `extraEnv`). Useful for DARWIN_VAPID_* / provider keys without forking the module."
   default     = []
+}
+
+variable "secret_env" {
+  type        = map(string)
+  description = "Secret environment for the supervisor (e.g. CDP_API_KEY_SECRET, DARWIN_GAS_TANK_KEY, DARWIN_SANCTIONS_API_KEY), stored in its env Secret and mounted via secretKeyRef."
+  default     = {}
+  sensitive   = true
 }
 
 variable "orchestrator_image" {

@@ -1,0 +1,60 @@
+# v1 money-path E2E against the staging deployment (Base Sepolia):
+# spawn → buy a report over x402 → revenue booked → no drift → payout
+# address → harvest → kill sweeps. See scripts/e2e_testnet.py.
+#
+# Promote an image to prod (deploy-hetzner, environment=prod) only after
+# this passed against it on staging.
+#
+# ── Required config on the `hetzner-staging` Environment ──────────────────────
+# Secrets:
+#   E2E_OWNER_TOKEN       Clerk JWT for a KYC-approved staging test user, from
+#                         a long-lived JWT template (Clerk → JWT templates;
+#                         `await Clerk.session.getToken({template: "e2e"})`).
+#                         Rotate it before the template lifetime runs out.
+#   E2E_BUYER_KEY         hex key holding Sepolia USDC (the x402 buyer)
+# Variables:
+#   DARWIN_DOMAIN         staging API host
+#   E2E_PAYOUT_ADDRESS    checksummed Sepolia address that receives harvests
+
+name: e2e-staging
+
+on:
+  schedule:
+    - cron: "17 4 * * *" # nightly
+  workflow_dispatch: {}
+
+concurrency:
+  group: e2e-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: money path on staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: hetzner-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Run the E2E
+        run: |
+          uv run --all-extras --with "x402[evm]" python scripts/e2e_testnet.py \
+            --url "https://${{ vars.DARWIN_DOMAIN }}" \
+            --token "$E2E_OWNER_TOKEN" \
+            --payout-address "${{ vars.E2E_PAYOUT_ADDRESS }}" \
+            --buyer-key "$E2E_BUYER_KEY"
+        env:
+          E2E_OWNER_TOKEN: ${{ secrets.E2E_OWNER_TOKEN }}
+          E2E_BUYER_KEY: ${{ secrets.E2E_BUYER_KEY }}

@@ -1,32 +1,52 @@
 # Deploy the Darwin platform to Hetzner Cloud (k3s) via Terraform.
 #
 # Triggers:
-#   - release published      → deploy the release tag's image
-#   - workflow_dispatch      → deploy any image tag (plan-only unless
-#                              auto_approve is checked)
+#   - release published      → deploy the release tag's image to STAGING
+#   - workflow_dispatch      → deploy any image tag to staging or prod
+#                              (plan-only unless auto_approve is checked)
 #
 # Deploys the GHCR image already built by build.yml
 # (ghcr.io/<owner>/<repo>/darwin-platform), pinned by tag, by running
-# `terraform apply` over infra/terraform/envs/hetzner.
+# `terraform apply` over infra/terraform/envs/hetzner with
+# `<environment>.tfvars` and its own state key. Promote to prod only an image
+# that passed e2e-staging; give `hetzner-prod` required reviewers.
 #
-# ── Required GitHub config (scope to the `hetzner-prod` Environment) ──────────
+# ── Required GitHub config (per Environment: hetzner-staging, hetzner-prod) ──
 # Secrets:
 #   HCLOUD_TOKEN              Hetzner Cloud API token (Read+Write)
 #   TF_SSH_PUBLIC_KEY         public SSH key authorized on the nodes
 #   TF_SSH_PRIVATE_KEY        matching private key (kubeconfig fetch)
-#   HETZNER_S3_ACCESS_KEY     Hetzner Object Storage S3 access key (state)
-#   HETZNER_S3_SECRET_KEY     Hetzner Object Storage S3 secret key (state)
-#   LITELLM_MASTER_KEY        (optional) LiteLLM proxy admin key
+#   HETZNER_S3_ACCESS_KEY     Hetzner Object Storage S3 access key (state +
+#   HETZNER_S3_SECRET_KEY       Postgres PITR backups)
+#   LITELLM_MASTER_KEY        LiteLLM proxy admin key
+#   LITELLM_DATABASE_URL      Postgres URL for LiteLLM virtual keys + spend
+#   CLAUDE_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY   upstream LLM keys
+#   DARWIN_RPC_URL            Base RPC (Sepolia on staging, mainnet on prod)
+#   CDP_API_KEY_ID / CDP_API_KEY_SECRET / CDP_WALLET_SECRET
+#   DARWIN_GAS_TANK_KEY       hot key that tops up each Darwin's gas
+#   DARWIN_SANCTIONS_API_KEY
+#   DARWIN_KYC_PERSONA_API_KEY / _TEMPLATE_ID / _WEBHOOK_SECRET
+#   MOONPAY_API_KEY / MOONPAY_SECRET_KEY / MOONPAY_WEBHOOK_KEY
+#   DARWIN_VAPID_PRIVATE_KEY
+#   E2B_API_KEY / BROWSERBASE_API_KEY
+#   DARWIN_PAGERDUTY_ROUTING_KEY  (optional)
 # Variables:
 #   DARWIN_DOMAIN            api host, e.g. api.darwinagents.com
-#   ACME_EMAIL              Let's Encrypt account email
-#   TF_STATE_BUCKET         Object Storage bucket for tfstate
-#   TF_STATE_REGION         location code (nbg1/fsn1/hel1)
-#   TF_STATE_ENDPOINT       e.g. https://nbg1.your-objectstorage.com
-#   ALLOWED_ADMIN_CIDRS     (optional) JSON list locking SSH/API, e.g. ["1.2.3.4/32"]
+#   ACME_EMAIL               Let's Encrypt account email
+#   ALLOWED_ADMIN_CIDRS      JSON list locking SSH/API, e.g. ["1.2.3.4/32"]
+#   CLERK_ISSUER             Clerk Frontend API URL
+#   CORS_ORIGINS             JSON list of dashboard origins (the Vercel domain)
+#   PLATFORM_FEE_ADDRESS     checksummed 0x fee/settlement address
+#   VAPID_SUBJECT            mailto: or https: URI
+#   DARWIN_VAPID_PUBLIC_KEY
+#   PG_BACKUP_PATH           (prod) s3://bucket/darwin-pg
+#   PG_BACKUP_ENDPOINT       (prod) e.g. https://fsn1.your-objectstorage.com
+#   TF_STATE_BUCKET          Object Storage bucket for tfstate
+#   TF_STATE_REGION          location code (nbg1/fsn1/hel1)
+#   TF_STATE_ENDPOINT        e.g. https://nbg1.your-objectstorage.com
 #
 # The dashboard is NOT deployed here — it ships to Vercel separately (see
-# docs). This workflow is the cluster/backend deploy only.
+# web/README.md). This workflow is the cluster/backend deploy only.
 
 name: deploy-hetzner
 
@@ -35,6 +55,11 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [staging, prod]
+        default: staging
       image_tag:
         description: "GHCR image tag to deploy (e.g. v1.2.3 or sha-abc1234)"
         required: true
@@ -43,10 +68,15 @@ on:
         description: "Run terraform apply (otherwise plan-only)"
         type: boolean
         default: false
+      bootstrap:
+        description: "First deploy only: create the cluster + Vault, not the supervisor (init Vault, then deploy normally)"
+        type: boolean
+        default: false
 
 concurrency:
-  # Never run two deploys at once, and never cancel one mid-apply.
-  group: deploy-hetzner
+  # Never run two deploys of one environment at once, and never cancel one
+  # mid-apply.
+  group: deploy-hetzner-${{ github.event.inputs.environment || 'staging' }}
   cancel-in-progress: false
 
 permissions:
@@ -55,6 +85,7 @@ permissions:
 env:
   TF_VERSION: "1.10.5" # has S3 use_lockfile; avoids the 1.11.2+ checksum regression
   ENV_DIR: infra/terraform/envs/hetzner
+  TARGET: ${{ github.event.inputs.environment || 'staging' }}
 
 jobs:
   # --------------------------------------------------------------------------
@@ -93,13 +124,32 @@ jobs:
 
   # --------------------------------------------------------------------------
   deploy:
-    name: terraform apply (hetzner)
+    name: terraform apply (hetzner-${{ github.event.inputs.environment || 'staging' }})
     needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Gate the actual apply behind a GitHub Environment so you can require
-    # reviewers / restrict secrets to production.
-    environment: hetzner-prod
+    # Each target is a GitHub Environment so prod can require reviewers and
+    # each keeps its own secrets.
+    environment: hetzner-${{ github.event.inputs.environment || 'staging' }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_ssh_public_key: ${{ secrets.TF_SSH_PUBLIC_KEY }}
+      TF_VAR_ssh_private_key: ${{ secrets.TF_SSH_PRIVATE_KEY }}
+      TF_VAR_litellm_master_key: ${{ secrets.LITELLM_MASTER_KEY }}
+      TF_VAR_litellm_database_url: ${{ secrets.LITELLM_DATABASE_URL }}
+      TF_VAR_domain: ${{ vars.DARWIN_DOMAIN }}
+      TF_VAR_acme_email: ${{ vars.ACME_EMAIL }}
+      TF_VAR_allowed_admin_cidrs: ${{ vars.ALLOWED_ADMIN_CIDRS }}
+      TF_VAR_clerk_issuer: ${{ vars.CLERK_ISSUER }}
+      TF_VAR_cors_origins: ${{ vars.CORS_ORIGINS }}
+      TF_VAR_platform_fee_address: ${{ vars.PLATFORM_FEE_ADDRESS }}
+      TF_VAR_vapid_subject: ${{ vars.VAPID_SUBJECT }}
+      TF_VAR_database_backup_destination_path: ${{ vars.PG_BACKUP_PATH }}
+      TF_VAR_database_backup_endpoint_url: ${{ vars.PG_BACKUP_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -107,6 +157,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false # plain stdout for `terraform output -raw`
 
       - name: Resolve image tag
         id: img
@@ -120,8 +171,8 @@ jobs:
           case "$TAG" in v[0-9]*) TAG="${TAG#v}" ;; esac
           # GHCR image names must be lowercase.
           REPO="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          echo "image=ghcr.io/$REPO/darwin-platform:$TAG" >> "$GITHUB_OUTPUT"
-          echo "Deploying image: ghcr.io/$REPO/darwin-platform:$TAG"
+          echo "TF_VAR_platform_image=ghcr.io/$REPO/darwin-platform:$TAG" >> "$GITHUB_ENV"
+          echo "Deploying image: ghcr.io/$REPO/darwin-platform:$TAG to $TARGET"
 
       - name: Configure remote state backend
         run: |
@@ -129,13 +180,13 @@ jobs:
           terraform {
             backend "s3" {
               bucket = "${{ vars.TF_STATE_BUCKET }}"
-              key    = "hetzner/prod/terraform.tfstate"
+              key    = "hetzner/${TARGET}/terraform.tfstate"
               region = "${{ vars.TF_STATE_REGION }}"
               endpoints                   = { s3 = "${{ vars.TF_STATE_ENDPOINT }}" }
               skip_credentials_validation = true
               skip_region_validation      = true
-              skip_metadata_api_check     = true
               skip_requesting_account_id  = true
+              skip_metadata_api_check     = true
               use_path_style              = true
               use_lockfile                = true
               skip_s3_checksum            = true
@@ -143,59 +194,88 @@ jobs:
           }
           EOF
 
-      - name: Compose Terraform variables
+      - name: Compose secret Terraform variables
+        # jq builds the JSON maps (dropping unset secrets), so no value is
+        # ever interpolated into shell or YAML.
         run: |
-          # Default optional secrets so an unset secret doesn't blank a value.
-          echo "TF_VAR_litellm_master_key=${LITELLM_MASTER_KEY:-sk-hetzner-litellm-change-me}" >> "$GITHUB_ENV"
-          if [ -n "${ALLOWED_ADMIN_CIDRS}" ]; then
-            echo "TF_VAR_allowed_admin_cidrs=${ALLOWED_ADMIN_CIDRS}" >> "$GITHUB_ENV"
-          fi
+          secret_env="$(jq -cn 'env | {
+              DARWIN_RPC_URL, CDP_API_KEY_ID, CDP_API_KEY_SECRET, CDP_WALLET_SECRET,
+              DARWIN_GAS_TANK_KEY, DARWIN_SANCTIONS_API_KEY,
+              DARWIN_KYC_PERSONA_API_KEY, DARWIN_KYC_PERSONA_TEMPLATE_ID,
+              DARWIN_KYC_PERSONA_WEBHOOK_SECRET,
+              MOONPAY_API_KEY, MOONPAY_SECRET_KEY, MOONPAY_WEBHOOK_KEY,
+              DARWIN_VAPID_PUBLIC_KEY, DARWIN_VAPID_PRIVATE_KEY,
+              E2B_API_KEY, BROWSERBASE_API_KEY, DARWIN_PAGERDUTY_ROUTING_KEY
+            } | with_entries(select(.value != null and .value != ""))')"
+          echo "TF_VAR_secret_env=${secret_env}" >> "$GITHUB_ENV"
+          provider_keys="$(jq -cn 'env | {CLAUDE_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY}
+            | with_entries(select(.value != null and .value != ""))')"
+          echo "TF_VAR_litellm_provider_keys=${provider_keys}" >> "$GITHUB_ENV"
+          jq -cn 'env | {access_key_id: .AWS_ACCESS_KEY_ID, secret_access_key: .AWS_SECRET_ACCESS_KEY}' \
+            | sed 's/^/TF_VAR_database_backup_s3_credentials=/' >> "$GITHUB_ENV"
         env:
-          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
-          ALLOWED_ADMIN_CIDRS: ${{ vars.ALLOWED_ADMIN_CIDRS }}
+          DARWIN_RPC_URL: ${{ secrets.DARWIN_RPC_URL }}
+          CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
+          CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
+          CDP_WALLET_SECRET: ${{ secrets.CDP_WALLET_SECRET }}
+          DARWIN_GAS_TANK_KEY: ${{ secrets.DARWIN_GAS_TANK_KEY }}
+          DARWIN_SANCTIONS_API_KEY: ${{ secrets.DARWIN_SANCTIONS_API_KEY }}
+          DARWIN_KYC_PERSONA_API_KEY: ${{ secrets.DARWIN_KYC_PERSONA_API_KEY }}
+          DARWIN_KYC_PERSONA_TEMPLATE_ID: ${{ secrets.DARWIN_KYC_PERSONA_TEMPLATE_ID }}
+          DARWIN_KYC_PERSONA_WEBHOOK_SECRET: ${{ secrets.DARWIN_KYC_PERSONA_WEBHOOK_SECRET }}
+          MOONPAY_API_KEY: ${{ secrets.MOONPAY_API_KEY }}
+          MOONPAY_SECRET_KEY: ${{ secrets.MOONPAY_SECRET_KEY }}
+          MOONPAY_WEBHOOK_KEY: ${{ secrets.MOONPAY_WEBHOOK_KEY }}
+          DARWIN_VAPID_PUBLIC_KEY: ${{ vars.DARWIN_VAPID_PUBLIC_KEY }}
+          DARWIN_VAPID_PRIVATE_KEY: ${{ secrets.DARWIN_VAPID_PRIVATE_KEY }}
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+          DARWIN_PAGERDUTY_ROUTING_KEY: ${{ secrets.DARWIN_PAGERDUTY_ROUTING_KEY }}
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
       - name: terraform init
         working-directory: ${{ env.ENV_DIR }}
         run: terraform init -input=false
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+
+      - name: Restore kubeconfig
+        # The cluster module fetches the kubeconfig only when the control
+        # plane is created; a fresh runner has none, and the providers need
+        # it at plan. Re-fetch it from the existing control plane.
+        working-directory: ${{ env.ENV_DIR }}
+        run: |
+          ip="$(terraform output -raw control_plane_ipv4 2>/dev/null || true)"
+          if [ -z "$ip" ]; then
+            echo "No cluster in state yet; the first apply creates it."
+            exit 0
+          fi
+          keyfile="$(mktemp)"
+          trap 'rm -f "$keyfile"' EXIT
+          printf '%s\n' "$TF_VAR_ssh_private_key" > "$keyfile"
+          chmod 600 "$keyfile"
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$keyfile" \
+            "root@${ip}:/etc/rancher/k3s/k3s.yaml" .kubeconfig
+          sed -i "s#https://127.0.0.1:6443#https://${ip}:6443#" .kubeconfig
 
       - name: terraform plan
         working-directory: ${{ env.ENV_DIR }}
-        run: terraform plan -input=false -out=tfplan
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          TF_VAR_ssh_public_key: ${{ secrets.TF_SSH_PUBLIC_KEY }}
-          TF_VAR_ssh_private_key: ${{ secrets.TF_SSH_PRIVATE_KEY }}
-          TF_VAR_domain: ${{ vars.DARWIN_DOMAIN }}
-          TF_VAR_acme_email: ${{ vars.ACME_EMAIL }}
-          TF_VAR_platform_image: ${{ steps.img.outputs.image }}
+        # The supervisor won't boot until Vault is initialised and holds the
+        # transit key, so a first deploy stops at Vault (README §4).
+        run: |
+          target=""
+          if [ "${{ github.event.inputs.bootstrap }}" = "true" ]; then
+            target="-target=module.platform_stack.module.vault_prod"
+          fi
+          terraform plan -input=false -var-file="${TARGET}.tfvars" $target -out=tfplan
 
       - name: terraform apply
         # Apply on a published release, or on a dispatch with auto_approve.
         if: ${{ github.event_name == 'release' || github.event.inputs.auto_approve == 'true' }}
         working-directory: ${{ env.ENV_DIR }}
         run: terraform apply -input=false tfplan
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          TF_VAR_ssh_public_key: ${{ secrets.TF_SSH_PUBLIC_KEY }}
-          TF_VAR_ssh_private_key: ${{ secrets.TF_SSH_PRIVATE_KEY }}
-          TF_VAR_domain: ${{ vars.DARWIN_DOMAIN }}
-          TF_VAR_acme_email: ${{ vars.ACME_EMAIL }}
-          TF_VAR_platform_image: ${{ steps.img.outputs.image }}
 
       - name: Post-apply reminder
         if: ${{ github.event_name == 'release' || github.event.inputs.auto_approve == 'true' }}
         run: |
-          echo "::notice::Deployed ${{ steps.img.outputs.image }}. If this was the first apply, complete the manual steps in infra/terraform/envs/hetzner/README.md (DNS A record, Vault init/unseal + k8s-auth)."
+          echo "::notice::Deployed $TF_VAR_platform_image to $TARGET. If this was the first apply, complete the manual steps in infra/terraform/envs/hetzner/README.md (DNS A record, Vault init/unseal + transit key)."

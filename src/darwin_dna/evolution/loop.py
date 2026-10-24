@@ -280,6 +280,11 @@ class DarwinRuntime:
         # this from outside the genome via :meth:`install_amendment`; the
         # genome's perceive/plan/dispatch cycle never reads or writes it.
         self._pending_amendment: tuple[bytes, str] | None = None
+        # Where this organism cannot sign its own child (a k8s pod holds only
+        # the platform's public key), the platform installs a relay: the loop
+        # hands it the reproduction inputs and the platform runs
+        # ``reproduce`` — signing, funding, spawning — on its side.
+        self.reproduction_relay: Callable[..., None] | None = None
 
         ctx = OrchestratorContext(
             darwin_id=identity.darwin_id,
@@ -620,6 +625,21 @@ class DarwinRuntime:
         # Clear BEFORE the call so an exception mid-reproduction doesn't leave
         # the amendment staged for a second attempt.
         self._pending_amendment = None
+        if self.reproduction_relay is not None:
+            # The funding outflow rebases the profit baseline when it lands
+            # (perceive); the windowed counter-pressures reset now.
+            self.reproduction_relay({
+                "generation_recurring_failures": dict(self.state.recurring_failures),
+                "dead_ends": set(self.archive.dead_ends()),
+                "successful_strategy_id": self.strategy.spec.id,
+                "profit_usdc": profit,
+                "staged_semantic": staged_semantic,
+                "amendment": amendment,
+            })
+            self.state.escalations_approved = 0
+            self.state.escalations_rejected = 0
+            self.state.policy_violations = 0
+            return
         result = reproduce(
             parent_identity=self.identity,
             inherited_layer_blobs=self._p.layer_blobs,
