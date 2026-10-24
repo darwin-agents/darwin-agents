@@ -12,9 +12,43 @@
  *                                 raft Vault, gVisor, hcloud-volumes storage,
  *                                 LoadBalancer ingress, cert-manager TLS
  *
+ * One env, two deployments: `staging.tfvars` (Base Sepolia) and
+ * `prod.tfvars` (Base mainnet), each with its own state key. Both boot with
+ * `--env=production`, so staging runs the same boot guard
+ * (`_assert_production_ready`) prod does, just on testnet money.
+ *
  * Remote state lives in Hetzner Object Storage — see backend.tf.example.
  * Post-apply steps (DNS, Vault init/unseal, gVisor verify) are in README.md.
  */
+
+locals {
+  # The supervisor flags the production boot guard checks that the chart
+  # doesn't already set (--driver, --db, --wallet-provider, --leader-election
+  # come from chart values). Secrets arrive as env via var.secret_env.
+  platform_args = concat(
+    [
+      "--env=production",
+      "--network=${var.network}",
+      "--clerk-issuer=${var.clerk_issuer}",
+      "--kyc-provider=${var.kyc_provider}",
+      "--sanctions-provider=${var.sanctions_provider}",
+      "--litellm-virtual-keys",
+      "--signing-vault-transit-key=${var.signing_vault_transit_key}",
+      # Vault as the supervisor's ServiceAccount (role from README §4).
+      "--vault-k8s-role=darwin",
+      "--platform-fee-address=${var.platform_fee_address}",
+      "--push-provider=webpush",
+      "--vapid-subject=${var.vapid_subject}",
+      "--fiat-provider=${var.fiat_provider}",
+    ],
+    [for o in var.cors_origins : "--cors-origin=${o}"],
+    var.store_price_usdc == null ? [] : ["--store-price-usdc=${var.store_price_usdc}"],
+    var.x402_facilitator_url == "" ? [] : ["--x402-facilitator-url=${var.x402_facilitator_url}"],
+    var.cdp_per_tx_usdc == null ? [] : ["--cdp-per-tx-usdc=${var.cdp_per_tx_usdc}"],
+    var.cdp_per_day_usdc == null ? [] : ["--cdp-per-day-usdc=${var.cdp_per_day_usdc}"],
+    var.pod_reproduction ? ["--pod-reproduction"] : [],
+  )
+}
 
 provider "hcloud" {
   token = var.hcloud_token
@@ -91,7 +125,7 @@ module "platform_stack" {
   vault_mode            = "raft"
   storage_class         = module.hcloud_bootstrap.storage_class # hcloud-volumes
   database_storage_size = "10Gi"
-  database_instances    = 1 # bump to >=3 for HA Postgres
+  database_instances    = var.database_instances
 
   # Vault auto-unseal (doc 20, README §4b). Empty = manual unseal (default).
   vault_seal_config_hcl = var.vault_seal_config_hcl
@@ -102,6 +136,7 @@ module "platform_stack" {
   database_backup_destination_path      = var.database_backup_destination_path
   database_backup_endpoint_url          = var.database_backup_endpoint_url
   database_backup_s3_credentials_secret = var.database_backup_s3_credentials_secret
+  database_backup_s3_credentials        = var.database_backup_s3_credentials
   database_backup_retention_policy      = var.database_backup_retention_policy
 
   # gVisor isolation: nodes carry the runsc shim (cloud-init); the chart
@@ -111,6 +146,9 @@ module "platform_stack" {
   runtime_handler      = "runsc"
 
   wallet_provider = var.wallet_provider
+  leader_election = true
+  extra_args      = local.platform_args
+  secret_env      = var.secret_env
 
   litellm_master_key    = var.litellm_master_key
   litellm_provider_keys = var.litellm_provider_keys

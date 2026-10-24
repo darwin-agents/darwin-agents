@@ -404,6 +404,32 @@ class _Handle:
 
 
 # -- the supervisor --------------------------------------------------------
+class _SupervisorReproductionAudit:
+    """The genome's ``reproduce`` audit calls, recorded in the supervisor's
+    chain (a pod Darwin's own chain lives in its pod)."""
+
+    def __init__(self, audit: Any, darwin_id: str) -> None:
+        self._audit, self._did = audit, darwin_id
+
+    def _rec(self, action: str, payload: dict[str, Any]) -> None:
+        self._audit.record(
+            actor="platform.supervisor", action=action, darwin_id=self._did,
+            metadata=json.loads(json.dumps(payload, default=str)),
+        )
+
+    def log_intent(self, kind: str, payload: dict[str, Any]) -> str:
+        self._rec(kind, payload)
+        return secrets.token_hex(8)
+
+    def log_outcome(
+        self, audit_id: str, status: str, payload: dict[str, Any] | None = None,
+    ) -> None:
+        self._rec("reproduction.outcome", {"status": status, **(payload or {})})
+
+    def log_event(self, kind: str, payload: dict[str, Any]) -> None:
+        self._rec(kind, payload)
+
+
 class Supervisor:
     """Lifecycle owner for a fleet of in-process Darwins.
 
@@ -808,6 +834,8 @@ class Supervisor:
         self._pod_settle_min_usdc = float(pod_settle_min_usdc)
         self._pod_sync_seconds = float(pod_sync_seconds)
         self._gas_tank = gas_tank
+        self._gas_tank_checked_at: float | None = None
+        self._gas_tank_alerted = False
         self._require_payout_address = bool(require_payout_address)
         self._store_price_usdc = (
             float(store_price_usdc)
@@ -1133,6 +1161,24 @@ class Supervisor:
                     actor="platform.maintenance", action="pod_sync_failed",
                     darwin_id=did, metadata={"reason": str(exc)[:200]},
                 )
+        await self._check_gas_tank()
+
+    async def _check_gas_tank(self) -> None:
+        """Page once when the gas tank runs low (every pod transfer stops
+        when it is dry); re-arm after a refill. Checked every 5 minutes."""
+        tank, now = self._gas_tank, float(self._clock())
+        if tank is None or (
+            self._gas_tank_checked_at is not None and now - self._gas_tank_checked_at < 300
+        ):
+            return
+        self._gas_tank_checked_at = now
+        try:
+            low = bool(await asyncio.to_thread(tank.low))
+        except Exception:  # noqa: BLE001 - an RPC blip is not an outage
+            return
+        if low and not self._gas_tank_alerted:
+            self._fleet_alert("gas_tank_low", {"address": str(tank.address)})
+        self._gas_tank_alerted = low
 
     async def _sync_k8s_pod(self, did: str, h: dict[str, Any]) -> None:
         cursor = int(h.get("esc_cursor", 0))
@@ -1160,26 +1206,173 @@ class Supervisor:
                 darwin_id=did, metadata={"error": crashed},
             )
             self._fleet_alert("drive_crashed", {"darwin_id": did, "error": crashed})
+        reason = str(snap.get("death_reason") or "")
+        if reason.startswith("ledger reconciliation drift") and not h.get("drift_alerted"):
+            h["drift_alerted"] = True  # the books disagree with the chain
+            self._fleet_alert("ledger_drift", {"darwin_id": did, "reason": reason[:200]})
         await self._settle_k8s(did, h, snap)
+        if self._pod_substrate.get("pod_reproduction"):
+            await self._sync_k8s_reproduction(did, h, snap)
+
+    async def _sync_k8s_reproduction(
+        self, did: str, h: dict[str, Any], snap: dict[str, Any],
+    ) -> None:
+        """A pod's genome wants a child. The pod cannot sign, so the child is
+        made here and the outcome acked; a refusal is acked too (the pod
+        backs off for an hour)."""
+        req = (await self._k8s_control_get(did, "/reproduction")).get("request")
+        if not req:
+            return
+        ack: dict[str, Any] = {"request_id": req.get("request_id"), "ok": False}
+        try:
+            ack.update(await self._reproduce_k8s(did, h, snap, req), ok=True)
+        except Exception as exc:  # noqa: BLE001 - acked + audited
+            ack["reason"] = str(exc)[:200]
+            self._audit.record(
+                actor="platform.supervisor", action="reproduction_refused",
+                darwin_id=did, metadata={"reason": ack["reason"]},
+            )
+        await self._k8s_control_post(did, "/reproduction/ack", ack)
+
+    async def _reproduce_k8s(
+        self, did: str, h: dict[str, Any], snap: dict[str, Any], req: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Re-verify the parent's DNA (the pod is untrusted; the signature is
+        not), run the genome's ``reproduce`` with the platform key, fund the
+        child from the parent's account, then spawn it for the same owner.
+        The budget comes from the chain and platform hyperparameters, never
+        from the pod."""
+        import base64
+
+        from darwin_dna.evolution.reproduction import reproduce
+        from darwin_dna.identity import Identity
+        from darwin_dna.manifest import Manifest, verify_manifest
+        from darwin_dna.signature import load_platform_public_key
+
+        now = float(self._clock())
+        if not snap.get("alive") or snap.get("killed"):
+            raise SupervisorError("parent is not alive")
+        last = h.get("reproduced_at")
+        # ponytail: in-memory rate limit, resets on supervisor restart.
+        if last is not None and now - float(last) < 86_400:
+            raise SupervisorError("at most one child per parent per day")
+        manifest = Manifest.model_validate_json(req["manifest_json"])
+        blobs = {int(i): base64.b64decode(b) for i, b in req["layer_blobs_b64"].items()}
+        names = {int(i): str(n) for i, n in req["layer_names"].items()}
+        verify_manifest(manifest, blobs, load_platform_public_key(self._signer.public_key_pem()))
+        ident = manifest.identity
+        if ident.darwin_id != did:
+            raise SupervisorError("the manifest is not this Darwin's")
+        balance = float(await asyncio.to_thread(self._pod_signer(did).balance_usdc)) - float(
+            (snap.get("wallet") or {}).get("unsettled_usdc") or 0.0
+        )
+        hp = self._darwin_hp
+        child: dict[str, Any] = {}
+
+        class _Capture:  # reproduce() hands the signed child DNA here
+            def spawn(self, **kw: Any) -> dict[str, Any]:
+                child.update(kw)
+                return {}
+
+        result = reproduce(
+            parent_identity=Identity(
+                darwin_id=ident.darwin_id, generation=ident.generation,
+                parent_id=ident.parent_id, birth_ts=ident.birth_ts,
+                lineage=list(ident.lineage), l0_version=ident.l0_version,
+            ),
+            inherited_layer_blobs=blobs, inherited_layer_names=names,
+            generation_recurring_failures={
+                str(k): int(v) for k, v in dict(req.get("generation_recurring_failures") or {}).items()
+            },
+            dead_ends={str(d) for d in req.get("dead_ends") or []},
+            successful_strategy_id=str(req.get("successful_strategy_id") or ""),
+            profit_usdc=float(req.get("profit_usdc") or 0.0),
+            staged_semantic=list(req.get("staged_semantic") or []),
+            parent_balance_usdc=balance,
+            minimum_viable_usdc=hp.minimum_viable_balance_usdc,
+            profit_transfer_fraction=hp.profit_transfer_fraction,
+            generation_soft_cap=hp.generation_soft_cap,
+            signer=self._signer, spawner=_Capture(),
+            audit=_SupervisorReproductionAudit(self._audit, did), clock=self._clock,
+        )
+        budget = float(result.budget_usdc)
+        if budget < 1.0:
+            raise SupervisorError(f"surplus too small to fund a child ({budget:.2f} USDC)")
+        child_id = result.child_id
+        child_manifest = Manifest.model_validate_json(child["child_manifest"])
+        to = self._pod_signer(child_id).address()
+        tx = await self._pod_transfer(
+            did, to=to, amount_usdc=budget, purpose="reproduction",
+            movement={"reproduction_transfer": {
+                "amount_usdc": budget, "to": to, "child_id": child_id,
+            }},
+        )
+        h["reproduced_at"] = now
+        try:
+            await self._spawn_k8s(
+                opening_usdc=budget, escalation_auto=h.get("escalation_auto"),
+                parent_id=did, actor=h.get("owner_subject") or "anonymous",
+                dna=(child_manifest, dict(child["child_layer_blobs"]),
+                     {e.index: e.name for e in child_manifest.layers}, child_id),
+            )
+        except Exception as exc:
+            # The budget already sits at the child's address (a platform
+            # CDP account): page, so an operator spawns or sweeps it.
+            self._fleet_alert("reproduction_spawn_failed", {
+                "darwin_id": did, "child_id": child_id, "tx_hash": tx,
+                "reason": str(exc)[:200],
+            })
+            raise
+        return {"child_id": child_id, "budget_usdc": budget, "tx_hash": tx}
 
     async def _settle_k8s(
         self, did: str, h: dict[str, Any], snap: dict[str, Any], *, force: bool = False,
     ) -> None:
         """Pay a pod's accrued metering + fees to the fee address. One
-        settlement in flight per Darwin, until the pod's books show it."""
-        unsettled = float((snap.get("wallet") or {}).get("unsettled_usdc") or 0.0)
+        settlement in flight per Darwin, until the pod's books show it paid:
+        its running settled total reaches the target. (``unsettled`` can't
+        tell — metering keeps accruing while the transfer confirms.)"""
+        wallet = snap.get("wallet") or {}
+        unsettled = float(wallet.get("unsettled_usdc") or 0.0)
+        settled = wallet.get("settled_usdc")
         inflight = h.get("settling")
-        if inflight and (unsettled < inflight[0] - 1e-9 or self._clock() - inflight[1] > 600):
-            inflight = h["settling"] = None
+        if inflight:
+            booked = (
+                float(settled) >= inflight["target"] - 1e-9
+                if settled is not None and inflight["target"] is not None
+                else unsettled < inflight["amount"] - 1e-9  # a pre-counter pod
+            )
+            if booked or self._clock() - inflight["at"] > 600:
+                inflight = h["settling"] = None
         if inflight or self._pod_signer_factory is None or not self._platform_fee_address:
             return
         if unsettled < (1e-6 if force else self._pod_settle_min_usdc):
             return
+        amount = round(unsettled, 6)
         tx = await self._pod_transfer(
-            did, to=self._platform_fee_address, amount_usdc=round(unsettled, 6),
+            did, to=self._platform_fee_address, amount_usdc=amount,
             purpose="settlement",
         )
-        h["settling"] = (unsettled, self._clock(), tx)
+        h["settling"] = {
+            "amount": amount, "at": self._clock(), "tx": tx,
+            "target": None if settled is None else float(settled) + amount,
+        }
+
+    async def _settled_snapshot(
+        self, did: str, h: dict[str, Any], *, polls: int = 240, every_s: float = 0.25,
+    ) -> dict[str, Any]:
+        """Settle everything a dying pod owes, waiting for each settlement to
+        land in its books; returns the snapshot once nothing is owed or in
+        flight (so a sweep of its balance strands nothing)."""
+        for _ in range(polls):
+            snap = await self._k8s_control_get(did, "/snapshot")
+            await self._settle_k8s(did, h, snap, force=True)
+            if h.get("settling") is None:
+                return snap
+            if "settled_usdc" not in (snap.get("wallet") or {}):
+                return snap  # a pre-counter pod can't show it booked: settle once
+            await asyncio.sleep(every_s)
+        raise SupervisorError("settlement did not reach the pod's books in time")
 
     async def _pod_transfer(
         self, did: str, *, to: str, amount_usdc: float, purpose: str,
@@ -3126,8 +3319,7 @@ class Supervisor:
             return
         h["closed_out"] = True
         try:
-            snap = await self._k8s_control_get(did, "/snapshot")
-            await self._settle_k8s(did, h, snap, force=True)
+            snap = await self._settled_snapshot(did, h)
             row = self._lifecycle.get(did) if self._lifecycle is not None else None
             dest = row.payout_address if row is not None else None
             rest = round(float(snap.get("balance_usdc") or 0.0), 6)
@@ -4696,6 +4888,7 @@ class Supervisor:
         escalation_auto: str | None,
         parent_id: str | None,
         actor: str,
+        dna: tuple[Any, dict[int, bytes], dict[int, str], str] | None = None,
     ) -> DarwinStatus:
         """Provision a per-Darwin K8s namespace + orchestrator pod via
         :class:`darwin_platform.k8s.K8sDarwinDriver`. The driver mints the
@@ -4712,10 +4905,13 @@ class Supervisor:
         # supervisor) and use its Darwin id for the namespace, so the pod
         # boots as the same organism on every restart instead of minting a
         # fresh, randomly keyed identity each time.
-        manifest, blobs, names, identity = mint_genesis(
-            self._signer, birth_ts=self._clock(),
-        )
-        supervisor_id = identity.darwin_id
+        if dna is None:
+            manifest, blobs, names, identity = mint_genesis(
+                self._signer, birth_ts=self._clock(),
+            )
+            supervisor_id = identity.darwin_id
+        else:  # a child: its DNA was signed in _reproduce_k8s
+            manifest, blobs, names, supervisor_id = dna
         # Mint this Darwin's LiteLLM virtual key (doc 13) BEFORE the pod boots
         # and seal it into the per-Darwin Secret, so the pod authenticates as
         # its own key — not the shared fleet master key. FATAL on mint failure

@@ -8,6 +8,7 @@ terraform is on PATH."""
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -71,9 +72,22 @@ def test_sensitive_inputs_are_marked_sensitive(repo):
 
 
 def test_no_state_or_real_tfvars_committed(repo):
-    tracked = {p.relative_to(repo).as_posix() for p in (repo / TF).rglob("*") if p.is_file()}
+    # Ask git: a local `make dev-up` leaves (gitignored) state on disk.
+    tracked = set(subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", TF],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.split())
     assert not [p for p in tracked if p.endswith((".tfstate", ".tfstate.backup"))]
-    # Only the local kind stack's tfvars (dev defaults) is committed;
-    # real environments ship a *.tfvars.example.
-    real = [p for p in tracked if p.endswith(".tfvars") and "/envs/local/" not in p and "/.terraform/" not in p]
-    assert not real, f"real tfvars committed: {real}"
+    # Committed tfvars carry shape only (sizes, network, caps): no tfvars may
+    # assign a sensitive variable — secrets arrive as TF_VAR_* from CI.
+    leaks = []
+    for rel in sorted(p for p in tracked if p.endswith(".tfvars") and "/.terraform/" not in p):
+        path = repo / rel
+        sensitive = {
+            name
+            for name, body in re.findall(r'variable\s+"(\w+)"\s*{(.*?)\n}', _tf_text(path.parent), re.DOTALL)
+            if "sensitive" in body
+        }
+        assigned = set(re.findall(r"^\s*(\w+)\s*=", path.read_text(), re.MULTILINE))
+        leaks += [f"{rel}: {name}" for name in sorted(assigned & sensitive)]
+    assert not leaks, f"tfvars assign sensitive variables: {leaks}"

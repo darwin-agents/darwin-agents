@@ -8,11 +8,11 @@ The **Anatomy** view answers: *what is this organism structurally right now?* It
 |-------|--------|---------|
 | Neuron registry | Soma manifest / platform snapshot of enabled neurons | On mutation, reproduction, owner disable |
 | Graph topology | LangGraph state: nodes = orchestrator steps + active neuron dispatches | WebSocket or 2s poll |
-| Activity heat | Per-neuron dispatch count in last N minutes (platform metrics or Honeycomb rollup) | WebSocket |
+| Activity heat | Per-neuron dispatch count over the audit log's recent slice (`Supervisor.anatomy`; no separate metrics store) | WebSocket |
 | DNA summary | Layer list, generation, constitution version (read-only) | On reproduce |
 | Current strategy | Active strategy id + label from runtime snapshot | WS |
 
-Planned REST aggregate (backend to implement):
+REST aggregate — shipped as `GET /darwins/{id}/anatomy` (`src/darwin_platform/routers/darwins.py`, built by `Supervisor.anatomy`). The live response also carries `darwin_id`, `orchestrator.tick`, per-neuron `category`, `version`, `last_error_at`, `dispatch_count_recent`, and an edge `weight`; the sketch below is the original contract:
 
 ```json
 GET /darwins/{id}/anatomy
@@ -34,6 +34,8 @@ Until that endpoint exists, the client composes from `GET /darwins/{id}`, `GET /
 ## Visualization stack
 
 **Primary:** `@xyflow/react` (React Flow) with a custom node type per neuron category.
+
+> **As built (2026-10):** React Flow was not adopted. `web/components/anatomy/anatomy-canvas.tsx` renders hand-rolled SVG — the orchestrator at the centre, neurons on a fixed-radius ring, colour by status — fed by the REST snapshot plus `anatomy.patch` messages from the WebSocket.
 
 **Alternative considered:** raw d3 force simulation — more control, higher maintenance. React Flow wins for pan/zoom, minimap, and edge routing out of the box.
 

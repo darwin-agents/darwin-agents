@@ -291,6 +291,7 @@ Per-Darwin namespace + orchestrator microVM. Requires the [k8s] extra. With --dr
 | ---- | ------- | ------- | ----------- |
 | `--driver` | — | `in-process` | One of: `in-process`, `k8s`. Per-Darwin runtime location. Default: in-process. |
 | `--k8s-namespace-prefix` | — | `darwin-` | Per-Darwin namespace prefix (default: 'darwin-'). |
+| `--pod-reproduction` | — | off | Let pod Darwins reproduce: the supervisor verifies the parent's DNA, signs the child, funds it on-chain from the parent's account (at most one child per parent per day) and spawns it for the same owner. Off by default. |
 | `--k8s-runtime-class` | — | `kata` | RuntimeClass for the orchestrator pod (default: 'kata'). |
 | `--k8s-orchestrator-image` | — | — | Image:tag for the orchestrator pod. Default reuses the supervisor image (the entrypoint differs). |
 | `--k8s-orchestrator-memory` | — | `2Gi` | Memory limit for the orchestrator pod (default: 2Gi). The orchestrator OOM-kills below ~2Gi while loading the genome + adapter SDKs at boot. |
@@ -313,8 +314,6 @@ Set by the platform itself — by the supervisor in each orchestrator pod's mani
 | Variable | Set by | Read by | Purpose |
 | -------- | ------ | ------- | ------- |
 | `POD_NAMESPACE` | Kubernetes downward API | supervisor | Namespace the supervisor runs in; NetworkPolicy peer for per-Darwin namespaces (defaults to `default`). |
-| `DARWIN_POD_LITELLM_URL` / `DARWIN_POD_LITELLM_KEY` | supervisor manifest | supervisor (k8s mode) | LiteLLM proxy URL and admin key the supervisor forwards to pods; fallbacks for `DARWIN_LITELLM_URL` / `DARWIN_LITELLM_MASTER_KEY`. |
-| `DARWIN_POD_VAULT_ADDR` | supervisor manifest | supervisor (k8s mode) | Vault address forwarded to pods under `--tenant-namespaces`; fallback for `DARWIN_VAULT_URL`. |
 | `DARWIN_VAULT_ROLE_ID` / `DARWIN_VAULT_SECRET_ID` | per-Darwin control Secret | orchestrator pod | The pod's own Vault AppRole credentials (never the fleet token). Also the env fallbacks for `--vault-role-id` / `--vault-secret-id`. |
 | `DARWIN_PLATFORM_MONEY_RAILS` | supervisor manifest | orchestrator pod | JSON money-capabilities manifest (fiat, KYC, sanctions rails) forwarded to the pod's planner. |
 | `BROWSERBASE_LIVE_VIEW_URL` | operator / pod substrate | supervisor, pod | Live-view URL surfaced to the owner on a captcha wall (`--browserbase-live-view-url`). |
@@ -362,6 +361,22 @@ Entries persist in the `freelancer_registry` SQL table (schema v5).
 | `POST` | `/darwins/{darwin_id}/fiat_payment` | `{amount_usdc, freelancer_id, escalation_id?}`. Two legs: wallet → omnibus address (chain), omnibus → fiat ramp. Refused when `freelancer_id` isn't registered for the Darwin's owner. |
 | `POST` | `/darwins/{darwin_id}/fiat_payment/refund` | `{amount_usdc, reason?}`. Recovery path: omnibus → Darwin wallet, undoing a failed leg 2. |
 | `POST` | `/darwins/{darwin_id}/omnibus/fund` | `{amount_usdc}`. Operator retry of a spawn-time `fund_child` the audit logged as `omnibus_fund_skipped`. Debits user credits and submits the chain transfer once the user has enough credit. |
+
+### Payout address and harvest
+
+| Method | Path | Body / Notes |
+| ------ | ---- | ------------ |
+| `PUT` | `/darwins/{darwin_id}/payout-address` | `{address}` — a checksummed USDC address (e.g. an exchange deposit address), sanctions-screened. In production (`--env production`) harvests and the closing sweep may only go here, and only 24 h after it was last set. |
+| `POST` | `/darwins/{darwin_id}/harvest` | `{amount_usdc, destination}`. The fee applies only to the profit part of the draw; KYC-gated on the owner. Pod Darwins: the platform signs the transfer. |
+
+### x402 storefront (public)
+
+Enabled by `--store-price-usdc`; every Darwin sells a research report at that price, paid straight to its own wallet. No account needed — the payment is the authorization.
+
+| Method | Path | Body / Notes |
+| ------ | ---- | ------------ |
+| `GET` | `/store/{darwin_id}` | The offer: service, `price_usdc`, and the x402 v2 `PaymentRequired`. |
+| `POST` | `/store/{darwin_id}/report` | `{topic}`. Without `PAYMENT-SIGNATURE`: `402` + `PAYMENT-REQUIRED`. With it: the facilitator verifies, the Darwin writes the report, the payment settles, `200` + `PAYMENT-RESPONSE`. A report that can't be produced returns `503` and is never charged; at most 3 open orders per Darwin (`429`). |
 
 ## Genome hyperparameters (Layer 0 constants)
 

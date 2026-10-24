@@ -10,7 +10,9 @@ Route map for the Next.js App Router under `web/app/`. All authenticated routes 
 └────────────────────────────────────────────────────────────┘
 ```
 
-Escalations badge = count of open tickets across owned Darwins (`GET` per Darwin or future `GET /escalations` aggregate).
+Escalations badge = count of open tickets across owned Darwins (`GET /escalations` aggregate).
+
+> **As built (2026-10):** the sidebar (`web/components/layout/sidebar.tsx`) has Fleet, Get started (`/onboarding`), Escalations, Freelancers, Operator (operator-only), Notifications and Dev tokens (dev mode only). Billing and settings are per-Darwin tabs, not global entries.
 
 ## Route table
 
@@ -22,13 +24,17 @@ Escalations badge = count of open tickets across owned Darwins (`GET` per Darwin
 | `/darwins/[id]/timeline` | Full-width Timeline | 2 | events + WS |
 | `/darwins/[id]/anatomy` | Full-width Anatomy | 2 | anatomy + WS |
 | `/darwins/[id]/vault` | **Vault** — user + Darwin entries, revoke | 2 | vault CRUD |
-| `/darwins/[id]/data` | **Data browser** — table list | 2 | `GET .../data/{table}` (TBD) |
-| `/darwins/[id]/data/[table]` | Paginated rows, read-only | 2 | same |
-| `/darwins/[id]/lineage` | **Lineage tree** — d3 tree | 1+ | `GET /lineage/tree` |
+| `/darwins/[id]/data` | **Data browser** — tabs for lifecycle, lineage, ledger and audit chain; an *Organism* tab (table list + paginated read-only rows) appears for operators when tenant namespaces are on | 2 | owner reads + `GET /platform/darwins/{id}/organism/tables[/{table}/rows]` |
+| `/darwins/[id]/lineage` | **Lineage** — list view (d3 tree not built) | 1+ | `GET /lineage/tree` |
 | `/darwins/[id]/billing` | Deposits, infra costs, harvest history | 2 | billing + fiat |
 | `/darwins/[id]/settings` | Caps, harvest rules, controls, notifications | 1+ | controls, harvest_rules |
-| `/escalations` | **Inbox** — all open tickets, sort by deadline | 2 | escalations per Darwin |
-| `/settings` | Account notifications, keyboard shortcut for kill | 2 | user prefs (mostly local + Clerk) |
+| `/escalations` | **Inbox** — all open tickets, sort by deadline | 2 | `GET /escalations` |
+| `/notifications` | Web Push opt-in for escalations (PWA) | 2 | `/me/push-vapid-public-key`, `/me/push-subscriptions` |
+| `/freelancers` | Owner's verified fiat-payout destinations | 2 | `/me/freelancers` |
+| `/onboarding` | First-run steps: verify identity (KYC) → enable notifications → spawn → fund | 2 | `/platform/kyc/status`, `/platform/kyc/start`, push + spawn APIs |
+| `/operator` | Fleet operator console (operator-only) | 2 | `/platform/*` |
+| `/tokens` | Dev-token paste (dev auth mode only) | 0 | — |
+| `/darwins/[id]/{summary,payments,preapprovals,resources,proposals,forensics,operator}` | Per-Darwin tabs; `preapprovals`, `payments` and `operator` are operator-only, `forensics` also needs `--soma-root` | 2 | ledger/billing, preapprovals, resources, proposals, forensics |
 
 ## Fleet home (detail)
 
@@ -86,7 +92,7 @@ Actions: revoke, mark sensitive (POST via vault admin API when exposed to owner 
 
 ## Lineage view
 
-- d3 tree: nodes = Darwins, edges = parent → child.
+- d3 tree: nodes = Darwins, edges = parent → child. *(As built: the indented-list minimum below; no d3.)*
 - Node click → summary panel: fitness at death/birth, cause of death, link to Timeline archive.
 - Phase 1 minimum: JSON tree rendered as indented list acceptable before d3 polish.
 
@@ -114,3 +120,5 @@ Each successful mutation toast includes "View in audit" deep link to Timeline fi
 ## Operator vs owner
 
 The owner app must not expose `/platform/*` operator routes. Internal operators use separate tooling (not documented here).
+
+> **As built (2026-10):** operator screens live in the same dashboard but are scope-gated — tabs are hidden unless `/platform/capabilities` reports `is_operator` (or `organism_browser` / `forensics_viewer`), and `components/layout/operator-only.tsx` guards direct URLs. The API enforces `platform_operator` on every `/platform/*` route regardless.
