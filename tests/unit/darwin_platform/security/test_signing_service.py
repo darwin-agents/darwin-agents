@@ -169,6 +169,35 @@ def test_hvac_transit_backend_returns_latest_pem_and_decodes_sig():
     assert client.sign_calls[0]["name"] == "darwin-platform"
 
 
+def test_hvac_transit_backend_relogs_in_once_on_expired_lease():
+    class Forbidden(Exception):
+        pass
+
+    pem = _real_ed25519_pem()
+    client = _StubTransitClient(pem=pem, sig_b64=base64.b64encode(b"\xcc" * 64).decode())
+    real_sign, expired = client.sign_data, [True]
+
+    def sign_data(**kw):
+        if expired:
+            expired.pop()
+            raise Forbidden("permission denied")
+        return real_sign(**kw)
+
+    client.sign_data = sign_data
+    logins = []
+    backend = HvacTransitBackend(
+        client=client, key_name="darwin-platform", reauth=lambda: logins.append(1),
+    )
+    assert backend.sign(b"hi") == b"\xcc" * 64
+    assert logins == [1]
+
+    # Without a reauth hook (static token) the auth error propagates.
+    expired.append(True)
+    static = HvacTransitBackend(client=client, key_name="darwin-platform")
+    with pytest.raises(SigningServiceError):
+        static.sign(b"hi")
+
+
 def test_hvac_transit_backend_rejects_empty_key():
     backend_factory = lambda: HvacTransitBackend(
         client=None, mount="transit", key_name="x",

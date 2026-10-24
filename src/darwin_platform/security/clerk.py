@@ -131,6 +131,7 @@ class ClerkTokenStore:
         scopes_claim: str = DEFAULT_SCOPES_CLAIM,
         default_scopes: tuple[str, ...] = (OWNER,),
         ownership: dict[str, set[str]] | None = None,
+        owned_by: Callable[[str], set[str]] | None = None,
     ) -> None:
         self._verifier = verifier
         self._scopes_claim = scopes_claim
@@ -138,6 +139,10 @@ class ClerkTokenStore:
         self._ownership: dict[str, set[str]] = {
             str(k): set(v) for k, v in (ownership or {}).items()
         }
+        # The platform's own record of who owns what (persisted lifecycle +
+        # live handles), so restarts and Darwins spawned without a request
+        # token — a pod's child — resolve to their owner.
+        self._owned_by = owned_by
 
     def lookup(self, token: str) -> AuthContext | None:
         try:
@@ -147,10 +152,13 @@ class ClerkTokenStore:
         subject = str(claims.get("sub") or "").strip()
         if not subject:
             return None
+        owned = set(self._ownership.get(subject, set()))
+        if self._owned_by is not None:
+            owned |= set(self._owned_by(subject))
         return AuthContext(
             token=token,
             scopes=self._scopes_from(claims),
-            owned_darwins=set(self._ownership.get(subject, set())),
+            owned_darwins=owned,
             subject=subject,
         )
 
