@@ -18,6 +18,9 @@ Darwins now run as Kubernetes pods end to end, and the money path is real on Bas
 
 ### Added
 
+- test(infra): drop the uv --frozen install assertion
+- feat(changelog): keep a hand-written unreleased summary across sync
+- test(web): cover resume and the money card on a Darwin page
 - feat(web): show funding, onboarding, and draft legal pages
 - feat(platform): return wallet, profit, and payout on Darwin status
 - test(performance): bound control-plane API latency on a populated fleet
@@ -73,6 +76,8 @@ Darwins now run as Kubernetes pods end to end, and the money path is real on Bas
 
 ### Changed
 
+- docs(frontend): describe the shipped dashboard, stream, and PWA companion
+- docs: describe the shipped pod money path and dashboard
 - docs: renumber the evolution guide and document the test tiers
 - build(docker): install the image from the locked dependency set
 - docs(platform): describe the money capabilities route
@@ -81,6 +86,7 @@ Darwins now run as Kubernetes pods end to end, and the money path is real on Bas
 
 ### Fixed
 
+- fix(web): pass the CSP nonce through Clerk middleware
 - ci: run the e2e tier on every pull request
 - fix(platform): keep the audit chain intact after a torn write
 - fix(platform): buy Base USDC straight into the Darwin's wallet
