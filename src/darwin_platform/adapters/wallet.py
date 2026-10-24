@@ -198,8 +198,11 @@ class RealWallet:
         self._reader = reader
         self._fee_address = fee_address
         self._confirmations = max(0, int(confirmations))
-        # Metered spend + fees booked but not yet paid on-chain.
+        # Metered spend + fees booked but not yet paid on-chain, and the
+        # running total of settlements seen paid (monotonic: the platform
+        # matches its in-flight settlement against it).
         self._unsettled = 0.0
+        self._settled_total = 0.0
         # Last block the movement feed + balance were read at (reader mode).
         self._synced_block: int | None = None
         self._synced_balance = 0.0
@@ -227,7 +230,7 @@ class RealWallet:
     # ponytail: the whole feed stays in memory and the log only grows;
     # compact (snapshot + truncate) when a Darwin's feed gets large.
     _STATE = (
-        "_unsettled", "_synced_block", "_synced_balance", "_hints",
+        "_unsettled", "_settled_total", "_synced_block", "_synced_balance", "_hints",
         "_credit_sources", "_expected_inbound", "_settling", "_spent_today",
         "_spent_lifetime",
         "_today", "_last_revenue_ts",
@@ -349,6 +352,7 @@ class RealWallet:
                     self._settling.pop(tx, None)
                     paid = min(amt, self._unsettled)
                     self._unsettled -= paid
+                    self._settled_total += amt
                     if amt - paid > 1e-9:
                         rows.append({"debit": {
                             "to": log["to"], "amount_usdc": amt - paid,
@@ -409,6 +413,10 @@ class RealWallet:
     @property
     def unsettled_usdc(self) -> float:
         return round(self._unsettled, 6)
+
+    @property
+    def settled_usdc(self) -> float:
+        return round(self._settled_total, 6)
 
     def _day(self) -> str:
         import time as _t

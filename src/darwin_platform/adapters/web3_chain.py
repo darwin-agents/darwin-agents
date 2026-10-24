@@ -368,3 +368,7 @@ class GasTank:
 
     def balance_eth(self) -> float:
         return int(self._w3.eth.get_balance(self.address)) / 10**18
+
+    def low(self, topups: int = 20) -> bool:
+        """Fewer than ``topups`` top-ups left: time to refill the tank."""
+        return int(self._w3.eth.get_balance(self.address)) < topups * self._topup_wei

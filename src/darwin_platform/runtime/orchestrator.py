@@ -306,6 +306,7 @@ class OrchestratorState:
         clock: Callable[[], float],
         heartbeat_seconds: float = 0.005,
         soma_merger=None,
+        pod_reproduction: bool = False,
     ) -> None:
         self.darwin_id = darwin_id
         self.stack = stack
@@ -325,10 +326,16 @@ class OrchestratorState:
         # runs here, so the pod owns this state; the supervisor sets it via
         # the control API and the drive loop mirrors it into runtime.state
         # every heartbeat (same contract as the in-process Supervisor._drive).
-        # Reproduction is off in pods: a child needs a supervisor-signed
-        # genesis and a funded pod of its own (not built yet), and a pod's
-        # signer cannot sign. ponytail: lift once pod-to-supervisor spawn lands.
-        self.reproduction_blocked = True
+        # This pod cannot sign, so with --pod-reproduction the genome hands
+        # its reproduction inputs to a relay: one request held here until the
+        # supervisor (polling GET /reproduction) signs, funds and spawns the
+        # child, then acks. Off → reproduction stays blocked.
+        self.pod_reproduction = bool(pod_reproduction)
+        self.reproduction_blocked = not self.pod_reproduction
+        self._repro: dict[str, Any] | None = None
+        self._repro_retry_at = 0.0
+        if self.pod_reproduction:
+            runtime.reproduction_relay = self._queue_reproduction
         self.disabled_neurons: set[str] = set()
         self.disabled_categories: set[str] = set()
         # Death-time code fingerprint (doc 05), captured once when the genome
@@ -473,6 +480,7 @@ class OrchestratorState:
             "wallet": {
                 "address": getattr(self.stack.wallet, "address", lambda: None)(),
                 "unsettled_usdc": getattr(self.stack.wallet, "unsettled_usdc", 0.0),
+                "settled_usdc": getattr(self.stack.wallet, "settled_usdc", 0.0),
                 "stale": bool(getattr(self.stack.wallet, "stale", False)),
             },
             "profit_baseline_usdc": float(st.profit_baseline_usdc),
@@ -752,10 +760,66 @@ class OrchestratorState:
         )
 
     def set_reproduction_block(self, blocked: bool) -> dict[str, Any]:
-        if not blocked:
-            raise ValueError("reproduction is not available for pod-hosted Darwins yet")
-        self.reproduction_blocked = True
+        if not blocked and not self.pod_reproduction:
+            raise ValueError("reproduction is not enabled for pod-hosted Darwins")
+        self.reproduction_blocked = bool(blocked)
         return {"reproduction_blocked": self.reproduction_blocked}
+
+    # -- reproduction relay (the supervisor signs, funds and spawns) -------
+    def _queue_reproduction(self, inputs: dict[str, Any]) -> None:
+        if self._repro is not None or self._clock() < self._repro_retry_at:
+            return  # one in flight; or backing off after a refusal
+        if inputs.get("amendment") is not None:
+            # An amendment staged through this pod can't be trusted back.
+            self.runtime.audit.log_event(
+                "reproduction.amendment_dropped", {"reason": "pod-hosted"},
+            )
+        import uuid
+
+        self._repro = {
+            "request_id": uuid.uuid4().hex,
+            "generation_recurring_failures": inputs["generation_recurring_failures"],
+            "dead_ends": list(inputs["dead_ends"]),
+            "successful_strategy_id": inputs["successful_strategy_id"],
+            "profit_usdc": float(inputs["profit_usdc"]),
+            "staged_semantic": inputs["staged_semantic"],
+        }
+
+    def reproduction_request(self) -> dict[str, Any]:
+        """The pending request plus what the supervisor needs to re-verify
+        this organism's DNA before it signs a child of it."""
+        if self._repro is None:
+            return {"request": None}
+        import base64
+
+        st = self.stack
+        return {"request": {
+            **self._repro,
+            "manifest_json": st.manifest.model_dump_json(),
+            "layer_blobs_b64": {
+                str(i): base64.b64encode(b).decode("ascii") for i, b in st.layer_blobs.items()
+            },
+            "layer_names": {str(i): n for i, n in st.layer_names.items()},
+        }}
+
+    def reproduction_ack(self, body: dict[str, Any]) -> dict[str, Any]:
+        req = self._repro
+        if req is None or body.get("request_id") != req["request_id"]:
+            return {"acked": False}
+        self._repro = None
+        # Don't re-ask every heartbeat: not after a refusal, nor before the
+        # funding outflow lands and resets the profit window.
+        self._repro_retry_at = self._clock() + 3600.0
+        if body.get("ok"):
+            self.runtime.audit.log_event("reproduction.done", {
+                "child": body.get("child_id"), "budget_usdc": body.get("budget_usdc"),
+                "tx_hash": body.get("tx_hash"),
+            })
+        else:
+            self.runtime.audit.log_event(
+                "reproduction.refused", {"reason": str(body.get("reason", ""))[:200]},
+            )
+        return {"acked": True}
 
     def set_disabled_neurons(self, neurons: list[str]) -> dict[str, Any]:
         self.disabled_neurons = {
@@ -1339,11 +1403,28 @@ def _build_control_app(state: OrchestratorState, token: str):
         return {"killed": True}
 
     @app.post("/force-reproduce")
-    async def force_reproduce(_: None = Depends(_require_token)) -> dict:
-        raise HTTPException(
-            status_code=409,
-            detail="reproduction is not available for pod-hosted Darwins yet",
-        )
+    async def force_reproduce(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        if not state.pod_reproduction or body.get("amendment_blob_b64"):
+            raise HTTPException(
+                status_code=409,
+                detail="reproduction (with amendments) is not available for this pod",
+            )
+        state.force_reproduce()
+        return {"requested": True}
+
+    @app.get("/reproduction")
+    async def reproduction(_: None = Depends(_require_token)) -> dict:
+        return state.reproduction_request()
+
+    @app.post("/reproduction/ack")
+    async def reproduction_ack(
+        body: dict = Body(default_factory=dict),
+        _: None = Depends(_require_token),
+    ) -> dict:
+        return state.reproduction_ack(body)
 
     return app
 
@@ -1545,6 +1626,7 @@ def main(argv: list[str] | None = None) -> int:
         clock=clock,
         heartbeat_seconds=args.heartbeat_seconds,
         soma_merger=soma_merger,
+        pod_reproduction=bool(getattr(pod_args, "pod_reproduction", False)),
     )
     state.orders = orders
     app = _build_control_app(state, token)
