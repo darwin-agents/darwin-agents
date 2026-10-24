@@ -1,10 +1,21 @@
 # Pre-mainnet operator gates
 
-The code is feature-complete and CI-green. What stands between here and moving
-real user money is a set of **gates that must be *run*, not just written** —
-soaks, recovery drills, real-cloud IaC verification, and external reviews. The
-2026-06 doc-vs-impl audit called these out as "unrun commitments"; this doc is
-the operator's single checklist for clearing them.
+The v1 money path is built and tested in process and on kind against Base
+Sepolia:
+
+- spawn;
+- inbound USDC watched on-chain;
+- x402 sales;
+- off-chain metering with settlement;
+- harvest and kill-sweep to the payout address;
+- every transfer signed by the supervisor.
+
+It has **not yet run on a real cluster with real accounts**. What stands
+between here and real user money is a set of **gates that must be *run*,
+not just written**: the staging E2E, soaks, recovery drills, real-cloud IaC
+verification, and external reviews. This doc is the operator's single
+checklist for clearing them. [`30-mainnet-cutover.md`](30-mainnet-cutover.md)
+covers the accounts and the deploy itself.
 
 Each gate lists **Proves / Run / Pass / Status**. Status is one of:
 
@@ -72,8 +83,8 @@ real Stage-1 recipe before mainnet.
 - **Run:**
   ```bash
   export DATABASE_URL=postgres://darwin:dev@localhost:5432/darwin
-  uv run python -m darwin_platform serve --port 8001 --db "$DATABASE_URL" &
-  uv run python -m darwin_platform serve --port 8002 --db "$DATABASE_URL" &
+  uv run python -m darwin_platform serve --port 8001 --db "$DATABASE_URL" --leader-election &
+  uv run python -m darwin_platform serve --port 8002 --db "$DATABASE_URL" --leader-election &
   uv run python -m tools.drills.dr_failover \
       --replica http://127.0.0.1:8001 --replica http://127.0.0.1:8002
   ```
@@ -166,9 +177,20 @@ sign-off.
 
 - **Proves:** an outside firm independently reviews the money path, key
   custody, and tenant isolation.
-- **Scope:** same threat model + the real-money paths (CDP wallet custody,
-  omnibus reconciliation, fiat ramps incl. the Stripe/MoonPay webhooks, sanctions
-  screening). Hand them this doc + docs 05/16/17/23/24.
+- **Scope:** the same threat model plus the v1 real-money paths:
+  - the supervisor-signed pod transfers (`_pod_transfer`) and CDP account
+    custody;
+  - the gas-tank hot key;
+  - the inbound-USDC watcher and its hint classification;
+  - the x402 storefront (verify → work → settle);
+  - MoonPay buy/sell, and the Persona and MoonPay webhooks;
+  - sanctions screening;
+  - the payout-address cooldown;
+  - Clerk ownership and KYC subject binding;
+  - pod reproduction (`_reproduce_k8s`), before `--pod-reproduction` is
+    turned on.
+
+  Hand them this doc plus docs 05, 16, 17, 23, 24 and 30.
 - **Pass:** report delivered; criticals/highs remediated or formally accepted.
 - **Status:** 🔴 engage a vendor.
 
@@ -184,14 +206,62 @@ sign-off.
 
 ### C4. doc-18 Layer-0 exit reviews
 
-- **7-day testnet soak:** `tools/soak/run_soak.py --duration 7d` against the
-  testnet Stage-1 recipe (🟢 runnable; 🟡 needs a week of real testnet uptime).
+- **7-day testnet soak:** see [§D2](#d2-7-day-staging-soak).
 - **Outside prompt review:** someone who didn't write the founding genome
   reviews the system/neuron prompts for unsafe instructions or value drift (🔴).
 - **Legal / compliance constitution review:** counsel reviews the constitution
   + ToS for autonomous-agent money-movement, KYC/AML, and money-transmission
   exposure — the launch-blocking item flagged in
   [`go-live status`](30-mainnet-cutover.md) (🔴, needs counsel, not code).
+
+---
+
+## D. v1 money-path gates (🟡 needs the staging deployment)
+
+These need the accounts listed in [30 §1](30-mainnet-cutover.md#1-accounts-and-credentials-prod-values-on-the-hetzner-prod-environment)
+(testnet and sandbox flavours for staging) and a staging deploy
+(`deploy-hetzner`, `environment=staging`).
+
+### D1. Staging E2E
+
+- **Proves:** the whole v1 money path on a real cluster:
+  1. spawn;
+  2. a buyer pays over x402, using the official x402 client;
+  3. the sale is booked as revenue;
+  4. there is no drift;
+  5. the payout address is set and a harvest lands;
+  6. kill sweeps the rest.
+- **Run:** the `e2e-staging` workflow (nightly and on demand), or
+  `uv run --all-extras --with "x402[evm]" python scripts/e2e_testnet.py
+  --url https://<staging> --token "$OWNER_TOKEN" --payout-address 0x…`.
+- **Pass:** every step PASS. Promote only an image that passed.
+- **Status:** 🟡 workflow shipped; needs staging and the `E2E_*` secrets.
+
+### D2. 7-day staging soak
+
+- **Proves:** 3 or more Darwins run for a week on Base Sepolia with zero
+  drift and zero crashes. During the week, settlement reaches the fee address
+  and at least one harvest per Darwin lands.
+- **Run:** start three soak drivers against staging:
+  `uv run python -m tools.soak.run_soak --duration 7d --url https://<staging>
+  --auth-token "$OWNER_TOKEN"`. Each driver spawns its own Darwin. Fund each
+  one from the faucet with `scripts/fund_testnet_darwin.py <darwin_id>`.
+  Harvest each soak Darwin at least once during the week from the
+  dashboard. The nightly `e2e-staging` run covers a storefront sale
+  alongside.
+- **Pass:** no `ledger_drift`, `drive_crashed`, or `settlement_failed` page
+  for the week. Each Darwin's ledger reconciles to its on-chain balance.
+- **Status:** 🟡 needs a week of staging uptime.
+
+### D3. Mainnet canary, then alpha
+
+- **Proves:** real money behaves like testnet money, at small stakes.
+- **Run:** follow [30 §3](30-mainnet-cutover.md#3-canary-prodtfvars-ships-the-canary-posture):
+  1. platform-owned Darwins first, under the CDP caps from `prod.tfvars`;
+  2. then five allowlisted alpha users.
+- **Pass:** a clean week for each stage, and every transfer reconciled
+  against Basescan.
+- **Status:** 🔴 needs §0 of doc 30 done first: counsel and the audit.
 
 ---
 
@@ -208,3 +278,6 @@ sign-off.
 | C2 third-party audit | vendor |
 | C3 SOC 2 | auditor |
 | C4 Layer-0 exit | 7d soak + prompt review + counsel |
+| D1 staging E2E | `e2e-staging` workflow / `scripts/e2e_testnet.py` |
+| D2 7-day staging soak | `python -m tools.soak.run_soak --duration 7d` on staging |
+| D3 canary → alpha | doc 30 §3 |
