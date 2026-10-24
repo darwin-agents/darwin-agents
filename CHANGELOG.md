@@ -9,15 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Darwins now run as Kubernetes pods end to end, and the money path is real on Base:
 
-- **Pod Darwins** — each pod gets a durable data volume and direct egress, holds a watch-only wallet and no signing keys, and is re-adopted (not respawned) when the supervisor restarts; the supervisor proxies pod reads and owner controls, and harvests, sweeps, and answers escalations on the pod's behalf.
+- **Pod Darwins** — each pod gets a durable data volume and direct egress, holds a watch-only wallet and no signing keys, and is re-adopted (not respawned) when the supervisor restarts; the supervisor proxies pod reads and owner controls, harvests, sweeps, and answers escalations on the pod's behalf, and (opt-in, `--pod-reproduction`) lets pod Darwins reproduce.
 - **Money** — atomic USDC transfers through Coinbase CDP, gas topped up from a platform tank, metering fees accrued and settled, the wallet synced from on-chain transfer logs, and an x402 storefront where a Darwin sells paid reports to its own wallet.
-- **Production safety** — a production boot lists every missing requirement at once and refuses to serve without auth; KYC verdicts persist and are bound to their subject; harvests go only to a payout address past its cooldown.
+- **Production safety** — a production boot lists every missing requirement at once and refuses to serve without auth; KYC verdicts persist and are bound to their subject; harvests go only to a payout address past its cooldown; pod close-out settles every accrued fee before sweeping; Hetzner deploys are split into staging and prod.
 - **Durability** — bounded-memory audit-chain boot and Merkle anchoring, an O(1) treasury balance over a bounded ledger window, and a fix for audit records silently lost after a torn write.
 - **Dashboard** — operator console, money-rails and KYC cards, proposals, consent on spawn, funding and onboarding pages.
 - **Quality** — new e2e, infra, and performance test tiers (e2e gates every PR); a documentation hub, a configuration reference generated from the CLI, and the full API route table.
 
 ### Added
 
+- feat(infra): split Hetzner deploys into staging and prod
+- feat(platform): let pod Darwins reproduce through the supervisor
 - test(infra): drop the uv --frozen install assertion
 - feat(changelog): keep a hand-written unreleased summary across sync
 - test(web): cover resume and the money card on a Darwin page
@@ -76,6 +78,7 @@ Darwins now run as Kubernetes pods end to end, and the money path is real on Bas
 
 ### Changed
 
+- docs: describe staging cutover and the production gates
 - docs(frontend): describe the shipped dashboard, stream, and PWA companion
 - docs: describe the shipped pod money path and dashboard
 - docs: renumber the evolution guide and document the test tiers
@@ -86,6 +89,7 @@ Darwins now run as Kubernetes pods end to end, and the money path is real on Bas
 
 ### Fixed
 
+- fix(security): retry Vault Transit and resolve ownership live
 - fix(web): pass the CSP nonce through Clerk middleware
 - ci: run the e2e tier on every pull request
 - fix(platform): keep the audit chain intact after a torn write
